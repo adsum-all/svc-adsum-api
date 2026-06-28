@@ -1,6 +1,30 @@
-# Minimal pipeline for ADSUM. Delegates to the shared CI templates in
-# sr-media-ai/adsum/deployment/ci-templates (Constitution audit and stack jobs).
+# =============================================================
+# ADSUM API - GitLab CI/CD (modular pipeline, .gitlab/ci/*.yml)
+#
+# Container registry: ${CI_REGISTRY_IMAGE}
+#   dev:<sha>, dev:latest    (develop branch)
+#   prod:X.Y.Z, prod:latest  (tag vX.Y.Z, built from main)
+#
+# Flow:
+#   develop       -> validate, test, security, build dev image
+#   tag vX.Y.Z    -> validate, test, security, build prod image, deploy (manual)
+#   merge request -> validate, test, security
+# =============================================================
+
+stages:
+  - validate
+  - test
+  - security
+  - build
+  - deploy
+
+variables:
+  DOCKER_BUILDKIT: "1"
+  REGISTRY_BASE: "${CI_REGISTRY_IMAGE}"
+
 include:
-  - project: 'sr-media-ai/adsum/deployment/ci-templates'
-    ref: main
-    file: '/templates/python.yml'
+  - local: '.gitlab/ci/validate.yml'
+  - local: '.gitlab/ci/test.yml'
+  - local: '.gitlab/ci/security.yml'
+  - local: '.gitlab/ci/build.yml'
+  - local: '.gitlab/ci/deploy.yml'
