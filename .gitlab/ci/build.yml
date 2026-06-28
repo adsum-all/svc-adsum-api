@@ -4,13 +4,13 @@
   image: docker:27
   services:
     - docker:27-dind
+  timeout: 25m
   variables:
-    DOCKER_HOST: "tcp://docker:2376"
-    DOCKER_TLS_CERTDIR: "/certs"
-    DOCKER_TLS_VERIFY: "1"
-    DOCKER_CERT_PATH: "/certs/client"
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
   before_script:
-    - until docker info >/dev/null 2>&1; do echo "waiting for docker daemon..."; sleep 2; done
+    - for i in $(seq 1 40); do docker info >/dev/null 2>&1 && break; echo "waiting for docker daemon ($i/40)..."; sleep 2; done
+    - docker info >/dev/null 2>&1 || { echo "FAIL: docker daemon not reachable"; exit 1; }
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
 
 # Dev image on every develop commit: dev:<sha> and dev:latest.
