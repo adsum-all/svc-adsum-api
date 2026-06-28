@@ -1,6 +1,22 @@
-# Minimal pipeline for ADSUM. Delegates to the shared CI templates in
-# sr-media-ai/adsum/deployment/ci-templates (Constitution audit and stack jobs).
+# ADSUM API - thin pipeline. All reusable jobs live in the centralized
+# deployment/ci-templates repository. This file only wires them and sets
+# repo-specific variables (Constitution audit, ruff, pytest, Kaniko build,
+# security scans, GCP deploy). Tags: dev:<sha> on develop, prod:vX.Y.Z on tags.
+stages:
+  - validate
+  - test
+  - security
+  - build
+  - deploy
+
+variables:
+  DOCKERFILE_PATH: "deploy/Dockerfile"
+
 include:
   - project: 'sr-media-ai/adsum/deployment/ci-templates'
-    ref: main
-    file: '/templates/python.yml'
+    ref: develop
+    file:
+      - '/templates/python-ci.yml'
+      - '/templates/security.yml'
+      - '/templates/docker.yml'
+      - '/templates/deploy-gcp.yml'
