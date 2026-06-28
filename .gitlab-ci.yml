@@ -1,16 +1,7 @@
-# =============================================================
-# ADSUM API - GitLab CI/CD (modular pipeline, .gitlab/ci/*.yml)
-#
-# Container registry: ${CI_REGISTRY_IMAGE}
-#   dev:<sha>, dev:latest    (develop branch)
-#   prod:X.Y.Z, prod:latest  (tag vX.Y.Z, built from main)
-#
-# Flow:
-#   develop       -> validate, test, security, build dev image
-#   tag vX.Y.Z    -> validate, test, security, build prod image, deploy (manual)
-#   merge request -> validate, test, security
-# =============================================================
-
+# ADSUM API - thin pipeline. All reusable jobs live in the centralized
+# deployment/ci-templates repository. This file only wires them and sets
+# repo-specific variables (Constitution audit, ruff, pytest, Kaniko build,
+# security scans, GCP deploy). Tags: dev:<sha> on develop, prod:vX.Y.Z on tags.
 stages:
   - validate
   - test
@@ -19,12 +10,13 @@ stages:
   - deploy
 
 variables:
-  DOCKER_BUILDKIT: "1"
-  REGISTRY_BASE: "${CI_REGISTRY_IMAGE}"
+  DOCKERFILE_PATH: "deploy/Dockerfile"
 
 include:
-  - local: '.gitlab/ci/validate.yml'
-  - local: '.gitlab/ci/test.yml'
-  - local: '.gitlab/ci/security.yml'
-  - local: '.gitlab/ci/build.yml'
-  - local: '.gitlab/ci/deploy.yml'
+  - project: 'sr-media-ai/adsum/deployment/ci-templates'
+    ref: develop
+    file:
+      - '/templates/python-ci.yml'
+      - '/templates/security.yml'
+      - '/templates/docker.yml'
+      - '/templates/deploy-gcp.yml'
