@@ -20,6 +20,7 @@ from .schemas import (
     CreateSousCommission,
     IntendanceOut,
     SousCommissionOut,
+    TribuOut,
     UserMe,
 )
 
@@ -146,6 +147,12 @@ def create_sous_commission(
         commission_id=str(created["commission_id"]) if created["commission_id"] else None,
         commission=None,
     )
+
+
+@router.get("/tribus", response_model=list[TribuOut])
+def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOut]:
+    rows = db.fetch_all("SELECT id, nom, patriarche FROM tribu ORDER BY nom ASC", (), role=user.role)
+    return [TribuOut(id=str(r["id"]), nom=r["nom"], patriarche=r["patriarche"]) for r in rows]
 
 
 @router.get("/bergers", response_model=list[BergerOut])
