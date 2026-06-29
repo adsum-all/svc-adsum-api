@@ -219,6 +219,40 @@ class TribuOut(BaseModel):
     patriarche: str | None = None
 
 
+_ROLE = "^(super_admin|admin|gestionnaire|controleur|direction)$"
+
+
+class UtilisateurOut(BaseModel):
+    """An application account with its role, for rights management."""
+
+    id: str
+    email: EmailStr
+    role: str
+    actif: bool
+    double_facteur: bool
+    membre_id: str | None = None
+    membre_nom: str | None = None
+    dernier_login: datetime | None = None
+
+
+class CreateUtilisateur(BaseModel):
+    """Payload to create an application account (the super admin creates accounts)."""
+
+    email: EmailStr
+    role: str = Field(pattern=_ROLE)
+    password: str = Field(min_length=8)
+    membre_id: str | None = None
+    double_facteur: bool = True
+
+
+class UpdateUtilisateur(BaseModel):
+    """Partial update of an account: role and activation."""
+
+    role: str | None = Field(default=None, pattern=_ROLE)
+    actif: bool | None = None
+    double_facteur: bool | None = None
+
+
 class DoublonGroupe(BaseModel):
     """A group of members that look like duplicates of the same person."""
 
