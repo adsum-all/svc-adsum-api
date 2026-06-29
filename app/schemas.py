@@ -1,7 +1,7 @@
 """Request and response models (Pydantic)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -37,7 +37,18 @@ class MembreProfile(BaseModel):
     photo_url: str | None = None
     statut: str
     verifie: bool
+    genre: str | None = None
+    date_naissance: date | None = None
+    pays: str | None = None
+    ville: str | None = None
+    date_entree: date | None = None
+    cheminement_pastoral: str | None = None
+    statut_administratif: str | None = None
     commission: str | None = None
+    intendance: str | None = None
+    intendance_id: str | None = None
+    berger: str | None = None
+    berger_referent_id: str | None = None
 
 
 class EvenementOut(BaseModel):
@@ -85,6 +96,9 @@ class QrToken(BaseModel):
     key_version: int
 
 
+_CHEMINEMENT = "^(nouveau|en_accompagnement|membre_actif|responsable|a_relancer|en_pause|ancien_membre)$"
+
+
 class CreateMembre(BaseModel):
     """Payload to register a new member from the back office."""
 
@@ -95,6 +109,14 @@ class CreateMembre(BaseModel):
     commission_id: str | None = None
     groupe: str | None = None
     matricule: str | None = None
+    genre: str | None = Field(default=None, pattern="^(homme|femme|autre)$")
+    date_naissance: date | None = None
+    pays: str | None = None
+    ville: str | None = None
+    intendance_id: str | None = None
+    berger_referent_id: str | None = None
+    date_entree: date | None = None
+    cheminement_pastoral: str | None = Field(default=None, pattern=_CHEMINEMENT)
 
 
 class UpdateMembre(BaseModel):
@@ -107,6 +129,67 @@ class UpdateMembre(BaseModel):
     groupe: str | None = None
     statut: str | None = Field(default=None, pattern="^(actif|inactif|suspendu)$")
     verifie: bool | None = None
+    genre: str | None = Field(default=None, pattern="^(homme|femme|autre)$")
+    date_naissance: date | None = None
+    pays: str | None = None
+    ville: str | None = None
+    intendance_id: str | None = None
+    berger_referent_id: str | None = None
+    date_entree: date | None = None
+    cheminement_pastoral: str | None = Field(default=None, pattern=_CHEMINEMENT)
+
+
+class CoordinationOut(BaseModel):
+    """A coordination row (top of the organizational hierarchy)."""
+
+    id: str
+    nom: str
+    description: str | None = None
+
+
+class CreateCoordination(BaseModel):
+    nom: str = Field(min_length=1)
+    description: str | None = None
+
+
+class IntendanceOut(BaseModel):
+    """An intendance row (geographic structure), with its coordination name."""
+
+    id: str
+    nom: str
+    pays: str | None = None
+    ville: str | None = None
+    coordination_id: str | None = None
+    coordination: str | None = None
+
+
+class CreateIntendance(BaseModel):
+    nom: str = Field(min_length=1)
+    pays: str | None = None
+    ville: str | None = None
+    coordination_id: str | None = None
+
+
+class SousCommissionOut(BaseModel):
+    """A sous-commission row, with its commission name."""
+
+    id: str
+    nom: str
+    commission_id: str | None = None
+    commission: str | None = None
+
+
+class CreateSousCommission(BaseModel):
+    nom: str = Field(min_length=1)
+    commission_id: str | None = None
+
+
+class BergerOut(BaseModel):
+    """A user that can be set as a member shepherd (berger referent)."""
+
+    id: str
+    nom: str
+    role: str
 
 
 class CommissionOut(BaseModel):
