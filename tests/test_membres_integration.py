@@ -57,6 +57,13 @@ def test_member_events_and_history_are_lists() -> None:
     assert isinstance(history.json(), list)
 
 
+def test_member_notifications_is_a_list() -> None:
+    client = _client()
+    res = client.get("/api/v1/membres/me/notifications", headers=_member_headers(client))
+    assert res.status_code == 200, res.text
+    assert isinstance(res.json(), list)
+
+
 def test_member_qr_is_signed(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.config import settings
 
