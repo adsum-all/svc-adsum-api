@@ -10,7 +10,7 @@ from typing import Annotated
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from . import db
+from . import audit, db
 from .deps import require_roles
 from .schemas import CreateTerminal, TerminalOut, UpdateTerminal, UserMe
 
@@ -58,9 +58,11 @@ def register_terminal(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="appareil_id already registered") from exc
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
-    row = db.fetch_one(f"{_SELECT} WHERE id = %s", (str(created["id"]),), role=user.role)
+    new_id = str(created["id"])
+    row = db.fetch_one(f"{_SELECT} WHERE id = %s", (new_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="read failed")
+    audit.log(user.id, user.role, "enregistrement_terminal", "terminal", new_id, {"nom": payload.nom})
     return _to_out(row)
 
 
@@ -80,6 +82,9 @@ def update_terminal(
         )
         if not updated:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="terminal not found")
+        if "autorise" in fields:
+            act = "autorisation_terminal" if fields["autorise"] else "revocation_terminal"
+            audit.log(user.id, user.role, act, "terminal", terminal_id)
     row = db.fetch_one(f"{_SELECT} WHERE id = %s", (terminal_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="terminal not found")

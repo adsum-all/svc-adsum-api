@@ -11,7 +11,7 @@ from typing import Annotated
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from . import db
+from . import audit, db
 from .deps import require_roles
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .schemas import (
@@ -87,7 +87,9 @@ def create_membre(
         ) from exc
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
-    return _read_membre(str(created["id"]), user.role)
+    membre_id = str(created["id"])
+    audit.log(user.id, user.role, "creation_membre", "membre", membre_id, {"matricule": matricule})
+    return _read_membre(membre_id, user.role)
 
 
 @router.get("/membres", response_model=list[MembreProfile])
@@ -153,6 +155,8 @@ def update_membre(
         ) from exc
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    action = "validation_identite" if fields.get("verifie") is True else "modification_membre"
+    audit.log(user.id, user.role, action, "membre", membre_id, {"champs": list(fields)})
     return _read_membre(membre_id, user.role)
 
 

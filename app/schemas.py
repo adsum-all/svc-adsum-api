@@ -261,6 +261,18 @@ class DoublonGroupe(BaseModel):
     membres: list[MembreProfile]
 
 
+class AuditEntry(BaseModel):
+    """One audit log entry tracing a sensitive action."""
+
+    id: int
+    acteur_role: str | None = None
+    acteur_nom: str | None = None
+    action: str
+    objet_type: str | None = None
+    objet_id: str | None = None
+    horodatage: datetime | None = None
+
+
 class TerminalOut(BaseModel):
     """A scan terminal registered for the control app."""
 
