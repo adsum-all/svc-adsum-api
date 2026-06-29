@@ -64,6 +64,17 @@ class PresenceOut(BaseModel):
     methode: str | None = None
 
 
+class NotificationOut(BaseModel):
+    """A notification addressed to the member."""
+
+    id: str
+    type: str | None = None
+    titre: str | None = None
+    corps: str | None = None
+    lu: bool
+    cree_le: datetime | None = None
+
+
 class QrToken(BaseModel):
     """A signed, short-lived QR token the member shows for check-in."""
 

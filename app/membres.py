@@ -15,7 +15,7 @@ from . import db
 from .auth import current_user
 from .mappers import MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .qr import QrSigningUnavailable, issue_token
-from .schemas import EvenementOut, MembreProfile, PresenceOut, QrToken, UserMe
+from .schemas import EvenementOut, MembreProfile, NotificationOut, PresenceOut, QrToken, UserMe
 
 router = APIRouter(prefix="/api/v1/membres", tags=["membres"])
 
@@ -104,6 +104,33 @@ def my_history(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list
             arrivee=r["arrivee"],
             depart=r["depart"],
             methode=r["methode"],
+        )
+        for r in rows
+    ]
+
+
+@router.get("/me/notifications", response_model=list[NotificationOut])
+def my_notifications(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[NotificationOut]:
+    membre_id, role = ctx
+    rows = db.fetch_all(
+        """
+        SELECT id, type, titre, corps, lu, cree_le
+        FROM notification
+        WHERE membre_id = %s
+        ORDER BY cree_le DESC NULLS LAST
+        LIMIT 100
+        """,
+        (membre_id,),
+        role=role,
+    )
+    return [
+        NotificationOut(
+            id=str(r["id"]),
+            type=r["type"],
+            titre=r["titre"],
+            corps=r["corps"],
+            lu=r["lu"],
+            cree_le=r["cree_le"],
         )
         for r in rows
     ]
