@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 60
     cors_origins: str = "*"
+    # QR check-in token signing (Ed25519 private seed, base64url of 32 bytes)
+    qr_signing_key: str = ""
+    qr_key_version: int = 1
+    qr_ttl_seconds: int = 90
 
     @property
     def database_dsn(self) -> str:
