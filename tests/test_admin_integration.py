@@ -101,6 +101,41 @@ def test_admin_can_list_organization() -> None:
         assert isinstance(res.json(), list)
 
 
+def test_admin_can_register_and_list_terminals() -> None:
+    client = _client()
+    headers = _staff_headers(client, "admin")
+    listing = client.get("/api/v1/admin/terminaux", headers=headers)
+    assert listing.status_code == 200, listing.text
+    assert isinstance(listing.json(), list)
+
+    appareil = f"itest-{uuid.uuid4().hex[:10]}"
+    created = client.post(
+        "/api/v1/admin/terminaux",
+        headers=headers,
+        json={"nom": "Terminal de test", "appareil_id": appareil},
+    )
+    assert created.status_code == 201, created.text
+    terminal_id = created.json()["id"]
+    try:
+        assert created.json()["autorise"] is True
+        revoked = client.patch(
+            f"/api/v1/admin/terminaux/{terminal_id}", headers=headers, json={"autorise": False}
+        )
+        assert revoked.status_code == 200, revoked.text
+        assert revoked.json()["autorise"] is False
+    finally:
+        _delete_terminal(terminal_id)
+
+
+def _delete_terminal(terminal_id: str) -> None:
+    import psycopg
+
+    dsn = os.environ["ADSUM_DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM terminal WHERE id = %s", (terminal_id,))
+        conn.commit()
+
+
 def test_admin_statistics() -> None:
     client = _client()
     headers = _staff_headers(client, "admin")
