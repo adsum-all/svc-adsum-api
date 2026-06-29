@@ -11,6 +11,7 @@ from .config import settings
 from .controle import router as controle_router
 from .membres import router as membres_router
 from .organisation import router as organisation_router
+from .users import router as users_router
 
 app = FastAPI(
     title="ADSUM API",
@@ -32,6 +33,7 @@ app.include_router(admin_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(analytics_router)
+app.include_router(users_router)
 
 
 @app.get("/health", tags=["system"])
