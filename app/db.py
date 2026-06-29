@@ -21,7 +21,9 @@ def connection(role: str | None = None) -> Iterator[psycopg.Connection]:
     try:
         if role:
             with conn.cursor() as cur:
-                cur.execute("SELECT set_config('adsum.role', %s, false)", (role,))
+                # Transaction-local so the role never leaks to another request that
+                # reuses the same pooled connection (Supabase transaction pooler).
+                cur.execute("SELECT set_config('adsum.role', %s, true)", (role,))
         yield conn
         conn.commit()
     except Exception:
