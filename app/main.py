@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .admin import router as admin_router
+from .analytics import router as analytics_router
 from .auth import router as auth_router
 from .config import settings
 from .controle import router as controle_router
@@ -30,6 +31,7 @@ app.include_router(membres_router)
 app.include_router(admin_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
+app.include_router(analytics_router)
 
 
 @app.get("/health", tags=["system"])

@@ -68,33 +68,16 @@ def create_membre(
     user: Annotated[UserMe, Depends(require_membre_writer)],
 ) -> MembreProfile:
     matricule = payload.matricule or _next_matricule(user.role)
+    data = payload.model_dump(exclude_unset=True, exclude={"matricule"})
+    data["matricule"] = matricule
+    data.setdefault("statut", "actif")
+    data.setdefault("verifie", False)
+    columns = ", ".join(data)
+    placeholders = ", ".join(["%s"] * len(data))
     try:
         created = db.execute(
-            """
-            INSERT INTO membre (matricule, email, nom, prenoms, telephone, commission_id, groupe,
-                                genre, date_naissance, pays, ville, intendance_id, berger_referent_id,
-                                date_entree, cheminement_pastoral, statut, verifie)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    COALESCE(%s, 'nouveau'), 'actif', false)
-            RETURNING id
-            """,
-            (
-                matricule,
-                payload.email,
-                payload.nom,
-                payload.prenoms,
-                payload.telephone,
-                payload.commission_id,
-                payload.groupe,
-                payload.genre,
-                payload.date_naissance,
-                payload.pays,
-                payload.ville,
-                payload.intendance_id,
-                payload.berger_referent_id,
-                payload.date_entree,
-                payload.cheminement_pastoral,
-            ),
+            f"INSERT INTO membre ({columns}) VALUES ({placeholders}) RETURNING id",
+            tuple(data.values()),
             role=user.role,
         )
     except psycopg.errors.UniqueViolation as exc:

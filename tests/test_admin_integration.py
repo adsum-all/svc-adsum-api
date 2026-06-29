@@ -95,7 +95,17 @@ def test_admin_can_list_commissions_and_events() -> None:
 def test_admin_can_list_organization() -> None:
     client = _client()
     headers = _staff_headers(client, "admin")
-    for path in ("intendances", "coordinations", "sous-commissions", "bergers"):
+    for path in ("intendances", "coordinations", "sous-commissions", "bergers", "tribus", "doublons"):
         res = client.get(f"/api/v1/admin/{path}", headers=headers)
         assert res.status_code == 200, res.text
         assert isinstance(res.json(), list)
+
+
+def test_admin_statistics() -> None:
+    client = _client()
+    headers = _staff_headers(client, "admin")
+    res = client.get("/api/v1/admin/statistiques", headers=headers)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert "membres_total" in body
+    assert isinstance(body["par_commission"], list)

@@ -44,11 +44,25 @@ class MembreProfile(BaseModel):
     date_entree: date | None = None
     cheminement_pastoral: str | None = None
     statut_administratif: str | None = None
+    type_membre: str | None = None
+    promotion: str | None = None
+    situation_matrimoniale: str | None = None
+    type_mariage: str | None = None
+    profession: str | None = None
+    niveau_etudes: str | None = None
+    baptise: bool | None = None
+    confirme: bool | None = None
+    premiere_communion: bool | None = None
     commission: str | None = None
     intendance: str | None = None
     intendance_id: str | None = None
     berger: str | None = None
     berger_referent_id: str | None = None
+    tribu: str | None = None
+    tribu_id: str | None = None
+    patriarche: str | None = None
+    coordination: str | None = None
+    coordinateur: str | None = None
 
 
 class EvenementOut(BaseModel):
@@ -97,46 +111,51 @@ class QrToken(BaseModel):
 
 
 _CHEMINEMENT = "^(nouveau|en_accompagnement|membre_actif|responsable|a_relancer|en_pause|ancien_membre)$"
+_TYPE_MEMBRE = "^(membre_simple|nouveau_engage|aspirant|engage|berger|responsable)$"
+_SITUATION = "^(celibataire|en_couple|fiance|marie|veuf|divorce)$"
+_MARIAGE = "^(dot|religieux|dot_et_religieux|civil)$"
 
 
-class CreateMembre(BaseModel):
+class MembreFields(BaseModel):
+    """Shared optional member fields, used by create and update payloads."""
+
+    nom: str | None = None
+    prenoms: str | None = None
+    telephone: str | None = None
+    commission_id: str | None = None
+    groupe: str | None = None
+    genre: str | None = Field(default=None, pattern="^(homme|femme|autre)$")
+    date_naissance: date | None = None
+    pays: str | None = None
+    ville: str | None = None
+    intendance_id: str | None = None
+    berger_referent_id: str | None = None
+    date_entree: date | None = None
+    cheminement_pastoral: str | None = Field(default=None, pattern=_CHEMINEMENT)
+    tribu_id: str | None = None
+    type_membre: str | None = Field(default=None, pattern=_TYPE_MEMBRE)
+    promotion: str | None = None
+    situation_matrimoniale: str | None = Field(default=None, pattern=_SITUATION)
+    type_mariage: str | None = Field(default=None, pattern=_MARIAGE)
+    profession: str | None = None
+    niveau_etudes: str | None = None
+    baptise: bool | None = None
+    confirme: bool | None = None
+    premiere_communion: bool | None = None
+
+
+class CreateMembre(MembreFields):
     """Payload to register a new member from the back office."""
 
     email: EmailStr
-    nom: str | None = None
-    prenoms: str | None = None
-    telephone: str | None = None
-    commission_id: str | None = None
-    groupe: str | None = None
     matricule: str | None = None
-    genre: str | None = Field(default=None, pattern="^(homme|femme|autre)$")
-    date_naissance: date | None = None
-    pays: str | None = None
-    ville: str | None = None
-    intendance_id: str | None = None
-    berger_referent_id: str | None = None
-    date_entree: date | None = None
-    cheminement_pastoral: str | None = Field(default=None, pattern=_CHEMINEMENT)
 
 
-class UpdateMembre(BaseModel):
+class UpdateMembre(MembreFields):
     """Partial update of a member. Only provided fields are written."""
 
-    nom: str | None = None
-    prenoms: str | None = None
-    telephone: str | None = None
-    commission_id: str | None = None
-    groupe: str | None = None
     statut: str | None = Field(default=None, pattern="^(actif|inactif|suspendu)$")
     verifie: bool | None = None
-    genre: str | None = Field(default=None, pattern="^(homme|femme|autre)$")
-    date_naissance: date | None = None
-    pays: str | None = None
-    ville: str | None = None
-    intendance_id: str | None = None
-    berger_referent_id: str | None = None
-    date_entree: date | None = None
-    cheminement_pastoral: str | None = Field(default=None, pattern=_CHEMINEMENT)
 
 
 class CoordinationOut(BaseModel):
@@ -190,6 +209,37 @@ class BergerOut(BaseModel):
     id: str
     nom: str
     role: str
+
+
+class TribuOut(BaseModel):
+    """One of the twelve tribes, with its patriarch."""
+
+    id: str
+    nom: str
+    patriarche: str | None = None
+
+
+class DoublonGroupe(BaseModel):
+    """A group of members that look like duplicates of the same person."""
+
+    critere: str
+    valeur: str
+    membres: list[MembreProfile]
+
+
+class StatistiquesOut(BaseModel):
+    """Aggregated figures for the dashboard and direction views."""
+
+    membres_total: int
+    membres_actifs: int
+    membres_verifies: int
+    membres_en_attente: int
+    evenements_total: int
+    presences_total: int
+    commissions_total: int
+    intendances_total: int
+    par_commission: list[dict[str, object]]
+    par_cheminement: list[dict[str, object]]
 
 
 class CommissionOut(BaseModel):
