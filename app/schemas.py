@@ -261,6 +261,27 @@ class DoublonGroupe(BaseModel):
     membres: list[MembreProfile]
 
 
+class TerminalOut(BaseModel):
+    """A scan terminal registered for the control app."""
+
+    id: str
+    nom: str | None = None
+    appareil_id: str | None = None
+    autorise: bool
+    appaire_le: datetime | None = None
+    dernier_sync: datetime | None = None
+
+
+class CreateTerminal(BaseModel):
+    nom: str = Field(min_length=1)
+    appareil_id: str = Field(min_length=1)
+
+
+class UpdateTerminal(BaseModel):
+    autorise: bool | None = None
+    nom: str | None = None
+
+
 class StatistiquesOut(BaseModel):
     """Aggregated figures for the dashboard and direction views."""
 

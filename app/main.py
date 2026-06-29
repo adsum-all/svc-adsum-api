@@ -11,6 +11,7 @@ from .config import settings
 from .controle import router as controle_router
 from .membres import router as membres_router
 from .organisation import router as organisation_router
+from .terminaux import router as terminaux_router
 from .users import router as users_router
 
 app = FastAPI(
@@ -34,6 +35,7 @@ app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(analytics_router)
 app.include_router(users_router)
+app.include_router(terminaux_router)
 
 
 @app.get("/health", tags=["system"])
