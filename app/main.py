@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .admin import router as admin_router
 from .analytics import router as analytics_router
+from .audit import router as audit_router
 from .auth import router as auth_router
 from .config import settings
 from .controle import router as controle_router
@@ -36,6 +37,7 @@ app.include_router(organisation_router)
 app.include_router(analytics_router)
 app.include_router(users_router)
 app.include_router(terminaux_router)
+app.include_router(audit_router)
 
 
 @app.get("/health", tags=["system"])

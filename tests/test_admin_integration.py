@@ -136,6 +136,23 @@ def _delete_terminal(terminal_id: str) -> None:
         conn.commit()
 
 
+def test_audit_journal_records_a_member_creation() -> None:
+    client = _client()
+    headers = _staff_headers(client, "admin")
+    email = f"itest-audit-{uuid.uuid4().hex[:10]}@example.com"
+    created = client.post("/api/v1/admin/membres", headers=headers, json={"email": email, "nom": "Audit"})
+    assert created.status_code == 201, created.text
+    membre_id = created.json()["id"]
+    try:
+        journal = client.get("/api/v1/admin/audit", headers=headers)
+        assert journal.status_code == 200, journal.text
+        entries = journal.json()
+        assert isinstance(entries, list)
+        assert any(e["action"] == "creation_membre" and e["objet_id"] == membre_id for e in entries)
+    finally:
+        _delete_membre(membre_id)
+
+
 def test_admin_statistics() -> None:
     client = _client()
     headers = _staff_headers(client, "admin")

@@ -11,7 +11,7 @@ from typing import Annotated
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from . import db
+from . import audit, db
 from .deps import require_roles
 from .schemas import CreateUtilisateur, UpdateUtilisateur, UserMe, UtilisateurOut
 from .security import hash_password
@@ -68,9 +68,11 @@ def create_utilisateur(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="email already in use") from exc
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
-    row = db.fetch_one(f"{_SELECT} WHERE u.id = %s", (str(created["id"]),), role=user.role)
+    new_id = str(created["id"])
+    row = db.fetch_one(f"{_SELECT} WHERE u.id = %s", (new_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="read failed")
+    audit.log(user.id, user.role, "creation_compte", "utilisateur", new_id, {"role": payload.role})
     return _to_out(row)
 
 
@@ -90,6 +92,7 @@ def update_utilisateur(
         )
         if not updated:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")
+        audit.log(user.id, user.role, "modification_compte", "utilisateur", utilisateur_id, {"champs": list(fields)})
     row = db.fetch_one(f"{_SELECT} WHERE u.id = %s", (utilisateur_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")
