@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import router as auth_router
 from .config import settings
+from .membres import router as membres_router
 
 app = FastAPI(
     title="ADSUM API",
@@ -22,6 +23,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(membres_router)
 
 
 @app.get("/health", tags=["system"])
