@@ -74,6 +74,17 @@ def _create_event(client) -> str:
     return res.json()["id"]
 
 
+def _cleanup_event(evenement_id: str) -> None:
+    """Delete a test event and its presences, to keep the database clean."""
+    import psycopg
+
+    dsn = os.environ["ADSUM_DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM presence WHERE evenement_id = %s", (evenement_id,))
+        cur.execute("DELETE FROM evenement WHERE id = %s", (evenement_id,))
+        conn.commit()
+
+
 def test_verify_and_checkin_a_member(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_signing_key(monkeypatch)
     client = _client()
@@ -89,24 +100,47 @@ def test_verify_and_checkin_a_member(monkeypatch: pytest.MonkeyPatch) -> None:
     assert verified.json()["matricule"]
 
     evenement_id = _create_event(client)
-    checkin = client.post(
-        "/api/v1/controle/checkin",
-        headers=control_headers,
-        json={"token": token, "evenement_id": evenement_id},
-    )
-    assert checkin.status_code == 200, checkin.text
-    first = checkin.json()
-    assert first["deja_present"] is False
-    assert first["evenement_id"] == evenement_id
-    assert first["membre"]["matricule"]
+    try:
+        checkin = client.post(
+            "/api/v1/controle/checkin",
+            headers=control_headers,
+            json={"token": token, "evenement_id": evenement_id},
+        )
+        assert checkin.status_code == 200, checkin.text
+        first = checkin.json()
+        assert first["deja_present"] is False
+        assert first["evenement_id"] == evenement_id
+        assert first["membre"]["matricule"]
 
-    repeat = client.post(
-        "/api/v1/controle/checkin",
-        headers=control_headers,
-        json={"token": token, "evenement_id": evenement_id},
-    )
-    assert repeat.status_code == 200, repeat.text
-    assert repeat.json()["deja_present"] is True
+        repeat = client.post(
+            "/api/v1/controle/checkin",
+            headers=control_headers,
+            json={"token": token, "evenement_id": evenement_id},
+        )
+        assert repeat.status_code == 200, repeat.text
+        assert repeat.json()["deja_present"] is True
+
+        # Exit mode: a second scan records the departure.
+        out = client.post(
+            "/api/v1/controle/checkout",
+            headers=control_headers,
+            json={"token": token, "evenement_id": evenement_id},
+        )
+        assert out.status_code == 200, out.text
+        assert out.json()["depart"] is not None
+        assert out.json()["deja_sorti"] is False
+    finally:
+        _cleanup_event(evenement_id)
+
+
+def test_directory_lists_members() -> None:
+    client = _client()
+    headers = _staff_headers(client, "controleur")
+    listing = client.get("/api/v1/controle/membres", headers=headers)
+    assert listing.status_code == 200, listing.text
+    assert isinstance(listing.json(), list)
+    filtered = client.get("/api/v1/controle/membres", headers=headers, params={"q": "ADS-000001"})
+    assert filtered.status_code == 200, filtered.text
 
 
 def test_checkin_rejects_an_invalid_token() -> None:
