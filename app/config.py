@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     # QR check-in token signing (Ed25519 private seed, base64url of 32 bytes)
     qr_signing_key: str = ""
+    # Optional Ed25519 public key (base64url of 32 bytes) for verify-only terminals
+    # that hold no private seed. When empty, the public key is derived from
+    # qr_signing_key.
+    qr_public_key: str = ""
     qr_key_version: int = 1
     qr_ttl_seconds: int = 90
 
