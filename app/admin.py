@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from . import db
 from .deps import require_roles
-from .mappers import MEMBRE_PROFILE_SELECT, membre_row_to_profile
+from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .schemas import (
     CommissionOut,
     CreateCommission,
@@ -53,12 +53,7 @@ def _next_matricule(role: str) -> str:
 
 def _read_membre(membre_id: str, role: str) -> MembreProfile:
     row = db.fetch_one(
-        f"""
-        SELECT {MEMBRE_PROFILE_SELECT}
-        FROM membre m
-        LEFT JOIN commission c ON c.id = m.commission_id
-        WHERE m.id = %s
-        """,
+        f"SELECT {MEMBRE_PROFILE_SELECT} {MEMBRE_PROFILE_FROM} WHERE m.id = %s",
         (membre_id,),
         role=role,
     )
@@ -77,8 +72,10 @@ def create_membre(
         created = db.execute(
             """
             INSERT INTO membre (matricule, email, nom, prenoms, telephone, commission_id, groupe,
-                                statut, verifie)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'actif', false)
+                                genre, date_naissance, pays, ville, intendance_id, berger_referent_id,
+                                date_entree, cheminement_pastoral, statut, verifie)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    COALESCE(%s, 'nouveau'), 'actif', false)
             RETURNING id
             """,
             (
@@ -89,6 +86,14 @@ def create_membre(
                 payload.telephone,
                 payload.commission_id,
                 payload.groupe,
+                payload.genre,
+                payload.date_naissance,
+                payload.pays,
+                payload.ville,
+                payload.intendance_id,
+                payload.berger_referent_id,
+                payload.date_entree,
+                payload.cheminement_pastoral,
             ),
             role=user.role,
         )
@@ -122,8 +127,7 @@ def list_membres(
     rows = db.fetch_all(
         f"""
         SELECT {MEMBRE_PROFILE_SELECT}
-        FROM membre m
-        LEFT JOIN commission c ON c.id = m.commission_id
+        {MEMBRE_PROFILE_FROM}
         {where}
         ORDER BY m.matricule ASC
         LIMIT %s OFFSET %s

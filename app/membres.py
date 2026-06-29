@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import db
 from .auth import current_user
-from .mappers import MEMBRE_PROFILE_SELECT, membre_row_to_profile
+from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .qr import QrSigningUnavailable, issue_token
 from .schemas import EvenementOut, MembreProfile, NotificationOut, PresenceOut, QrToken, UserMe
 
@@ -37,12 +37,7 @@ def require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str,
 def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> MembreProfile:
     membre_id, role = ctx
     row = db.fetch_one(
-        f"""
-        SELECT {MEMBRE_PROFILE_SELECT}
-        FROM membre m
-        LEFT JOIN commission c ON c.id = m.commission_id
-        WHERE m.id = %s
-        """,
+        f"SELECT {MEMBRE_PROFILE_SELECT} {MEMBRE_PROFILE_FROM} WHERE m.id = %s",
         (membre_id,),
         role=role,
     )

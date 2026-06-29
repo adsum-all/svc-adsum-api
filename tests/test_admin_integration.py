@@ -90,3 +90,12 @@ def test_admin_can_list_commissions_and_events() -> None:
     events = client.get("/api/v1/admin/evenements", headers=headers)
     assert events.status_code == 200, events.text
     assert isinstance(events.json(), list)
+
+
+def test_admin_can_list_organization() -> None:
+    client = _client()
+    headers = _staff_headers(client, "admin")
+    for path in ("intendances", "coordinations", "sous-commissions", "bergers"):
+        res = client.get(f"/api/v1/admin/{path}", headers=headers)
+        assert res.status_code == 200, res.text
+        assert isinstance(res.json(), list)
