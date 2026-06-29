@@ -16,18 +16,21 @@ the API surfaces HTTP 503 instead of issuing an unsigned token.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import time
-
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from typing import TYPE_CHECKING
 
 from .config import settings
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 PREFIX = "ADSUM1"
 
 
 class QrSigningUnavailable(RuntimeError):
-    """Raised when no QR signing key is configured in the environment."""
+    """Raised when QR signing cannot be performed (no key, or library missing)."""
 
 
 def _b64u_encode(raw: bytes) -> str:
@@ -35,13 +38,19 @@ def _b64u_encode(raw: bytes) -> str:
 
 
 def _load_private_key() -> Ed25519PrivateKey:
+    # Imported lazily so a missing cryptography wheel degrades only the QR
+    # endpoint (HTTP 503) instead of breaking the whole API at import time.
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError as exc:  # pragma: no cover - depends on the deployment image
+        raise QrSigningUnavailable("the cryptography library is not available") from exc
     seed_b64 = settings.qr_signing_key.strip()
     if not seed_b64:
         raise QrSigningUnavailable("ADSUM_QR_SIGNING_KEY is not configured")
     padded = seed_b64 + "=" * (-len(seed_b64) % 4)
     try:
         seed = base64.urlsafe_b64decode(padded)
-    except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
+    except (ValueError, binascii.Error) as exc:
         raise QrSigningUnavailable("ADSUM_QR_SIGNING_KEY is not valid base64") from exc
     if len(seed) != 32:
         raise QrSigningUnavailable("ADSUM_QR_SIGNING_KEY must decode to 32 bytes")
