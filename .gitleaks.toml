@@ -1,0 +1,16 @@
+# Gitleaks configuration for adsum-api. Keeps all default rules and adds an
+# allowlist for test fixtures and the public QR token format, which are not real
+# secrets. No production secret is ever committed (they live outside the repo).
+title = "ADSUM API gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and the public ADSUM1 QR token format are not secrets"
+paths = [
+  '''tests/.*''',
+]
+regexes = [
+  '''ADSUM1\.[A-Za-z0-9_.\-]+''',
+]

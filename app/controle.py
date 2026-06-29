@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from . import db
 from .deps import require_roles
@@ -17,6 +17,8 @@ from .schemas import (
     CheckinMembre,
     CheckinRequest,
     CheckinResult,
+    CheckoutResult,
+    ControlMembre,
     EvenementOut,
     UserMe,
     VerifyRequest,
@@ -65,6 +67,98 @@ def open_or_upcoming_events(
         )
         for r in rows
     ]
+
+
+@router.get("/membres", response_model=list[ControlMembre])
+def directory(
+    user: Annotated[UserMe, Depends(require_control)],
+    q: Annotated[str | None, Query(max_length=120)] = None,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 1000,
+) -> list[ControlMembre]:
+    """Member directory the controller caches for offline lookup and manual entry."""
+    where = ""
+    params: tuple[object, ...] = ()
+    if q:
+        where = (
+            "WHERE m.matricule ILIKE %s OR m.nom ILIKE %s "
+            "OR m.prenoms ILIKE %s OR m.telephone ILIKE %s"
+        )
+        like = f"%{q}%"
+        params = (like, like, like, like)
+    rows = db.fetch_all(
+        f"""
+        SELECT m.id, m.matricule, m.nom, m.prenoms, m.statut, c.nom AS commission
+        FROM membre m
+        LEFT JOIN commission c ON c.id = m.commission_id
+        {where}
+        ORDER BY m.matricule ASC
+        LIMIT {limit}
+        """,
+        params,
+        role=user.role,
+    )
+    return [
+        ControlMembre(
+            id=str(r["id"]),
+            matricule=str(r["matricule"]),
+            nom=r["nom"] if isinstance(r["nom"], str) else None,
+            prenoms=r["prenoms"] if isinstance(r["prenoms"], str) else None,
+            commission=r["commission"] if isinstance(r["commission"], str) else None,
+            statut=str(r["statut"]),
+        )
+        for r in rows
+    ]
+
+
+@router.post("/checkout", response_model=CheckoutResult)
+def checkout(
+    payload: CheckinRequest,
+    user: Annotated[UserMe, Depends(require_control)],
+) -> CheckoutResult:
+    """Exit mode: a second scan records the member departure for the event."""
+    result = verify_token(payload.token)
+    if not result["valid"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(result.get("reason") or "invalid token"),
+        )
+    membre_id = result["membre_id"]
+    if not isinstance(membre_id, str):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="malformed payload")
+    membre = _lookup_membre(membre_id, user.role)
+    if not membre:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    updated = db.execute(
+        """
+        UPDATE presence SET depart = now()
+        WHERE membre_id = %s AND evenement_id = %s AND depart IS NULL
+        RETURNING depart
+        """,
+        (membre_id, payload.evenement_id),
+        role=user.role,
+    )
+    if updated:
+        depart = updated["depart"]
+        deja_sorti = False
+    else:
+        existing = db.fetch_one(
+            "SELECT depart FROM presence WHERE membre_id = %s AND evenement_id = %s",
+            (membre_id, payload.evenement_id),
+            role=user.role,
+        )
+        depart = existing["depart"] if existing else None
+        deja_sorti = True
+    return CheckoutResult(
+        membre=CheckinMembre(
+            id=str(membre["id"]),
+            matricule=str(membre["matricule"]),
+            nom=membre["nom"] if isinstance(membre["nom"], str) else None,
+            prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
+        ),
+        evenement_id=payload.evenement_id,
+        depart=depart,
+        deja_sorti=deja_sorti,
+    )
 
 
 @router.post("/verify", response_model=VerifyResult)

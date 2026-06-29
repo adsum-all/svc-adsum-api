@@ -167,3 +167,23 @@ class VerifyRequest(BaseModel):
     """Payload to verify a QR token without recording attendance."""
 
     token: str = Field(min_length=1)
+
+
+class ControlMembre(BaseModel):
+    """Member directory entry cached by the controller app for offline use."""
+
+    id: str
+    matricule: str
+    nom: str | None = None
+    prenoms: str | None = None
+    commission: str | None = None
+    statut: str
+
+
+class CheckoutResult(BaseModel):
+    """Outcome of recording a member departure (exit mode)."""
+
+    membre: CheckinMembre
+    evenement_id: str
+    depart: datetime | None = None
+    deja_sorti: bool = False
