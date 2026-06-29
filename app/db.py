@@ -56,3 +56,12 @@ def get_user_by_id(user_id: str, role: str) -> dict[str, Any] | None:
         (user_id,),
         role=role,
     )
+
+
+def execute(sql: str, params: tuple[Any, ...], role: str | None = None) -> dict[str, Any] | None:
+    """Run a write statement and return its RETURNING row, if any."""
+    with connection(role) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        if cur.description is None:
+            return None
+        return cur.fetchone()

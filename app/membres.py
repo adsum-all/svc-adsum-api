@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import db
 from .auth import current_user
+from .mappers import MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .qr import QrSigningUnavailable, issue_token
 from .schemas import EvenementOut, MembreProfile, PresenceOut, QrToken, UserMe
 
@@ -36,9 +37,8 @@ def require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str,
 def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> MembreProfile:
     membre_id, role = ctx
     row = db.fetch_one(
-        """
-        SELECT m.id, m.matricule, m.email, m.nom, m.prenoms, m.telephone,
-               m.groupe, m.photo_url, m.statut, m.verifie, c.nom AS commission
+        f"""
+        SELECT {MEMBRE_PROFILE_SELECT}
         FROM membre m
         LEFT JOIN commission c ON c.id = m.commission_id
         WHERE m.id = %s
@@ -48,19 +48,7 @@ def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> Memb
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
-    return MembreProfile(
-        id=str(row["id"]),
-        matricule=row["matricule"],
-        email=row["email"],
-        nom=row["nom"],
-        prenoms=row["prenoms"],
-        telephone=row["telephone"],
-        groupe=row["groupe"],
-        photo_url=row["photo_url"],
-        statut=row["statut"],
-        verifie=row["verifie"],
-        commission=row["commission"],
-    )
+    return membre_row_to_profile(row)
 
 
 @router.get("/me/evenements", response_model=list[EvenementOut])

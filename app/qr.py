@@ -24,7 +24,10 @@ from typing import TYPE_CHECKING
 from .config import settings
 
 if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+        Ed25519PublicKey,
+    )
 
 PREFIX = "ADSUM1"
 
@@ -35,6 +38,11 @@ class QrSigningUnavailable(RuntimeError):
 
 def _b64u_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64u_decode(value: str) -> bytes:
+    padded = value + "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(padded)
 
 
 def _load_private_key() -> Ed25519PrivateKey:
@@ -91,3 +99,75 @@ def public_key_b64() -> str:
     """Return the base64url Ed25519 public key, for terminals to verify tokens."""
     raw = _load_private_key().public_key().public_bytes_raw()
     return _b64u_encode(raw)
+
+
+def _load_public_key() -> Ed25519PublicKey:
+    # Use the configured public key when provided (verify-only deployment),
+    # otherwise derive it from the private signing seed.
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError as exc:  # pragma: no cover - depends on the deployment image
+        raise QrSigningUnavailable("the cryptography library is not available") from exc
+    pub_b64 = settings.qr_public_key.strip()
+    if pub_b64:
+        try:
+            raw = _b64u_decode(pub_b64)
+        except (ValueError, binascii.Error) as exc:
+            raise QrSigningUnavailable("ADSUM_QR_PUBLIC_KEY is not valid base64") from exc
+        if len(raw) != 32:
+            raise QrSigningUnavailable("ADSUM_QR_PUBLIC_KEY must decode to 32 bytes")
+        return Ed25519PublicKey.from_public_bytes(raw)
+    return _load_private_key().public_key()
+
+
+def verify_token(token: str) -> dict[str, object]:
+    """Verify a QR token offline and return its claims.
+
+    Parses the ``ADSUM1.<payload>.<signature>`` format, checks the Ed25519
+    signature against the configured public key and the expiry, then returns
+    ``{"valid": bool, "reason"?: str, "membre_id"?, "issued_at"?, "expires_at"?,
+    "key_version"?}``. A malformed token or a signing key error yields
+    ``{"valid": False, "reason": ...}`` rather than raising.
+    """
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != PREFIX:
+        return {"valid": False, "reason": "malformed token"}
+    _, payload_b64, sig_b64 = parts
+    try:
+        public_key = _load_public_key()
+    except QrSigningUnavailable as exc:
+        return {"valid": False, "reason": str(exc)}
+    from cryptography.exceptions import InvalidSignature
+
+    signing_input = f"{PREFIX}.{payload_b64}".encode("ascii")
+    try:
+        public_key.verify(_b64u_decode(sig_b64), signing_input)
+    except (ValueError, binascii.Error):
+        return {"valid": False, "reason": "malformed signature"}
+    except InvalidSignature:
+        return {"valid": False, "reason": "invalid signature"}
+    try:
+        payload = json.loads(_b64u_decode(payload_b64))
+    except (ValueError, binascii.Error):
+        return {"valid": False, "reason": "malformed payload"}
+    exp = payload.get("exp")
+    iat = payload.get("iat")
+    membre_id = payload.get("m")
+    if not isinstance(exp, int) or not isinstance(iat, int) or not isinstance(membre_id, str):
+        return {"valid": False, "reason": "malformed payload"}
+    if int(time.time()) > exp:
+        return {
+            "valid": False,
+            "reason": "expired",
+            "membre_id": membre_id,
+            "issued_at": iat,
+            "expires_at": exp,
+            "key_version": payload.get("kv"),
+        }
+    return {
+        "valid": True,
+        "membre_id": membre_id,
+        "issued_at": iat,
+        "expires_at": exp,
+        "key_version": payload.get("kv"),
+    }
