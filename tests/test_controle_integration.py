@@ -120,6 +120,15 @@ def test_verify_and_checkin_a_member(monkeypatch: pytest.MonkeyPatch) -> None:
         assert repeat.status_code == 200, repeat.text
         assert repeat.json()["deja_present"] is True
 
+        # Manual check-in by member id is idempotent with the QR one.
+        manual = client.post(
+            "/api/v1/controle/checkin-manuel",
+            headers=control_headers,
+            json={"membre_id": first["membre"]["id"], "evenement_id": evenement_id},
+        )
+        assert manual.status_code == 200, manual.text
+        assert manual.json()["deja_present"] is True
+
         # Exit mode: a second scan records the departure.
         out = client.post(
             "/api/v1/controle/checkout",

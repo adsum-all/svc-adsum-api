@@ -169,6 +169,13 @@ class VerifyRequest(BaseModel):
     token: str = Field(min_length=1)
 
 
+class ManualCheckinRequest(BaseModel):
+    """Payload to record a manual check-in by member id (no QR scan)."""
+
+    membre_id: str = Field(min_length=1)
+    evenement_id: str = Field(min_length=1)
+
+
 class ControlMembre(BaseModel):
     """Member directory entry cached by the controller app for offline use."""
 

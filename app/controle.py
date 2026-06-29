@@ -20,6 +20,7 @@ from .schemas import (
     CheckoutResult,
     ControlMembre,
     EvenementOut,
+    ManualCheckinRequest,
     UserMe,
     VerifyRequest,
     VerifyResult,
@@ -108,6 +109,49 @@ def directory(
         )
         for r in rows
     ]
+
+
+@router.post("/checkin-manuel", response_model=CheckinResult)
+def checkin_manuel(
+    payload: ManualCheckinRequest,
+    user: Annotated[UserMe, Depends(require_control)],
+) -> CheckinResult:
+    """Manual check-in by member id, logged with the 'manuelle' method (offline fallback)."""
+    membre = _lookup_membre(payload.membre_id, user.role)
+    if not membre:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    inserted = db.execute(
+        """
+        INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode)
+        VALUES (%s, %s, 'presentiel', now(), 'manuelle')
+        ON CONFLICT (membre_id, evenement_id) DO NOTHING
+        RETURNING arrivee
+        """,
+        (payload.membre_id, payload.evenement_id),
+        role=user.role,
+    )
+    if inserted:
+        arrivee = inserted["arrivee"]
+        deja_present = False
+    else:
+        existing = db.fetch_one(
+            "SELECT arrivee FROM presence WHERE membre_id = %s AND evenement_id = %s",
+            (payload.membre_id, payload.evenement_id),
+            role=user.role,
+        )
+        arrivee = existing["arrivee"] if existing else None
+        deja_present = True
+    return CheckinResult(
+        deja_present=deja_present,
+        membre=CheckinMembre(
+            id=str(membre["id"]),
+            matricule=str(membre["matricule"]),
+            nom=membre["nom"] if isinstance(membre["nom"], str) else None,
+            prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
+        ),
+        evenement_id=payload.evenement_id,
+        arrivee=arrivee,
+    )
 
 
 @router.post("/checkout", response_model=CheckoutResult)
