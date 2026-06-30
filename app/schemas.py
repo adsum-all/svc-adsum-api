@@ -383,6 +383,8 @@ class StatistiquesOut(BaseModel):
     intendances_total: int
     par_commission: list[dict[str, object]]
     par_cheminement: list[dict[str, object]]
+    entrees_mensuelles: list[dict[str, object]]
+    membres_a_verifier: list[dict[str, object]]
 
 
 class CommissionOut(BaseModel):
