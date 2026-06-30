@@ -283,6 +283,42 @@ class DoublonGroupe(BaseModel):
     membres: list[MembreProfile]
 
 
+class CreateComptage(BaseModel):
+    """A manual counting line for a volet B (public) event."""
+
+    evenement_id: str = Field(min_length=1)
+    segment: str | None = None
+    total_membres: int = Field(default=0, ge=0)
+    total_anonyme: int = Field(default=0, ge=0)
+
+
+class ComptageLigne(BaseModel):
+    id: str
+    segment: str | None = None
+    total_membres: int
+    total_anonyme: int
+    horodatage: datetime | None = None
+
+
+class ComptageResume(BaseModel):
+    """Aggregated attendance for a volet B event: members + non-members."""
+
+    evenement_id: str
+    titre: str | None = None
+    membres_scannes: int
+    non_membres: int
+    total_participants: int
+    lignes: list[ComptageLigne]
+
+
+class PublicEvent(BaseModel):
+    """Minimal public information about a volet B event for self check-in."""
+
+    id: str
+    titre: str
+    ouvert: bool
+
+
 class AuditEntry(BaseModel):
     """One audit log entry tracing a sensitive action."""
 
