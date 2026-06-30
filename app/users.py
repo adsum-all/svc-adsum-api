@@ -13,7 +13,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import audit, db
 from .deps import require_roles
-from .schemas import CreateUtilisateur, UpdateUtilisateur, UserMe, UtilisateurOut
+from .schemas import (
+    BulkCreateUtilisateurs,
+    BulkResult,
+    CreateUtilisateur,
+    UpdateUtilisateur,
+    UserMe,
+    UtilisateurOut,
+)
 from .security import hash_password
 
 router = APIRouter(prefix="/api/v1/admin/utilisateurs", tags=["utilisateurs"])
@@ -74,6 +81,37 @@ def create_utilisateur(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="read failed")
     audit.log(user.id, user.role, "creation_compte", "utilisateur", new_id, {"role": payload.role})
     return _to_out(row)
+
+
+@router.post("/lot", response_model=BulkResult)
+def bulk_create(
+    payload: BulkCreateUtilisateurs,
+    user: Annotated[UserMe, Depends(require_super)],
+) -> BulkResult:
+    """Create access accounts in bulk; profiles are completed later by each member."""
+    crees = 0
+    doublons: list[str] = []
+    erreurs: list[dict[str, str]] = []
+    for compte in payload.comptes:
+        try:
+            created = db.execute(
+                """
+                INSERT INTO utilisateur (email, hash_mdp, role, actif)
+                VALUES (%s, %s, %s, true)
+                ON CONFLICT (email) DO NOTHING
+                RETURNING id
+                """,
+                (compte.email, hash_password(compte.password), compte.role),
+                role=user.role,
+            )
+            if created:
+                crees += 1
+            else:
+                doublons.append(str(compte.email))
+        except Exception as exc:  # noqa: BLE001 - report per-row, keep going
+            erreurs.append({"email": str(compte.email), "raison": type(exc).__name__})
+    audit.log(user.id, user.role, "creation_comptes_masse", "utilisateur", None, {"crees": crees})
+    return BulkResult(crees=crees, doublons=doublons, erreurs=erreurs)
 
 
 @router.patch("/{utilisateur_id}", response_model=UtilisateurOut)

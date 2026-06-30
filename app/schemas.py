@@ -253,6 +253,28 @@ class UpdateUtilisateur(BaseModel):
     double_facteur: bool | None = None
 
 
+class BulkCompte(BaseModel):
+    """One account in a bulk creation request."""
+
+    email: EmailStr
+    password: str = Field(min_length=8)
+    role: str = Field(default="direction", pattern=_ROLE)
+
+
+class BulkCreateUtilisateurs(BaseModel):
+    """Bulk account creation: one line per person, unique email."""
+
+    comptes: list[BulkCompte] = Field(min_length=1, max_length=1000)
+
+
+class BulkResult(BaseModel):
+    """Outcome of a bulk account creation."""
+
+    crees: int
+    doublons: list[str]
+    erreurs: list[dict[str, str]]
+
+
 class DoublonGroupe(BaseModel):
     """A group of members that look like duplicates of the same person."""
 
