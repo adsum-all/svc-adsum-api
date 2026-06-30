@@ -6,6 +6,7 @@ member by ``membre_id`` so a member only ever reads their own records.
 """
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -15,7 +16,16 @@ from . import db
 from .auth import current_user
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .qr import QrSigningUnavailable, issue_token
-from .schemas import EvenementOut, MembreProfile, NotificationOut, PresenceOut, QrToken, UserMe
+from .schemas import (
+    EvenementOut,
+    MembreProfile,
+    NotificationOut,
+    PresenceOut,
+    QrToken,
+    RecensementOut,
+    RecensementReponseIn,
+    UserMe,
+)
 
 router = APIRouter(prefix="/api/v1/membres", tags=["membres"])
 
@@ -129,6 +139,61 @@ def my_notifications(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -
         )
         for r in rows
     ]
+
+
+@router.get("/me/recensement", response_model=RecensementOut | None)
+def my_recensement(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> RecensementOut | None:
+    membre_id, role = ctx
+    row = db.fetch_one(
+        """
+        SELECT r.id, r.annee, r.statut,
+               EXISTS (
+                   SELECT 1 FROM recensement_reponse rr
+                   WHERE rr.recensement_id = r.id AND rr.membre_id = %s
+               ) AS deja_repondu
+        FROM recensement r
+        WHERE r.statut = 'ouvert'
+        ORDER BY r.annee DESC
+        LIMIT 1
+        """,
+        (membre_id,),
+        role=role,
+    )
+    if not row:
+        return None
+    return RecensementOut(
+        id=str(row["id"]),
+        annee=int(row["annee"]),
+        statut=row["statut"],
+        ouvert=row["statut"] == "ouvert",
+        deja_repondu=bool(row["deja_repondu"]),
+    )
+
+
+@router.post("/me/recensement", status_code=status.HTTP_201_CREATED)
+def submit_recensement(
+    payload: RecensementReponseIn,
+    ctx: Annotated[tuple[str, str], Depends(require_membre)],
+) -> dict[str, object]:
+    membre_id, role = ctx
+    recensement = db.fetch_one(
+        "SELECT id FROM recensement WHERE statut = 'ouvert' ORDER BY annee DESC LIMIT 1",
+        (),
+        role=role,
+    )
+    if not recensement:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no open census")
+    db.execute(
+        """
+        INSERT INTO recensement_reponse (recensement_id, membre_id, reponses, soumis_le)
+        VALUES (%s, %s, %s::jsonb, now())
+        ON CONFLICT (recensement_id, membre_id)
+        DO UPDATE SET reponses = EXCLUDED.reponses, soumis_le = now()
+        """,
+        (str(recensement["id"]), membre_id, json.dumps(payload.model_dump())),
+        role=role,
+    )
+    return {"ok": True}
 
 
 @router.get("/me/qr", response_model=QrToken)
