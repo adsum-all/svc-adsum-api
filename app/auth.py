@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
@@ -47,7 +47,7 @@ class ResetRequest(BaseModel):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest) -> TokenResponse:
+def login(payload: LoginRequest, request: Request) -> TokenResponse:
     user = db.get_user_by_email(payload.email)
     if not user or not user["actif"] or not verify_password(payload.password, user["hash_mdp"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
@@ -58,8 +58,31 @@ def login(payload: LoginRequest) -> TokenResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="temporary password expired, contact the administration",
         )
+    _record_session(str(user["id"]), user["role"], request)
     token = create_access_token(subject=str(user["id"]), role=user["role"])
     return TokenResponse(access_token=token, role=user["role"], doit_changer_mdp=bool(user.get("doit_changer_mdp")))
+
+
+def _client_ip(request: Request) -> str | None:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def _record_session(user_id: str, role: str, request: Request) -> None:
+    """Log the connection (IP, device) for security tracking. Never breaks login."""
+    try:
+        ip = _client_ip(request)
+        ua = (request.headers.get("user-agent") or "")[:300]
+        db.execute(
+            "INSERT INTO session (utilisateur_id, ip, appareil, cree_le) VALUES (%s, %s::inet, %s, now())",
+            (user_id, ip, ua),
+            role=role,
+        )
+        db.execute("UPDATE utilisateur SET dernier_login = now() WHERE id = %s", (user_id,), role=role)
+    except Exception:  # noqa: BLE001 - tracking must never block authentication
+        pass
 
 
 def _temp_expired(expire_le: object) -> bool:
