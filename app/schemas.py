@@ -100,6 +100,35 @@ class NotificationOut(BaseModel):
     cree_le: datetime | None = None
 
 
+class ChangePasswordIn(BaseModel):
+    """Change the member's own password (first login and settings)."""
+
+    ancien: str
+    nouveau: str
+
+
+class EngagementAcceptIn(BaseModel):
+    """Record the member's acceptance of one engagement."""
+
+    type: str
+    version: str = "v1"
+
+
+class DocumentSubmitIn(BaseModel):
+    """Member submission of a requested document (metadata, not the binary)."""
+
+    type: str = "justificatif"
+    libelle: str | None = None
+
+
+class ParticipationIn(BaseModel):
+    """Validate an online session participation, with an optional rating."""
+
+    evenement_id: str
+    note: int | None = None
+    commentaire: str | None = None
+
+
 class DocumentOut(BaseModel):
     """One piece of the member's verification dossier and its processing status."""
 
