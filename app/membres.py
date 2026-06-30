@@ -17,17 +17,22 @@ from .auth import current_user
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .qr import QrSigningUnavailable, issue_token
 from .schemas import (
+    ChangePasswordIn,
     DocumentOut,
+    DocumentSubmitIn,
+    EngagementAcceptIn,
     EngagementOut,
     EvenementOut,
     MembreProfile,
     NotificationOut,
+    ParticipationIn,
     PresenceOut,
     QrToken,
     RecensementOut,
     RecensementReponseIn,
     UserMe,
 )
+from .security import hash_password, verify_password
 
 router = APIRouter(prefix="/api/v1/membres", tags=["membres"])
 
@@ -246,6 +251,95 @@ def submit_recensement(
         DO UPDATE SET reponses = EXCLUDED.reponses, soumis_le = now()
         """,
         (str(recensement["id"]), membre_id, json.dumps(payload.model_dump())),
+        role=role,
+    )
+    return {"ok": True}
+
+
+@router.post("/me/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    payload: ChangePasswordIn, user: Annotated[UserMe, Depends(current_user)]
+) -> None:
+    """Change the member's own password after verifying the current one."""
+    if len(payload.nouveau) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password too short")
+    row = db.fetch_one("SELECT hash_mdp FROM utilisateur WHERE id = %s", (user.id,), role=user.role)
+    if not row or not verify_password(payload.ancien, str(row["hash_mdp"])):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="current password invalid")
+    db.execute(
+        "UPDATE utilisateur SET hash_mdp = %s WHERE id = %s",
+        (hash_password(payload.nouveau), user.id),
+        role=user.role,
+    )
+
+
+@router.post("/me/engagements/accepter", response_model=EngagementOut, status_code=status.HTTP_201_CREATED)
+def accept_engagement(
+    payload: EngagementAcceptIn, ctx: Annotated[tuple[str, str], Depends(require_membre)]
+) -> EngagementOut:
+    """Record the member's signed acceptance of an engagement (consent proof)."""
+    membre_id, role = ctx
+    created = db.execute(
+        """
+        INSERT INTO engagement (membre_id, type, version, signe_le, hash_preuve)
+        VALUES (%s, %s, %s, now(), md5(%s || now()::text))
+        RETURNING id, type, version, signe_le
+        """,
+        (membre_id, payload.type, payload.version, membre_id),
+        role=role,
+    )
+    if not created:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="engagement not recorded")
+    return EngagementOut(
+        id=str(created["id"]),
+        type=created["type"],
+        version=created["version"],
+        signe=created["signe_le"] is not None,
+        signe_le=created["signe_le"],
+    )
+
+
+@router.post("/me/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+def submit_document(
+    payload: DocumentSubmitIn, ctx: Annotated[tuple[str, str], Depends(require_membre)]
+) -> DocumentOut:
+    """Register a member-submitted document (metadata); the file pipeline is separate."""
+    membre_id, role = ctx
+    created = db.execute(
+        """
+        INSERT INTO document (membre_id, type, statut, demande_le, recu_le)
+        VALUES (%s, %s, 'recu', now(), now())
+        RETURNING id, type, statut, demande_le, recu_le, traite_le
+        """,
+        (membre_id, payload.type),
+        role=role,
+    )
+    if not created:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="document not registered")
+    return DocumentOut(
+        id=str(created["id"]),
+        type=created["type"],
+        statut=created["statut"],
+        demande_le=created["demande_le"],
+        recu_le=created["recu_le"],
+        traite_le=created["traite_le"],
+    )
+
+
+@router.post("/me/participation", status_code=status.HTTP_201_CREATED)
+def participer_session(
+    payload: ParticipationIn, ctx: Annotated[tuple[str, str], Depends(require_membre)]
+) -> dict[str, object]:
+    """Validate an online session participation, captured as an attendance record."""
+    membre_id, role = ctx
+    db.execute(
+        """
+        INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode)
+        VALUES (%s, %s, 'en_ligne', now(), 'lien')
+        ON CONFLICT (membre_id, evenement_id)
+        DO UPDATE SET depart = now()
+        """,
+        (membre_id, payload.evenement_id),
         role=role,
     )
     return {"ok": True}
