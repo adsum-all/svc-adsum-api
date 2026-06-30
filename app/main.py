@@ -15,6 +15,7 @@ from .config import settings
 from .controle import router as controle_router
 from .demandes import router as demandes_router
 from .fichiers import router as fichiers_router
+from .gestion import router as gestion_router
 from .inscription import router as inscription_router
 from .membres import router as membres_router
 from .organisation import router as organisation_router
@@ -52,6 +53,7 @@ app.include_router(demandes_router)
 app.include_router(fichiers_router)
 app.include_router(inscription_router)
 app.include_router(reference_router)
+app.include_router(gestion_router)
 
 
 @app.get("/health", tags=["system"])
