@@ -19,6 +19,7 @@ from .gestion import router as gestion_router
 from .inscription import router as inscription_router
 from .membres import router as membres_router
 from .organisation import router as organisation_router
+from .organisation_admin import router as organisation_admin_router
 from .reference import router as reference_router
 from .terminaux import router as terminaux_router
 from .users import router as users_router
@@ -42,6 +43,7 @@ app.include_router(membres_router)
 app.include_router(admin_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
+app.include_router(organisation_admin_router)
 app.include_router(analytics_router)
 app.include_router(users_router)
 app.include_router(terminaux_router)

@@ -163,11 +163,14 @@ def update_membre(
 @router.get("/commissions", response_model=list[CommissionOut])
 def list_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> list[CommissionOut]:
     rows = db.fetch_all(
-        "SELECT id, nom, description FROM commission ORDER BY nom ASC",
+        "SELECT id, nom, description, publie FROM commission ORDER BY nom ASC",
         (),
         role=user.role,
     )
-    return [CommissionOut(id=str(r["id"]), nom=r["nom"], description=r["description"]) for r in rows]
+    return [
+        CommissionOut(id=str(r["id"]), nom=r["nom"], description=r["description"], publie=bool(r["publie"]))
+        for r in rows
+    ]
 
 
 @router.post("/commissions", response_model=CommissionOut, status_code=status.HTTP_201_CREATED)
