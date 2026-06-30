@@ -64,6 +64,22 @@ def test_member_notifications_is_a_list() -> None:
     assert isinstance(res.json(), list)
 
 
+def test_member_recensement() -> None:
+    client = _client()
+    headers = _member_headers(client)
+    census = client.get("/api/v1/membres/me/recensement", headers=headers)
+    assert census.status_code == 200, census.text
+    body = census.json()
+    if body is not None:
+        assert body["ouvert"] is True
+        submitted = client.post(
+            "/api/v1/membres/me/recensement",
+            headers=headers,
+            json={"confirme_engagement": True, "infos_a_jour": True, "reaccepte_engagements": True},
+        )
+        assert submitted.status_code == 201, submitted.text
+
+
 def test_member_qr_is_signed(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.config import settings
 

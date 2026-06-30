@@ -100,6 +100,24 @@ class NotificationOut(BaseModel):
     cree_le: datetime | None = None
 
 
+class RecensementOut(BaseModel):
+    """The current annual census, and whether the member already answered."""
+
+    id: str
+    annee: int
+    statut: str
+    ouvert: bool
+    deja_repondu: bool
+
+
+class RecensementReponseIn(BaseModel):
+    """The member's answer to the annual census."""
+
+    confirme_engagement: bool
+    infos_a_jour: bool
+    reaccepte_engagements: bool
+
+
 class QrToken(BaseModel):
     """A signed, short-lived QR token the member shows for check-in."""
 
