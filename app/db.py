@@ -54,7 +54,9 @@ def fetch_all(sql: str, params: tuple[Any, ...], role: str | None = None) -> lis
 
 def get_user_by_email(email: str) -> dict[str, Any] | None:
     return fetch_one(
-        "SELECT id, email, hash_mdp, role, membre_id, actif FROM utilisateur WHERE email = %s",
+        "SELECT id, email, hash_mdp, role, membre_id, actif, "
+        "mdp_temporaire, mdp_expire_le, doit_changer_mdp "
+        "FROM utilisateur WHERE email = %s",
         (email,),
     )
 
