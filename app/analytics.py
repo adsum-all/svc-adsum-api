@@ -108,6 +108,35 @@ def statistiques(user: Annotated[UserMe, Depends(require_staff)]) -> Statistique
         (),
         role=role,
     )
+    entrees_mensuelles = db.fetch_all(
+        """
+        SELECT to_char(date_trunc('month', mois), 'YYYY-MM') AS mois,
+               count(m.id) AS total
+        FROM generate_series(
+                 date_trunc('month', current_date) - interval '11 months',
+                 date_trunc('month', current_date),
+                 interval '1 month'
+             ) AS mois
+        LEFT JOIN membre m
+               ON m.date_entree IS NOT NULL
+              AND date_trunc('month', m.date_entree) = date_trunc('month', mois)
+        GROUP BY mois
+        ORDER BY mois ASC
+        """,
+        (),
+        role=role,
+    )
+    a_verifier = db.fetch_all(
+        """
+        SELECT id, matricule, prenoms, nom
+        FROM membre
+        WHERE NOT verifie
+        ORDER BY cree_le DESC
+        LIMIT 8
+        """,
+        (),
+        role=role,
+    )
     m = membres or {}
     s = scalar or {}
     return StatistiquesOut(
@@ -122,5 +151,17 @@ def statistiques(user: Annotated[UserMe, Depends(require_staff)]) -> Statistique
         par_commission=[{"commission": r["commission"], "total": int(r["total"])} for r in par_commission],
         par_cheminement=[
             {"cheminement": r["cheminement"], "total": int(r["total"])} for r in par_cheminement
+        ],
+        entrees_mensuelles=[
+            {"mois": r["mois"], "total": int(r["total"])} for r in entrees_mensuelles
+        ],
+        membres_a_verifier=[
+            {
+                "id": str(r["id"]),
+                "matricule": r["matricule"],
+                "prenoms": r["prenoms"],
+                "nom": r["nom"],
+            }
+            for r in a_verifier
         ],
     )
