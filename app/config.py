@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     qr_public_key: str = ""
     qr_key_version: int = 1
     qr_ttl_seconds: int = 90
+    # E-mail gateway, provider switchable by the business at any time (no lock-in).
+    # ADSUM_EMAIL_PROVIDER: console | smtp | brevo | resend
+    email_provider: str = "console"
+    email_from: str = "no-reply@sacerdoceroyal.info"
+    email_api_key: str = ""
+    email_smtp_host: str = ""
+    email_smtp_port: int = 587
+    email_smtp_user: str = ""
+    email_smtp_password: str = ""
 
     @property
     def database_dsn(self) -> str:
