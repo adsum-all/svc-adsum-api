@@ -75,6 +75,34 @@ def test_super_admin_manages_accounts() -> None:
         _delete_user(user_id)
 
 
+def _delete_users_by_email(emails: list[str]) -> None:
+    import psycopg
+
+    dsn = os.environ["ADSUM_DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM utilisateur WHERE email = ANY(%s)", (emails,))
+        conn.commit()
+
+
+def test_super_admin_bulk_creates_accounts() -> None:
+    creds = json.loads(ACCOUNTS.read_text(encoding="utf-8"))["super_admin"]
+    client = _client()
+    headers = _headers(client, creds["email"], creds["password"])
+    emails = [f"itest-bulk-{uuid.uuid4().hex[:8]}@example.com" for _ in range(3)]
+    comptes = [{"email": e, "password": "Str0ngP4ssword!", "role": "direction"} for e in emails]
+    try:
+        res = client.post("/api/v1/admin/utilisateurs/lot", headers=headers, json={"comptes": comptes})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["crees"] == 3
+        # A second run reports them all as duplicates.
+        again = client.post("/api/v1/admin/utilisateurs/lot", headers=headers, json={"comptes": comptes})
+        assert again.json()["crees"] == 0
+        assert len(again.json()["doublons"]) == 3
+    finally:
+        _delete_users_by_email(emails)
+
+
 def test_admin_cannot_create_account() -> None:
     creds = json.loads(ACCOUNTS.read_text(encoding="utf-8"))["staff"]["admin"]
     client = _client()
