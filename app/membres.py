@@ -17,6 +17,8 @@ from .auth import current_user
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .qr import QrSigningUnavailable, issue_token
 from .schemas import (
+    DocumentOut,
+    EngagementOut,
     EvenementOut,
     MembreProfile,
     NotificationOut,
@@ -136,6 +138,59 @@ def my_notifications(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -
             corps=r["corps"],
             lu=r["lu"],
             cree_le=r["cree_le"],
+        )
+        for r in rows
+    ]
+
+
+@router.get("/me/documents", response_model=list[DocumentOut])
+def my_documents(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[DocumentOut]:
+    """The member's verification dossier: each requested or received piece and its status."""
+    membre_id, role = ctx
+    rows = db.fetch_all(
+        """
+        SELECT id, type, statut, demande_le, recu_le, traite_le
+        FROM document
+        WHERE membre_id = %s
+        ORDER BY demande_le DESC NULLS LAST
+        """,
+        (membre_id,),
+        role=role,
+    )
+    return [
+        DocumentOut(
+            id=str(r["id"]),
+            type=r["type"],
+            statut=r["statut"],
+            demande_le=r["demande_le"],
+            recu_le=r["recu_le"],
+            traite_le=r["traite_le"],
+        )
+        for r in rows
+    ]
+
+
+@router.get("/me/engagements", response_model=list[EngagementOut])
+def my_engagements(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[EngagementOut]:
+    """The engagements the member has signed, or that remain to be signed."""
+    membre_id, role = ctx
+    rows = db.fetch_all(
+        """
+        SELECT id, type, version, signe_le
+        FROM engagement
+        WHERE membre_id = %s
+        ORDER BY signe_le DESC NULLS LAST
+        """,
+        (membre_id,),
+        role=role,
+    )
+    return [
+        EngagementOut(
+            id=str(r["id"]),
+            type=r["type"],
+            version=r["version"],
+            signe=r["signe_le"] is not None,
+            signe_le=r["signe_le"],
         )
         for r in rows
     ]
