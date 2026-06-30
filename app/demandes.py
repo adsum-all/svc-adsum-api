@@ -253,6 +253,96 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
     return _demande_row(row)
 
 
+# --- Final validation of member data modifications -------------------------
+
+# Defense-in-depth whitelist: only these member columns can be committed from a
+# pending proposal, even though update_mon_profil already filtered the input.
+_COMMITTABLE_FIELDS = frozenset(
+    {
+        "prenoms", "nom", "telephone", "date_naissance", "genre", "pays", "ville",
+        "commission_id", "intendance_id", "tribu_id", "groupe", "profession",
+        "niveau_etudes", "situation_matrimoniale", "type_mariage",
+        "baptise", "confirme", "premiere_communion",
+    }
+)
+
+
+class ModifDecision(BaseModel):
+    decision: str  # 'valider' | 'rejeter'
+
+
+@router.get("/admin/demandes/{demande_id}/modifications")
+def admin_demande_modifications(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> list[dict[str, object]]:
+    """Pending and past member modifications attached to this request, as a diff."""
+    rows = db.fetch_all(
+        "SELECT id, valeurs, valeurs_avant, statut, propose_le, decide_le "
+        "FROM modification_membre WHERE demande_id = %s ORDER BY propose_le DESC",
+        (demande_id,),
+        role=user.role,
+    )
+    out: list[dict[str, object]] = []
+    for r in rows:
+        valeurs = r["valeurs"] or {}
+        avant = r["valeurs_avant"] or {}
+        diff = [{"champ": k, "avant": avant.get(k), "apres": v} for k, v in valeurs.items()]
+        out.append(
+            {
+                "id": str(r["id"]),
+                "statut": r["statut"],
+                "propose_le": r["propose_le"].isoformat() if r["propose_le"] else None,
+                "decide_le": r["decide_le"].isoformat() if r["decide_le"] else None,
+                "diff": diff,
+            }
+        )
+    return out
+
+
+@router.post("/admin/demandes/{demande_id}/modifications/decision")
+def admin_decide_modification(
+    demande_id: str, payload: ModifDecision, user: Annotated[UserMe, Depends(require_staff)]
+) -> dict[str, object]:
+    """Give the final validation on a pending member modification.
+
+    On 'valider' the proposed values are committed to the member record, the
+    unlocked fields are re-locked and the request is resolved. On 'rejeter'
+    nothing is committed. The member is notified either way.
+    """
+    if payload.decision not in ("valider", "rejeter"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="decision must be valider or rejeter")
+    mod = db.fetch_one(
+        "SELECT id, membre_id, valeurs FROM modification_membre "
+        "WHERE demande_id = %s AND statut = 'en_attente' ORDER BY propose_le DESC LIMIT 1",
+        (demande_id,),
+        role=user.role,
+    )
+    if not mod:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no pending modification")
+    membre_id = str(mod["membre_id"])
+    if payload.decision == "valider":
+        applied = {k: v for k, v in (mod["valeurs"] or {}).items() if k in _COMMITTABLE_FIELDS}
+        if applied:
+            sets = ", ".join(f"{k} = %s" for k in applied)
+            db.execute(f"UPDATE membre SET {sets} WHERE id = %s", (*applied.values(), membre_id), role=user.role)
+        db.execute(
+            "UPDATE modification_membre SET statut = 'validee', decide_le = now(), decide_par = %s WHERE id = %s",
+            (user.id, str(mod["id"])),
+            role=user.role,
+        )
+        db.execute("UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s", (membre_id,), role=user.role)
+        db.execute("UPDATE demande SET statut = 'resolue', maj_le = now() WHERE id = %s", (demande_id,), role=user.role)
+        _notify_member(demande_id, user.role, "Modification validée", "Votre modification a été validée et enregistrée.")
+        return {"ok": True, "statut": "validee", "champs": list(applied)}
+    db.execute(
+        "UPDATE modification_membre SET statut = 'rejetee', decide_le = now(), decide_par = %s WHERE id = %s",
+        (user.id, str(mod["id"])),
+        role=user.role,
+    )
+    db.execute("UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s", (membre_id,), role=user.role)
+    db.execute("UPDATE demande SET statut = 'refusee', maj_le = now() WHERE id = %s", (demande_id,), role=user.role)
+    _notify_member(demande_id, user.role, "Modification refusée", "Votre modification n'a pas été validée. Contactez l'administration.")
+    return {"ok": True, "statut": "rejetee"}
+
+
 def _notify_member(demande_id: str, role: str, titre: str, corps: str) -> None:
     row = db.fetch_one("SELECT membre_id FROM demande WHERE id = %s", (demande_id,), role=role)
     if not row:

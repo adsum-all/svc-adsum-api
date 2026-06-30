@@ -10,6 +10,7 @@ Backed by the 0013 schema. Reuses the existing e-mail gateway and audit log.
 # ruff: noqa: E501
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -221,8 +222,14 @@ class ProfilUpdate(BaseModel):
 
 @router.patch("/membres/me/profil")
 def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Depends(_membre_ctx)]) -> dict[str, object]:
-    """Member self-edits their profile during registration (statut incomplet) or on
-    fields the administration has unlocked after an approved modification request."""
+    """Member self-edits their profile.
+
+    During registration (statut incomplet), edits are written straight to the
+    record because the whole dossier is validated afterwards by the admin. On a
+    verified member, edits are only allowed on admin-unlocked fields and are not
+    committed directly: they are stored as a pending proposal awaiting a final
+    admin validation (see demandes.py), like a bank or a public administration.
+    """
     membre_id, role = ctx
     row = db.fetch_one("SELECT statut_inscription, champs_deverrouilles FROM membre WHERE id = %s", (membre_id,), role=role)
     if not row:
@@ -231,16 +238,38 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
     if not fields:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
     incomplet = row["statut_inscription"] in ("incomplet", "modification_demandee")
+    if incomplet:
+        sets = ", ".join(f"{k} = %s" for k in fields)
+        db.execute(f"UPDATE membre SET {sets} WHERE id = %s", (*fields.values(), membre_id), role=role)
+        return {"ok": True, "updated": list(fields)}
+    # Verified member: only admin-unlocked fields, and never a direct write.
     unlocked = set(row["champs_deverrouilles"] or [])
-    if not incomplet:
-        # Outside registration, only admin-unlocked fields may be touched.
-        forbidden = [k for k in fields if k not in unlocked]
-        if forbidden:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"locked_fields": forbidden})
-    sets = ", ".join(f"{k} = %s" for k in fields)
-    params = [*fields.values(), membre_id]
-    db.execute(f"UPDATE membre SET {sets} WHERE id = %s", tuple(params), role=role)
-    return {"ok": True, "updated": list(fields)}
+    forbidden = [k for k in fields if k not in unlocked]
+    if forbidden:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"locked_fields": forbidden})
+    return _propose_modification(membre_id, role, fields)
+
+
+def _propose_modification(membre_id: str, role: str, fields: dict[str, object]) -> dict[str, object]:
+    """Store the member's edits as a pending modification awaiting admin validation."""
+    columns = ", ".join(fields)
+    before = db.fetch_one(f"SELECT {columns} FROM membre WHERE id = %s", (membre_id,), role=role) or {}
+    demande = db.fetch_one(
+        "SELECT id FROM demande WHERE membre_id = %s AND type = 'modification_info' "
+        "AND statut NOT IN ('resolue', 'refusee') ORDER BY maj_le DESC LIMIT 1",
+        (membre_id,),
+        role=role,
+    )
+    demande_id = str(demande["id"]) if demande else None
+    db.execute(
+        "INSERT INTO modification_membre (membre_id, demande_id, valeurs, valeurs_avant) "
+        "VALUES (%s, %s, %s::jsonb, %s::jsonb)",
+        (membre_id, demande_id, json.dumps(fields, default=str), json.dumps(dict(before), default=str)),
+        role=role,
+    )
+    if demande_id:
+        db.execute("UPDATE demande SET statut = 'en_validation', maj_le = now() WHERE id = %s", (demande_id,), role=role)
+    return {"ok": True, "pending_validation": True, "champs": list(fields)}
 
 
 @router.get("/membres/me/inscription")
