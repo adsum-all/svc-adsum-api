@@ -64,25 +64,24 @@ def verify_code(email: str, purpose: str, code: str) -> bool:
 
 
 class EmailProvider(Protocol):
-    def send(self, to: str, subject: str, text: str) -> None: ...
+    def send(self, to: str, subject: str, text: str, html: str) -> None: ...
 
 
 class ConsoleProvider:
     """Development provider: records the message instead of sending it."""
 
-    def send(self, to: str, subject: str, text: str) -> None:
-        # Intentionally not printing the code to shared logs in production use;
-        # this provider is only selected in development.
-        print(f"[email:console] to={to} subject={subject!r} body_len={len(text)}")
+    def send(self, to: str, subject: str, text: str, html: str) -> None:
+        print(f"[email:console] to={to} subject={subject!r} text_len={len(text)} html_len={len(html)}")
 
 
 class SMTPProvider:
-    def send(self, to: str, subject: str, text: str) -> None:
+    def send(self, to: str, subject: str, text: str, html: str) -> None:
         msg = EmailMessage()
         msg["From"] = settings.email_from
         msg["To"] = to
         msg["Subject"] = subject
         msg.set_content(text)
+        msg.add_alternative(html, subtype="html")
         host, port = settings.email_smtp_host, settings.email_smtp_port
         if port == 465:
             with smtplib.SMTP_SSL(host, port, timeout=15) as srv:
@@ -98,7 +97,7 @@ class SMTPProvider:
 class BrevoProvider:
     """Brevo transactional HTTP API (requires an xkeysib API key, not the SMTP key)."""
 
-    def send(self, to: str, subject: str, text: str) -> None:
+    def send(self, to: str, subject: str, text: str, html: str) -> None:
         _http_post(
             "https://api.brevo.com/v3/smtp/email",
             {"api-key": settings.email_api_key},
@@ -107,16 +106,17 @@ class BrevoProvider:
                 "to": [{"email": to}],
                 "subject": subject,
                 "textContent": text,
+                "htmlContent": html,
             },
         )
 
 
 class ResendProvider:
-    def send(self, to: str, subject: str, text: str) -> None:
+    def send(self, to: str, subject: str, text: str, html: str) -> None:
         _http_post(
             "https://api.resend.com/emails",
             {"Authorization": f"Bearer {settings.email_api_key}"},
-            {"from": settings.email_from, "to": [to], "subject": subject, "text": text},
+            {"from": settings.email_from, "to": [to], "subject": subject, "text": text, "html": html},
         )
 
 
@@ -128,32 +128,63 @@ _PROVIDERS: dict[str, type[EmailProvider]] = {
 }
 
 
-def _provider() -> EmailProvider:
-    name = (settings.email_provider or "console").lower()
-    cls = _PROVIDERS.get(name, ConsoleProvider)
-    return cls()
+def _provider_chain() -> list[str]:
+    """The ordered list of providers to try (comma-separated, no lock-in)."""
+    raw = (settings.email_provider or "console").lower()
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    return names or ["console"]
 
 
-def send_email(to: str, subject: str, text: str) -> bool:
-    """Send via the configured provider; never raise to the caller path."""
-    try:
-        _provider().send(to, subject, text)
-        return True
-    except Exception:
-        return False
+def send_email(to: str, subject: str, text: str, html: str) -> tuple[bool, str]:
+    """Send via the configured providers in order; never raise to the caller path."""
+    last = "console"
+    for name in _provider_chain():
+        last = name
+        cls = _PROVIDERS.get(name, ConsoleProvider)
+        try:
+            cls().send(to, subject, text, html)
+            return True, name
+        except Exception:
+            continue
+    return False, last
 
 
+PURPOSE_INTRO = {
+    "login_2fa": "Saisissez ce code pour confirmer votre connexion à votre espace membre.",
+    "password_reset": "Saisissez ce code pour réinitialiser votre mot de passe.",
+    "engagement": "Saisissez ce code pour signer électroniquement vos engagements.",
+}
 PURPOSE_SUBJECTS = {
     "login_2fa": "ADSUM, votre code de connexion",
-    "password_reset": "ADSUM, reinitialisation de mot de passe",
+    "password_reset": "ADSUM, réinitialisation de mot de passe",
     "engagement": "ADSUM, code de signature des engagements",
 }
 
 
 def send_code(email: str, purpose: str) -> tuple[bool, str]:
     """Generate and send the one-time code for a purpose. Returns (sent, provider)."""
+    from .email_templates import render_code_email
+
     code = generate_code(email, purpose)
     subject = PURPOSE_SUBJECTS.get(purpose, "ADSUM, votre code")
-    body = f"Votre code ADSUM est : {code}\n\nIl est valable quelques minutes. Ne le partagez avec personne."
-    sent = send_email(email, subject, body)
-    return sent, (settings.email_provider or "console")
+    intro = PURPOSE_INTRO.get(purpose, "Voici votre code de vérification ADSUM.")
+    text = f"Votre code ADSUM est : {code}\nIl est valable quelques minutes. Ne le partagez avec personne."
+    html = render_code_email(code, intro)
+    sent, provider = send_email(email, subject, text, html)
+    return sent, provider
+
+
+def send_notification(
+    email: str,
+    titre: str,
+    corps: str,
+    cta_label: str | None = None,
+    cta_url: str | None = None,
+) -> bool:
+    """Send a professional notification e-mail (design-system styled)."""
+    from .email_templates import render_notification_email
+
+    html = render_notification_email(titre, corps, cta_label, cta_url)
+    text = f"{titre}\n\n{corps}"
+    sent, _ = send_email(email, f"ADSUM, {titre}", text, html)
+    return sent
