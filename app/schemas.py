@@ -100,6 +100,27 @@ class NotificationOut(BaseModel):
     cree_le: datetime | None = None
 
 
+class DocumentOut(BaseModel):
+    """One piece of the member's verification dossier and its processing status."""
+
+    id: str
+    type: str | None = None
+    statut: str
+    demande_le: datetime | None = None
+    recu_le: datetime | None = None
+    traite_le: datetime | None = None
+
+
+class EngagementOut(BaseModel):
+    """An engagement the member has signed (or has yet to sign)."""
+
+    id: str
+    type: str | None = None
+    version: str
+    signe: bool
+    signe_le: datetime | None = None
+
+
 class RecensementOut(BaseModel):
     """The current annual census, and whether the member already answered."""
 
