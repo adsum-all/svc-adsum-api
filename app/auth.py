@@ -9,9 +9,18 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
 from . import db
-from .email_gateway import send_code, verify_code
 from .schemas import LoginRequest, TokenResponse, UserMe
 from .security import create_access_token, decode_access_token, hash_password, verify_password
+
+try:
+    from .email_gateway import send_code, verify_code
+except Exception:  # keep the API up even if the e-mail gateway fails to import
+
+    def send_code(email: str, purpose: str) -> tuple[bool, str]:  # type: ignore[misc]
+        return False, "unavailable"
+
+    def verify_code(email: str, purpose: str, code: str) -> bool:  # type: ignore[misc]
+        return False
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 _bearer = HTTPBearer(auto_error=True)

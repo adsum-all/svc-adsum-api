@@ -21,8 +21,6 @@ import time
 from email.message import EmailMessage
 from typing import Protocol
 
-import httpx
-
 from .config import settings
 
 # One-time code parameters.
@@ -85,6 +83,8 @@ class SMTPProvider:
 
 class BrevoProvider:
     def send(self, to: str, subject: str, text: str) -> None:
+        import httpx
+
         httpx.post(
             "https://api.brevo.com/v3/smtp/email",
             headers={"api-key": settings.email_api_key, "content-type": "application/json"},
@@ -100,6 +100,8 @@ class BrevoProvider:
 
 class ResendProvider:
     def send(self, to: str, subject: str, text: str) -> None:
+        import httpx
+
         httpx.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {settings.email_api_key}", "content-type": "application/json"},
