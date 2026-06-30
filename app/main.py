@@ -18,6 +18,7 @@ from .fichiers import router as fichiers_router
 from .inscription import router as inscription_router
 from .membres import router as membres_router
 from .organisation import router as organisation_router
+from .reference import router as reference_router
 from .terminaux import router as terminaux_router
 from .users import router as users_router
 
@@ -50,6 +51,7 @@ app.include_router(collaboration_router)
 app.include_router(demandes_router)
 app.include_router(fichiers_router)
 app.include_router(inscription_router)
+app.include_router(reference_router)
 
 
 @app.get("/health", tags=["system"])

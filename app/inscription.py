@@ -190,6 +190,59 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
 
 # --- Member: status and submission ----------------------------------------
 
+_EDITABLE_FIELDS = {
+    "prenoms", "nom", "telephone", "date_naissance", "genre", "pays", "ville",
+    "commission_id", "intendance_id", "tribu_id", "groupe", "profession",
+    "niveau_etudes", "situation_matrimoniale", "type_mariage",
+    "baptise", "confirme", "premiere_communion",
+}
+
+
+class ProfilUpdate(BaseModel):
+    prenoms: str | None = None
+    nom: str | None = None
+    telephone: str | None = None
+    date_naissance: str | None = None
+    genre: str | None = None
+    pays: str | None = None
+    ville: str | None = None
+    commission_id: str | None = None
+    intendance_id: str | None = None
+    tribu_id: str | None = None
+    groupe: str | None = None
+    profession: str | None = None
+    niveau_etudes: str | None = None
+    situation_matrimoniale: str | None = None
+    type_mariage: str | None = None
+    baptise: bool | None = None
+    confirme: bool | None = None
+    premiere_communion: bool | None = None
+
+
+@router.patch("/membres/me/profil")
+def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Depends(_membre_ctx)]) -> dict[str, object]:
+    """Member self-edits their profile during registration (statut incomplet) or on
+    fields the administration has unlocked after an approved modification request."""
+    membre_id, role = ctx
+    row = db.fetch_one("SELECT statut_inscription, champs_deverrouilles FROM membre WHERE id = %s", (membre_id,), role=role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    fields = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if k in _EDITABLE_FIELDS}
+    if not fields:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
+    incomplet = row["statut_inscription"] in ("incomplet", "modification_demandee")
+    unlocked = set(row["champs_deverrouilles"] or [])
+    if not incomplet:
+        # Outside registration, only admin-unlocked fields may be touched.
+        forbidden = [k for k in fields if k not in unlocked]
+        if forbidden:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"locked_fields": forbidden})
+    sets = ", ".join(f"{k} = %s" for k in fields)
+    params = [*fields.values(), membre_id]
+    db.execute(f"UPDATE membre SET {sets} WHERE id = %s", tuple(params), role=role)
+    return {"ok": True, "updated": list(fields)}
+
+
 @router.get("/membres/me/inscription")
 def mon_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)]) -> dict[str, object]:
     membre_id, role = ctx
