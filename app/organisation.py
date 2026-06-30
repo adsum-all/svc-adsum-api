@@ -34,8 +34,11 @@ require_writer = require_roles(*WRITERS)
 
 @router.get("/coordinations", response_model=list[CoordinationOut])
 def list_coordinations(user: Annotated[UserMe, Depends(require_staff)]) -> list[CoordinationOut]:
-    rows = db.fetch_all("SELECT id, nom, description FROM coordination ORDER BY nom ASC", (), role=user.role)
-    return [CoordinationOut(id=str(r["id"]), nom=r["nom"], description=r["description"]) for r in rows]
+    rows = db.fetch_all("SELECT id, nom, description, publie FROM coordination ORDER BY nom ASC", (), role=user.role)
+    return [
+        CoordinationOut(id=str(r["id"]), nom=r["nom"], description=r["description"], publie=bool(r["publie"]))
+        for r in rows
+    ]
 
 
 @router.post("/coordinations", response_model=CoordinationOut, status_code=status.HTTP_201_CREATED)
@@ -57,7 +60,7 @@ def create_coordination(
 def list_intendances(user: Annotated[UserMe, Depends(require_staff)]) -> list[IntendanceOut]:
     rows = db.fetch_all(
         """
-        SELECT i.id, i.nom, i.pays, i.ville, i.coordination_id, co.nom AS coordination
+        SELECT i.id, i.nom, i.pays, i.ville, i.coordination_id, i.publie, co.nom AS coordination
         FROM intendance i
         LEFT JOIN coordination co ON co.id = i.coordination_id
         ORDER BY i.nom ASC
@@ -73,6 +76,7 @@ def list_intendances(user: Annotated[UserMe, Depends(require_staff)]) -> list[In
             ville=r["ville"],
             coordination_id=str(r["coordination_id"]) if r["coordination_id"] else None,
             coordination=r["coordination"],
+            publie=bool(r["publie"]),
         )
         for r in rows
     ]
@@ -107,7 +111,7 @@ def create_intendance(
 def list_sous_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> list[SousCommissionOut]:
     rows = db.fetch_all(
         """
-        SELECT s.id, s.nom, s.commission_id, c.nom AS commission
+        SELECT s.id, s.nom, s.commission_id, s.publie, c.nom AS commission
         FROM sous_commission s
         LEFT JOIN commission c ON c.id = s.commission_id
         ORDER BY s.nom ASC
@@ -121,6 +125,7 @@ def list_sous_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> li
             nom=r["nom"],
             commission_id=str(r["commission_id"]) if r["commission_id"] else None,
             commission=r["commission"],
+            publie=bool(r["publie"]),
         )
         for r in rows
     ]

@@ -233,6 +233,7 @@ class CoordinationOut(BaseModel):
     id: str
     nom: str
     description: str | None = None
+    publie: bool = True
 
 
 class CreateCoordination(BaseModel):
@@ -249,6 +250,7 @@ class IntendanceOut(BaseModel):
     ville: str | None = None
     coordination_id: str | None = None
     coordination: str | None = None
+    publie: bool = True
 
 
 class CreateIntendance(BaseModel):
@@ -265,6 +267,7 @@ class SousCommissionOut(BaseModel):
     nom: str
     commission_id: str | None = None
     commission: str | None = None
+    publie: bool = True
 
 
 class CreateSousCommission(BaseModel):
@@ -444,6 +447,7 @@ class CommissionOut(BaseModel):
     id: str
     nom: str
     description: str | None = None
+    publie: bool = True
 
 
 class CreateCommission(BaseModel):
