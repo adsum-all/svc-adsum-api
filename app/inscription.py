@@ -57,13 +57,16 @@ def _temp_password() -> str:
 
 
 def _send_temp_password(email: str, temp: str) -> None:
-    body = (
+    from .email_templates import render_temp_password_email
+
+    text = (
         f"Bonjour,\n\nVotre compte ADSUM a ete cree. Mot de passe temporaire : {temp}\n"
         f"Il est valable {TEMP_VALID_HOURS} heures. Connectez-vous a l'espace membre, "
         f"changez votre mot de passe puis completez votre inscription.\n\n"
         f"Passe ce delai, contactez l'administration pour un nouveau mot de passe."
     )
-    send_email(email, "ADSUM, votre acces et mot de passe temporaire", body)
+    html = render_temp_password_email(temp, validity=f"{TEMP_VALID_HOURS} heures")
+    send_email(email, "ADSUM, votre acces et mot de passe temporaire", text, html)
 
 
 def _notify_membre(membre_id: str, role: str, titre: str, corps: str) -> None:

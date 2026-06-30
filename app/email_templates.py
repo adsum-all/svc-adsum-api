@@ -63,6 +63,22 @@ def render_code_email(code: str, intro: str, validity: str = "quelques minutes")
     return _shell(inner, f"Votre code ADSUM : {code}")
 
 
+def render_temp_password_email(temp_password: str, validity: str = "72 heures", app_url: str = "https://adsum-web-membre.pages.dev") -> str:
+    inner = f"""\
+<tr><td style="padding:30px 28px 6px;">
+<h1 style="margin:0 0 8px;font-family:{FONT_DISPLAY};font-weight:700;font-size:21px;color:{INK};">Bienvenue dans ADSUM</h1>
+<p style="margin:0 0 20px;font-family:{FONT_UI};font-size:14px;line-height:1.6;color:{MUT};">Votre compte membre a été créé par l'administration. Voici votre mot de passe temporaire pour vous connecter et finaliser votre inscription.</p>
+<div style="margin:0 0 16px;padding:16px 18px;background:#f4f6fb;border:1px solid {LINE};border-radius:12px;text-align:center;">
+<div style="font-family:{FONT_UI};font-size:11px;letter-spacing:1px;text-transform:uppercase;color:{MUT};margin-bottom:6px;">Mot de passe temporaire</div>
+<div style="font-family:{FONT_MONO};font-weight:600;font-size:24px;letter-spacing:3px;color:{ACC};">{temp_password}</div>
+</div>
+<p style="margin:0 0 18px;font-family:{FONT_UI};font-size:12.5px;line-height:1.6;color:{MUT};">Il est valable <b style="color:{INK};">{validity}</b>. À la première connexion, vous devrez le remplacer par votre propre mot de passe (avec un code de validation envoyé par e-mail). Passé ce délai, contactez l'administration pour en obtenir un nouveau.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0 4px;"><tr>
+<td style="background:{ACC};border-radius:11px;"><a href="{app_url}" style="display:inline-block;padding:12px 22px;font-family:{FONT_UI};font-weight:600;font-size:14px;color:#ffffff;text-decoration:none;">Accéder à mon espace</a></td></tr></table>
+</td></tr>"""
+    return _shell(inner, "Votre mot de passe temporaire ADSUM")
+
+
 def render_notification_email(titre: str, corps: str, cta_label: str | None = None, cta_url: str | None = None) -> str:
     cta = ""
     if cta_label and cta_url:
