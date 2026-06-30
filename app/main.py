@@ -14,6 +14,7 @@ from .comptage import router as comptage_router
 from .config import settings
 from .controle import router as controle_router
 from .demandes import router as demandes_router
+from .fichiers import router as fichiers_router
 from .membres import router as membres_router
 from .organisation import router as organisation_router
 from .terminaux import router as terminaux_router
@@ -46,6 +47,7 @@ app.include_router(comptage_router)
 app.include_router(comptage_public_router)
 app.include_router(collaboration_router)
 app.include_router(demandes_router)
+app.include_router(fichiers_router)
 
 
 @app.get("/health", tags=["system"])

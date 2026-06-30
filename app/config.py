@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     email_smtp_port: int = 587
     email_smtp_user: str = ""
     email_smtp_password: str = ""
+    # Supabase Storage (S3) for member files: profile photos, identity documents,
+    # signed consents. Files are private; the API mints short-lived signed URLs.
+    supabase_url: str = ""
+    supabase_service_key: str = ""
+    storage_bucket_photos: str = "member-photos"
+    storage_bucket_documents: str = "member-documents"
 
     @property
     def database_dsn(self) -> str:
