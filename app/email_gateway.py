@@ -16,12 +16,26 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json as _json
 import smtplib
 import time
+import urllib.request
 from email.message import EmailMessage
 from typing import Protocol
 
 from .config import settings
+
+
+def _http_post(url: str, headers: dict[str, str], body: dict[str, object]) -> int:
+    """POST JSON using the standard library (httpx is unreliable on Vercel)."""
+    data = _json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", "ADSUM/1.0")
+    for key, value in headers.items():
+        req.add_header(key, value)
+    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (trusted provider URLs)
+        return resp.status
 
 # One-time code parameters.
 CODE_DIGITS = 6
@@ -82,32 +96,28 @@ class SMTPProvider:
 
 
 class BrevoProvider:
-    def send(self, to: str, subject: str, text: str) -> None:
-        import httpx
+    """Brevo transactional HTTP API (requires an xkeysib API key, not the SMTP key)."""
 
-        httpx.post(
+    def send(self, to: str, subject: str, text: str) -> None:
+        _http_post(
             "https://api.brevo.com/v3/smtp/email",
-            headers={"api-key": settings.email_api_key, "content-type": "application/json"},
-            json={
+            {"api-key": settings.email_api_key},
+            {
                 "sender": {"email": settings.email_from, "name": "ADSUM"},
                 "to": [{"email": to}],
                 "subject": subject,
                 "textContent": text,
             },
-            timeout=15,
-        ).raise_for_status()
+        )
 
 
 class ResendProvider:
     def send(self, to: str, subject: str, text: str) -> None:
-        import httpx
-
-        httpx.post(
+        _http_post(
             "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {settings.email_api_key}", "content-type": "application/json"},
-            json={"from": settings.email_from, "to": [to], "subject": subject, "text": text},
-            timeout=15,
-        ).raise_for_status()
+            {"Authorization": f"Bearer {settings.email_api_key}"},
+            {"from": settings.email_from, "to": [to], "subject": subject, "text": text},
+        )
 
 
 _PROVIDERS: dict[str, type[EmailProvider]] = {
