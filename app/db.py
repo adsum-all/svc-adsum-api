@@ -1,7 +1,11 @@
 """Database access against the real PostgreSQL.
 
-Each query runs in a transaction where the caller role is set as the session
-variable adsum.role, which activates the per-role RLS policies (ADR-0002).
+Connections are served from a persistent pool that survives across warm
+invocations, so a query does not pay a fresh TCP+TLS+pooler handshake every
+time (this was the dominant per-request latency). Each query still runs in a
+transaction where the caller role is set as the transaction-local session
+variable ``adsum.role``, which activates the per-role RLS policies (ADR-0002)
+and never leaks to another request that reuses the same pooled connection.
 """
 from __future__ import annotations
 
@@ -11,26 +15,47 @@ from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from .config import settings
+
+_pool: ConnectionPool | None = None
+
+
+def _get_pool() -> ConnectionPool:
+    """Lazily build the process-wide connection pool.
+
+    ``min_size=0`` keeps cold start cheap (no connection opened at import);
+    warm requests reuse the small set of open connections (``max_size``),
+    which removes the per-request connection handshake.
+    """
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(
+            settings.database_dsn,
+            min_size=0,
+            max_size=4,
+            max_idle=120,
+            timeout=10,
+            # prepare_threshold=None disables prepared statements, required for
+            # the Supabase pooler in transaction mode (PgBouncer).
+            kwargs={"row_factory": dict_row, "prepare_threshold": None},
+            open=True,
+        )
+    return _pool
 
 
 @contextmanager
 def connection(role: str | None = None) -> Iterator[psycopg.Connection]:
-    conn = psycopg.connect(settings.database_dsn, row_factory=dict_row)
-    try:
+    pool = _get_pool()
+    with pool.connection() as conn:
         if role:
             with conn.cursor() as cur:
-                # Transaction-local so the role never leaks to another request that
-                # reuses the same pooled connection (Supabase transaction pooler).
+                # Transaction-local so the role never leaks to another request
+                # that reuses the same pooled connection.
                 cur.execute("SELECT set_config('adsum.role', %s, true)", (role,))
         yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+        # pool.connection() commits on clean exit and rolls back on exception.
 
 
 def fetch_one(sql: str, params: tuple[Any, ...], role: str | None = None) -> dict[str, Any] | None:
