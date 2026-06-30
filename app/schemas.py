@@ -64,6 +64,7 @@ class MembreProfile(BaseModel):
     patriarche: str | None = None
     coordination: str | None = None
     coordinateur: str | None = None
+    champs_deverrouilles: list[str] = []
 
 
 class EvenementOut(BaseModel):
