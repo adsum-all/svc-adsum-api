@@ -37,6 +37,36 @@ from .security import hash_password, verify_password
 router = APIRouter(prefix="/api/v1/membres", tags=["membres"])
 
 
+def _notify(
+    membre_id: str,
+    role: str,
+    type_: str,
+    titre: str,
+    corps: str,
+    email: str | None = None,
+) -> None:
+    """Create a real in-app notification and, when an e-mail is known, send it too."""
+    db.execute(
+        """
+        INSERT INTO notification (membre_id, type, titre, corps, lu, cree_le)
+        VALUES (%s, %s, %s, %s, false, now())
+        """,
+        (membre_id, type_, titre, corps),
+        role=role,
+    )
+    target = email
+    if target is None:
+        row = db.fetch_one("SELECT email FROM utilisateur WHERE membre_id = %s", (membre_id,), role=role)
+        target = str(row["email"]) if row and row.get("email") else None
+    if target:
+        try:
+            from .email_gateway import send_notification
+
+            send_notification(target, titre, corps)
+        except Exception:
+            pass
+
+
 def require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
     """Return ``(membre_id, role)`` for an account linked to a member.
 
@@ -201,6 +231,13 @@ def my_engagements(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> 
     ]
 
 
+@router.post("/me/notifications/lire", status_code=status.HTTP_204_NO_CONTENT)
+def mark_notifications_read(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> None:
+    """Mark all of the member's notifications as read."""
+    membre_id, role = ctx
+    db.execute("UPDATE notification SET lu = true WHERE membre_id = %s AND NOT lu", (membre_id,), role=role)
+
+
 @router.get("/me/recensement", response_model=RecensementOut | None)
 def my_recensement(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> RecensementOut | None:
     membre_id, role = ctx
@@ -290,6 +327,13 @@ def accept_engagement(
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="engagement not recorded")
+    _notify(
+        membre_id,
+        role,
+        "engagement",
+        "Engagement signé",
+        f"Votre engagement « {payload.type.replace('_', ' ')} » a bien été enregistré.",
+    )
     return EngagementOut(
         id=str(created["id"]),
         type=created["type"],
@@ -316,6 +360,13 @@ def submit_document(
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="document not registered")
+    _notify(
+        membre_id,
+        role,
+        "document",
+        "Document reçu",
+        "Votre document a bien été reçu. Il sera examiné par l'administration.",
+    )
     return DocumentOut(
         id=str(created["id"]),
         type=created["type"],
@@ -341,6 +392,13 @@ def participer_session(
         """,
         (membre_id, payload.evenement_id),
         role=role,
+    )
+    _notify(
+        membre_id,
+        role,
+        "participation",
+        "Participation enregistrée",
+        "Votre participation à la session en ligne a bien été enregistrée. Merci.",
     )
     return {"ok": True}
 
