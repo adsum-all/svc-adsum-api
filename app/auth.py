@@ -1,6 +1,7 @@
 """Authentication endpoints: real login and current user."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 import jwt
@@ -50,8 +51,51 @@ def login(payload: LoginRequest) -> TokenResponse:
     user = db.get_user_by_email(payload.email)
     if not user or not user["actif"] or not verify_password(payload.password, user["hash_mdp"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
+    # A temporary password is only valid for 72h (server-side). After that the
+    # member must contact the administration for a new one.
+    if user.get("mdp_temporaire") and _temp_expired(user.get("mdp_expire_le")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="temporary password expired, contact the administration",
+        )
     token = create_access_token(subject=str(user["id"]), role=user["role"])
-    return TokenResponse(access_token=token, role=user["role"])
+    return TokenResponse(access_token=token, role=user["role"], doit_changer_mdp=bool(user.get("doit_changer_mdp")))
+
+
+def _temp_expired(expire_le: object) -> bool:
+    if not isinstance(expire_le, datetime):
+        return False
+    now = datetime.now(tz=expire_le.tzinfo) if expire_le.tzinfo else datetime.utcnow()
+    return now > expire_le
+
+
+class PremiereConnexion(BaseModel):
+    email: EmailStr
+    mdp_temporaire: str
+    nouveau_mdp: str
+    code_otp: str
+
+
+@router.post("/premiere-connexion", response_model=TokenResponse)
+def premiere_connexion(payload: PremiereConnexion) -> TokenResponse:
+    """First login: validate the temporary password and an e-mail OTP, then set
+    the member's own password (banking-style double validation)."""
+    if len(payload.nouveau_mdp) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password too short")
+    user = db.get_user_by_email(payload.email)
+    if not user or not user["actif"] or not verify_password(payload.mdp_temporaire, user["hash_mdp"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid temporary password")
+    if user.get("mdp_temporaire") and _temp_expired(user.get("mdp_expire_le")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="temporary password expired")
+    if not verify_code(str(payload.email), "login_2fa", payload.code_otp):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid code")
+    db.execute(
+        "UPDATE utilisateur SET hash_mdp = %s, mdp_temporaire = false, doit_changer_mdp = false, "
+        "mdp_expire_le = NULL WHERE id = %s",
+        (hash_password(payload.nouveau_mdp), str(user["id"])),
+    )
+    token = create_access_token(subject=str(user["id"]), role=user["role"])
+    return TokenResponse(access_token=token, role=user["role"], doit_changer_mdp=False)
 
 
 def current_user(creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)]) -> UserMe:

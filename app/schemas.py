@@ -15,6 +15,7 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     role: str
+    doit_changer_mdp: bool = False
 
 
 class UserMe(BaseModel):
