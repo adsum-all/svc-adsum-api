@@ -37,6 +37,22 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
     storage_bucket_photos: str = "member-photos"
     storage_bucket_documents: str = "member-documents"
+    # Notification channels. Each channel is only attempted when configured.
+    # Telegram (free): create a bot with @BotFather and set ADSUM_TELEGRAM_BOT_TOKEN.
+    telegram_bot_token: str = ""
+    telegram_bot_username: str = ""
+    telegram_api_base: str = "https://api.telegram.org"
+    # WhatsApp Cloud API (Meta, paid per message): needs a verified WABA, a
+    # permanent System User token, a phone number id and approved templates.
+    whatsapp_token: str = ""
+    whatsapp_phone_number_id: str = ""
+    whatsapp_graph_version: str = "v22.0"
+    whatsapp_template_anniversaire: str = ""
+    whatsapp_template_lang: str = "fr"
+    # SMS placeholder: no provider selected yet.
+    sms_provider: str = ""
+    # Daily cron shared secret (Vercel sends it as an Authorization bearer header).
+    cron_secret: str = ""
 
     @property
     def database_dsn(self) -> str:

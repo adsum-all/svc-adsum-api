@@ -7,8 +7,9 @@ from .schemas import MembreProfile
 
 # Columns a member SELECT must expose for membre_row_to_profile, in order.
 MEMBRE_PROFILE_SELECT = (
-    "m.id, m.matricule, m.email, m.nom, m.prenoms, m.telephone, m.groupe, m.photo_url, "
-    "m.statut, m.verifie, m.genre, m.date_naissance, m.pays, m.ville, m.date_entree, "
+    "m.id, m.matricule, m.email, m.nom, m.prenoms, m.telephone, m.indicatif_telephone, m.groupe, m.photo_url, "
+    "m.statut, m.verifie, m.genre, m.date_naissance, m.naissance_annee_visible, m.pays, m.region, m.ville, "
+    "m.adresse, m.adresse_complement, m.date_entree, "
     "m.cheminement_pastoral, m.statut_administratif, m.intendance_id, m.berger_referent_id, "
     "m.tribu_id, m.type_membre, m.promotion, m.situation_matrimoniale, m.type_mariage, "
     "m.profession, m.niveau_etudes, m.baptise, m.confirme, m.premiere_communion, "
@@ -46,14 +47,19 @@ def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
         nom=row["nom"],
         prenoms=row["prenoms"],
         telephone=row["telephone"],
+        indicatif_telephone=row.get("indicatif_telephone"),
         groupe=row["groupe"],
         photo_url=row["photo_url"],
         statut=row["statut"],
         verifie=row["verifie"],
         genre=row.get("genre"),
         date_naissance=row.get("date_naissance"),
+        naissance_annee_visible=bool(row.get("naissance_annee_visible")),
         pays=row.get("pays"),
+        region=row.get("region"),
         ville=row.get("ville"),
+        adresse=row.get("adresse"),
+        adresse_complement=row.get("adresse_complement"),
         date_entree=row.get("date_entree"),
         cheminement_pastoral=row.get("cheminement_pastoral"),
         statut_administratif=row.get("statut_administratif"),
