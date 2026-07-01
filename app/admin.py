@@ -196,7 +196,7 @@ def create_commission(
 def list_evenements(user: Annotated[UserMe, Depends(require_staff)]) -> list[EvenementOut]:
     rows = db.fetch_all(
         """
-        SELECT id, titre, type, volet, debut, fin, lieu, session_ouverte
+        SELECT id, titre, type, volet, debut, fin, lieu, session_ouverte, lien_session
         FROM evenement
         ORDER BY debut DESC
         LIMIT 200
@@ -214,6 +214,7 @@ def list_evenements(user: Annotated[UserMe, Depends(require_staff)]) -> list[Eve
             fin=r["fin"],
             lieu=r["lieu"],
             session_ouverte=r["session_ouverte"],
+            lien_session=r["lien_session"],
         )
         for r in rows
     ]
@@ -226,11 +227,11 @@ def create_evenement(
 ) -> EvenementOut:
     created = db.execute(
         """
-        INSERT INTO evenement (titre, type, volet, debut, fin, lieu)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id, titre, type, volet, debut, fin, lieu, session_ouverte
+        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, lien_session)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id, titre, type, volet, debut, fin, lieu, session_ouverte, lien_session
         """,
-        (payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu),
+        (payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu, payload.lien_session),
         role=user.role,
     )
     if not created:
@@ -244,4 +245,5 @@ def create_evenement(
         fin=created["fin"],
         lieu=created["lieu"],
         session_ouverte=created["session_ouverte"],
+        lien_session=created["lien_session"],
     )

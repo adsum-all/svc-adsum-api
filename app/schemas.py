@@ -78,6 +78,7 @@ class EvenementOut(BaseModel):
     fin: datetime | None = None
     lieu: str | None = None
     session_ouverte: bool
+    lien_session: str | None = None
 
 
 class PresenceOut(BaseModel):
@@ -467,6 +468,7 @@ class CreateEvenement(BaseModel):
     debut: datetime
     fin: datetime | None = None
     lieu: str | None = None
+    lien_session: str | None = None
 
 
 class VerifyResult(BaseModel):
