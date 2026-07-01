@@ -12,55 +12,12 @@ from fastapi import APIRouter, Depends
 
 from . import db
 from .deps import require_roles
-from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
-from .schemas import DoublonGroupe, StatistiquesOut, UserMe
+from .schemas import StatistiquesOut, UserMe
 
 router = APIRouter(prefix="/api/v1/admin", tags=["analytics"])
 
 STAFF = ("super_admin", "admin", "gestionnaire", "controleur", "direction")
 require_staff = require_roles(*STAFF)
-
-_PHONE_EXPR = "regexp_replace(coalesce(m.telephone, ''), '[^0-9]', '', 'g')"
-_NAME_EXPR = "lower(trim(coalesce(m.prenoms, '') || ' ' || coalesce(m.nom, '')))"
-
-
-def _duplicate_groups(role: str, expr: str, critere: str) -> list[DoublonGroupe]:
-    rows = db.fetch_all(
-        f"""
-        SELECT {expr} AS valeur, count(*) AS total
-        FROM membre m
-        WHERE length({expr}) > 3
-        GROUP BY {expr}
-        HAVING count(*) > 1
-        ORDER BY count(*) DESC
-        LIMIT 50
-        """,
-        (),
-        role=role,
-    )
-    groups: list[DoublonGroupe] = []
-    for r in rows:
-        members = db.fetch_all(
-            f"SELECT {MEMBRE_PROFILE_SELECT} {MEMBRE_PROFILE_FROM} WHERE {expr} = %s ORDER BY m.cree_le ASC",
-            (r["valeur"],),
-            role=role,
-        )
-        groups.append(
-            DoublonGroupe(
-                critere=critere,
-                valeur=str(r["valeur"]),
-                membres=[membre_row_to_profile(m) for m in members],
-            )
-        )
-    return groups
-
-
-@router.get("/doublons", response_model=list[DoublonGroupe])
-def doublons(user: Annotated[UserMe, Depends(require_staff)]) -> list[DoublonGroupe]:
-    """Potential duplicate members, grouped by identical phone or identical name."""
-    by_phone = _duplicate_groups(user.role, _PHONE_EXPR, "telephone")
-    by_name = _duplicate_groups(user.role, _NAME_EXPR, "nom")
-    return by_phone + by_name
 
 
 @router.get("/statistiques", response_model=StatistiquesOut)

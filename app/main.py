@@ -14,6 +14,7 @@ from .comptage import router as comptage_router
 from .config import settings
 from .controle import router as controle_router
 from .demandes import router as demandes_router
+from .doublons import router as doublons_router
 from .fichiers import router as fichiers_router
 from .gestion import router as gestion_router
 from .inscription import router as inscription_router
@@ -52,6 +53,7 @@ app.include_router(comptage_router)
 app.include_router(comptage_public_router)
 app.include_router(collaboration_router)
 app.include_router(demandes_router)
+app.include_router(doublons_router)
 app.include_router(fichiers_router)
 app.include_router(inscription_router)
 app.include_router(reference_router)
