@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
     storage_bucket_photos: str = "member-photos"
     storage_bucket_documents: str = "member-documents"
+    # Encryption key for identity documents at rest (Fernet). If unset, a key is
+    # derived from jwt_secret so encryption still works; set a dedicated key
+    # (ADSUM_DOC_ENCRYPTION_KEY) in production for proper key separation.
+    doc_encryption_key: str = ""
     # Notification channels. Each channel is only attempted when configured.
     # Telegram (free): create a bot with @BotFather and set ADSUM_TELEGRAM_BOT_TOKEN.
     telegram_bot_token: str = ""

@@ -307,25 +307,33 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
 
     documents = []
     for d in db.fetch_all(
-        "SELECT id, type, statut, nom_fichier, mime, bucket, chemin_stockage, recu_le "
+        "SELECT id, type, statut, nom_fichier, mime, bucket, chemin_stockage, chiffre, recu_le "
         "FROM document WHERE membre_id = %s ORDER BY recu_le DESC NULLS LAST",
         (membre_id,),
         role=None,
     ) or []:
+        doc_id = str(d["id"])
+        chiffre = bool(d.get("chiffre"))
         url = None
-        if d.get("chemin_stockage"):
+        content_path = None
+        if chiffre:
+            # Encrypted: read through the audited decrypting endpoint, not a signed URL.
+            content_path = f"/api/v1/admin/documents/{doc_id}/content"
+        elif d.get("chemin_stockage"):
             try:
                 url = storage.signed_download_url(str(d["bucket"] or settings.storage_bucket_documents), str(d["chemin_stockage"]))
             except storage.StorageError:
                 url = None
         documents.append({
-            "id": str(d["id"]),
+            "id": doc_id,
             "type": d["type"],
             "statut": d["statut"],
             "nom_fichier": d.get("nom_fichier"),
             "mime": d.get("mime"),
             "recu_le": d["recu_le"].isoformat() if d.get("recu_le") else None,
             "url": url,
+            "chiffre": chiffre,
+            "content_path": content_path,
         })
 
     engagements = [

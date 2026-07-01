@@ -58,6 +58,42 @@ def signed_download_url(bucket: str, path: str, expires_in: int = 3600) -> str:
     return f"{settings.supabase_url.rstrip('/')}/storage/v1{signed}"
 
 
+def upload_bytes(bucket: str, path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    """Upload raw bytes with the service key (server-side).
+
+    Used for encrypted objects: the API holds the ciphertext and pushes it to the
+    private bucket itself, so the plaintext never lands in storage.
+    """
+    if not settings.supabase_url or not settings.supabase_service_key:
+        raise StorageError("storage is not configured")
+    url = f"{settings.supabase_url.rstrip('/')}/storage/v1/object/{bucket}/{path}"
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {settings.supabase_service_key}")
+    req.add_header("apikey", settings.supabase_service_key)
+    req.add_header("Content-Type", content_type)
+    req.add_header("x-upsert", "true")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted Supabase URL)
+            resp.read()
+    except urllib.error.HTTPError as exc:  # pragma: no cover - network error path
+        raise StorageError(f"storage upload {bucket}/{path} failed: {exc.code}") from exc
+
+
+def download_bytes(bucket: str, path: str) -> bytes:
+    """Download raw bytes with the service key (server-side), for decryption."""
+    if not settings.supabase_url or not settings.supabase_service_key:
+        raise StorageError("storage is not configured")
+    url = f"{settings.supabase_url.rstrip('/')}/storage/v1/object/{bucket}/{path}"
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", f"Bearer {settings.supabase_service_key}")
+    req.add_header("apikey", settings.supabase_service_key)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted Supabase URL)
+            return resp.read()
+    except urllib.error.HTTPError as exc:  # pragma: no cover - network error path
+        raise StorageError(f"storage download {bucket}/{path} failed: {exc.code}") from exc
+
+
 def delete_object(bucket: str, path: str) -> None:
     """Delete an object (RGPD erasure). Missing objects are ignored."""
     try:
