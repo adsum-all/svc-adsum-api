@@ -43,6 +43,36 @@ _GUIDE = {
         "aide": "Texte de signature ajoute a la fin de chaque notification. Par defaut : Sacerdoce Royal.",
         "roter": "Modifiez ici pour personnaliser la signature de tous les messages.",
     },
+    "signature_anniversaire": {
+        "titre": "Signature des messages d'anniversaire",
+        "aide": "Signature specifique aux messages d'anniversaire. Vide = signature globale.",
+        "roter": "Exemple : Fraternellement, Sacerdoce Royal.",
+    },
+    "signature_information": {
+        "titre": "Signature des messages d'information",
+        "aide": "Signature des annonces, agendas et recapitulatifs. Vide = signature globale.",
+        "roter": "Exemple : Sacerdoce Royal.",
+    },
+    "signature_accuse": {
+        "titre": "Signature des accuses de reception",
+        "aide": "Signature des confirmations de reception (dossier d'adhesion recu). Vide = signature globale.",
+        "roter": "Exemple : Sacerdoce Royal.",
+    },
+    "signature_approbation": {
+        "titre": "Signature des messages d'approbation",
+        "aide": "Signature des decisions favorables (adhesion validee, attestation requise). Vide = signature globale.",
+        "roter": "Exemple : Fraternellement, Sacerdoce Royal.",
+    },
+    "signature_correction": {
+        "titre": "Signature des demandes de correction",
+        "aide": "Signature des messages demandant une correction du dossier. Vide = signature globale.",
+        "roter": "Exemple : Sacerdoce Royal.",
+    },
+    "signature_rappel": {
+        "titre": "Signature des rappels",
+        "aide": "Signature des rappels (attestation, activites). Vide = signature globale.",
+        "roter": "Exemple : Sacerdoce Royal.",
+    },
     "site_officiel": {
         "titre": "Site officiel",
         "aide": "Adresse du site officiel affichee en pied de chaque message.",

@@ -63,6 +63,37 @@ _FALLBACK = {
     "en": ("ADSUM notification", "You have a new notification."),
 }
 
+# Maps a notification type to its signature family so an admin can sign each
+# family differently (integration_config keys seeded by migration 0038).
+_SIGNATURE_KEY = {
+    "anniversaire": "signature_anniversaire",
+    "anniversaire_pairs": "signature_anniversaire",
+    "annonce": "signature_information",
+    "agenda_hebdo": "signature_information",
+    "recap_hebdo": "signature_information",
+    "questionnaire_disponible": "signature_information",
+    "inscription_soumise": "signature_accuse",
+    "inscription_decision": "signature_approbation",
+    "modification_decision": "signature_approbation",
+    "attestation_requise": "signature_approbation",
+    "correction_demandee": "signature_correction",
+    "attestation_rappel": "signature_rappel",
+    "attestation_expiree": "signature_rappel",
+    "activite_rappel_j1": "signature_rappel",
+    "activite_rappel_start": "signature_rappel",
+}
+
+
+def _resolve_signature(type_cle: str) -> str:
+    """Signature for this message family, falling back to the global one.
+
+    Order: the family-specific signature (if the admin set one) -> the global
+    ``signature`` -> the built-in default. Never returns an empty string.
+    """
+    key = _SIGNATURE_KEY.get(type_cle)
+    specific = channels.integration_value(key) if key else ""
+    return specific or channels.integration_value("signature") or "Sacerdoce Royal"
+
 
 def _subst(text: str, ctx: dict[str, object]) -> str:
     for key, value in ctx.items():
@@ -121,7 +152,7 @@ def notifier(
             if not reserved:
                 return []
         titre, corps = _render(type_cle, lang, ctx, role)
-        signature = channels.integration_value("signature") or "Sacerdoce Royal"
+        signature = _resolve_signature(type_cle)
         site = channels.integration_value("site_officiel")
         # Plain-text footer for Telegram / in-app (the birthday template already signs off).
         footer = ("\n\n" + (site if site else "")) if type_cle == "anniversaire" else ("\n\n" + signature + (f"\n{site}" if site else ""))
