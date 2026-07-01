@@ -102,7 +102,7 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
     rows = db.fetch_all(
         """
         SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode,
-               e.session_ouverte, e.lien_session, e.type_diffusion, e.visibilite,
+               e.session_ouverte, e.lien_session, e.liens, e.type_diffusion, e.visibilite,
                EXISTS (SELECT 1 FROM participation p WHERE p.evenement_id = e.id AND p.membre_id = %s) AS inscrit,
                CASE
                  WHEN now() < e.debut - interval '15 minutes' THEN 'a_venir'
@@ -123,7 +123,7 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
     )
     out: list[EvenementOut] = []
     for r in rows:
-        lien = _visible_link(r)
+        liens = _visible_links(r)
         out.append(
             EvenementOut(
                 id=str(r["id"]),
@@ -135,25 +135,29 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                 lieu=r["lieu"],
                 mode=r["mode"],
                 session_ouverte=r["session_ouverte"],
-                lien_session=lien,
+                lien_session=liens[0] if liens else None,
+                liens=liens,
                 type_diffusion=r["type_diffusion"] or "aucun",
                 visibilite=r["visibilite"] or "membres",
                 phase=str(r["phase"]),
-                joignable=lien is not None,
+                joignable=bool(liens),
                 formulaire_ouvert=bool(r["formulaire_ouvert"]),
             )
         )
     return out
 
 
-def _visible_link(r: dict[str, object]) -> str | None:
-    # A link is only shown inside the joinable time window (never merely because
-    # it was stored), and a private event additionally requires registration.
+def _visible_links(r: dict[str, object]) -> list[str]:
+    # Links are only shown inside the joinable time window (never merely because
+    # they were stored), and a private event additionally requires registration.
     if not r["in_window"]:
-        return None
+        return []
     if r["visibilite"] == "prive" and not r.get("inscrit"):
-        return None
-    return r["lien_session"]  # type: ignore[return-value]
+        return []
+    liens = [str(x) for x in (r.get("liens") or []) if x]
+    if not liens and r.get("lien_session"):
+        liens = [str(r["lien_session"])]
+    return liens
 
 
 @router.get("/me/historique", response_model=list[PresenceOut])

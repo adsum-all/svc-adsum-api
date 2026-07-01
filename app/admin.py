@@ -4,8 +4,10 @@ Every query runs under the caller role, which activates the per-role RLS
 policies (ADR-0002). Write access is additionally guarded by ``require_roles``
 so the API rejects unauthorized callers before touching the database.
 """
+# ruff: noqa: E501
 from __future__ import annotations
 
+import json
 from typing import Annotated
 
 import psycopg
@@ -196,7 +198,8 @@ def create_commission(
 def list_evenements(user: Annotated[UserMe, Depends(require_staff)]) -> list[EvenementOut]:
     rows = db.fetch_all(
         """
-        SELECT id, titre, type, volet, debut, fin, lieu, mode, session_ouverte, lien_session, type_diffusion, visibilite
+        SELECT id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
+               lien_session, liens, type_diffusion, visibilite
         FROM evenement
         ORDER BY debut DESC
         LIMIT 200
@@ -219,6 +222,7 @@ def _evenement_out(r: dict[str, object]) -> EvenementOut:
         mode=r.get("mode"),
         session_ouverte=r["session_ouverte"],
         lien_session=r["lien_session"],
+        liens=[str(x) for x in (r.get("liens") or []) if x],
         type_diffusion=r.get("type_diffusion") or "aucun",
         visibilite=r.get("visibilite") or "membres",
     )
@@ -229,16 +233,20 @@ def create_evenement(
     payload: CreateEvenement,
     user: Annotated[UserMe, Depends(require_event_writer)],
 ) -> EvenementOut:
+    liens = [x.strip() for x in payload.liens if x and x.strip()]
+    primary = payload.lien_session or (liens[0] if liens else None)
+    if primary and primary not in liens:
+        liens = [primary, *liens]
     created = db.execute(
         """
-        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, type_diffusion, visibilite)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, visibilite)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
         RETURNING id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
-                  lien_session, type_diffusion, visibilite
+                  lien_session, liens, type_diffusion, visibilite
         """,
         (
             payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
-            payload.mode, payload.lien_session, payload.type_diffusion, payload.visibilite,
+            payload.mode, primary, json.dumps(liens), payload.type_diffusion, payload.visibilite,
         ),
         role=user.role,
     )

@@ -91,6 +91,7 @@ class EvenementOut(BaseModel):
     mode: str | None = None
     session_ouverte: bool
     lien_session: str | None = None
+    liens: list[str] = []  # all broadcast links (one per platform), time-gated
     type_diffusion: str = "aucun"
     visibilite: str = "membres"
     # Server-computed lifecycle (source of truth for time-gated UI actions).
@@ -491,6 +492,7 @@ class CreateEvenement(BaseModel):
     lieu: str | None = None
     mode: str | None = None
     lien_session: str | None = None
+    liens: list[str] = []
     type_diffusion: str = Field(default="aucun", pattern="^(embed|externe|aucun)$")
     visibilite: str = Field(default="membres", pattern="^(public|membres|prive)$")
 

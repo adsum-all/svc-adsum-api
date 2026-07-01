@@ -45,6 +45,7 @@ def _fenetre_heures(role: str) -> int:
 
 class SessionPatch(BaseModel):
     lien_session: str | None = None
+    liens: list[str] | None = None
     session_ouverte: bool | None = None
     type_diffusion: str | None = Field(default=None, pattern="^(embed|externe|aucun)$")
     visibilite: str | None = Field(default=None, pattern="^(public|membres|prive)$")
@@ -52,12 +53,23 @@ class SessionPatch(BaseModel):
 
 @router.patch("/admin/evenements/{evenement_id}/session")
 def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
-    """Set the session link, broadcast kind/visibility, and open or close the live session."""
+    """Set the session links, broadcast kind/visibility, and open or close the live session."""
+    import json
+
     sets: list[str] = []
     params: list[object] = []
-    if payload.lien_session is not None:
+    if payload.liens is not None:
+        liens = [x.strip() for x in payload.liens if x and x.strip()]
+        sets.append("liens = %s::jsonb")
+        params.append(json.dumps(liens))
+        # Keep the legacy primary link in sync with the first entry.
+        sets.append("lien_session = %s")
+        params.append(liens[0] if liens else None)
+    elif payload.lien_session is not None:
         sets.append("lien_session = %s")
         params.append(payload.lien_session or None)
+        sets.append("liens = %s::jsonb")
+        params.append(json.dumps([payload.lien_session] if payload.lien_session else []))
     if payload.type_diffusion is not None:
         sets.append("type_diffusion = %s")
         params.append(payload.type_diffusion)
