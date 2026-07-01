@@ -230,6 +230,10 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     # 5) Manual-attestation follow-up: strategic reminders and expiry.
     result["attest_rappels"], result["attest_expirees"] = _scan_attestations(role)
 
+    # 6) Housekeeping: delete Telegram messages past the retention window.
+    purge = channels.purge_old_telegram(role)
+    result["telegram_purges"] = purge.get("supprimes", 0)
+
     return {"ok": True, **result}
 
 

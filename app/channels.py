@@ -101,8 +101,71 @@ def send_telegram(chat_id: str, message: Message) -> bool:
     url = f"{settings.telegram_api_base}/bot{token}/sendMessage"
     # Telegram rejects messages over 4096 characters; keep a safe margin.
     text = f"<b>{_esc(message.titre)}</b>\n{_esc(message.corps_text)}"[:4000]
-    ok, _ = _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, {})
+    ok, body = _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, {})
+    if ok:
+        _record_telegram_message(str(chat_id), body)
     return ok
+
+
+def _record_telegram_message(chat_id: str, body: dict[str, object]) -> None:
+    """Store the outgoing message id so it can later be auto-deleted. Best-effort:
+    a bookkeeping failure must never affect the delivery that already succeeded."""
+    try:
+        result = body.get("result") if isinstance(body, dict) else None
+        message_id = result.get("message_id") if isinstance(result, dict) else None
+        if message_id is None:
+            return
+        db.execute(
+            "INSERT INTO telegram_message (chat_id, message_id) VALUES (%s, %s)",
+            (chat_id, int(message_id)),
+            role=None,
+        )
+    except Exception:  # noqa: BLE001 - never break a successful send
+        pass
+
+
+def delete_telegram_message(chat_id: str, message_id: int) -> bool:
+    """Delete one previously sent message. A bot may remove its own messages."""
+    token = telegram_token()
+    if not token:
+        return False
+    url = f"{settings.telegram_api_base}/bot{token}/deleteMessage"
+    ok, _ = _post_json(url, {"chat_id": chat_id, "message_id": message_id}, {})
+    return ok
+
+
+def purge_old_telegram(role: str | None, retention_days: int | None = None, limit: int = 500) -> dict[str, int]:
+    """Delete Telegram messages older than the retention window.
+
+    The window is admin-configurable (integration_config ``telegram_retention_jours``),
+    default 90 days. Already-deleted or vanished messages are marked done as well,
+    so a message that Telegram no longer knows about is not retried forever.
+    """
+    days = retention_days if retention_days is not None else _retention_days()
+    rows = db.fetch_all(
+        "SELECT id, chat_id, message_id FROM telegram_message "
+        "WHERE supprime_le IS NULL AND envoye_le < now() - make_interval(days => %s) "
+        "ORDER BY envoye_le LIMIT %s",
+        (days, limit),
+        role=role,
+    )
+    deleted = 0
+    for r in rows or []:
+        ok = delete_telegram_message(str(r["chat_id"]), int(r["message_id"]))
+        # Whether Telegram deleted it or it was already gone, stop tracking it.
+        db.execute("UPDATE telegram_message SET supprime_le = now() WHERE id = %s", (str(r["id"]),), role=role)
+        if ok:
+            deleted += 1
+    return {"examines": len(rows or []), "supprimes": deleted}
+
+
+def _retention_days() -> int:
+    raw = integration_value("telegram_retention_jours")
+    try:
+        value = int(raw) if raw else 90
+    except (TypeError, ValueError):
+        value = 90
+    return max(1, value)
 
 
 def send_whatsapp(numero: str, template_params: list[str]) -> bool:

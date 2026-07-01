@@ -63,13 +63,47 @@ def _send_temp_password(email: str, temp: str) -> tuple[bool, str]:
     from .email_templates import render_temp_password_email
 
     text = (
-        f"Bonjour,\n\nVotre compte ADSUM a ete cree. Mot de passe temporaire : {temp}\n"
-        f"Il est valable {TEMP_VALID_HOURS} heures. Connectez-vous a l'espace membre, "
-        f"changez votre mot de passe puis completez votre inscription.\n\n"
-        f"Passe ce delai, contactez l'administration pour un nouveau mot de passe."
+        f"Bonjour,\n\nVotre compte ADSUM a été créé. Mot de passe temporaire : {temp}\n"
+        f"Il est valable {TEMP_VALID_HOURS} heures. Connectez-vous à l'espace membre, "
+        f"changez votre mot de passe puis complétez votre inscription.\n\n"
+        f"Passé ce délai, contactez l'administration pour un nouveau mot de passe."
     )
     html = render_temp_password_email(temp, validity=f"{TEMP_VALID_HOURS} heures")
-    return send_email(email, "ADSUM, votre acces et mot de passe temporaire", text, html)
+    return send_email(email, "ADSUM, votre accès et mot de passe temporaire", text, html)
+
+
+def _temp_password_via_telegram(membre_id: str, role: str, temp: str) -> bool:
+    """Also deliver the temporary password over Telegram when the member linked
+    that channel. Some members use Telegram rather than e-mail, so the same
+    credential reaches them on their default channel. Best-effort: never raises."""
+    try:
+        from . import channels
+
+        member = db.fetch_one(
+            "SELECT telegram_chat_id, langue, prenoms FROM membre WHERE id = %s",
+            (membre_id,),
+            role=role,
+        )
+        if not member or not member.get("telegram_chat_id"):
+            return False
+        prenom = (str(member.get("prenoms") or "").split(" ")[0]) or ""
+        if member.get("langue") == "en":
+            titre = "Your ADSUM access"
+            corps = (
+                f"Hello {prenom}, your ADSUM account was created. Temporary password: {temp}. "
+                f"It is valid for {TEMP_VALID_HOURS} hours. Sign in to the member space, change your "
+                f"password, then complete your registration. Do not share this password."
+            )
+        else:
+            titre = "Votre accès ADSUM"
+            corps = (
+                f"Bonjour {prenom}, votre compte ADSUM a été créé. Mot de passe temporaire : {temp}. "
+                f"Il est valable {TEMP_VALID_HOURS} heures. Connectez-vous à l'espace membre, changez "
+                f"votre mot de passe, puis complétez votre inscription. Ne communiquez ce mot de passe à personne."
+            )
+        return channels.send_telegram(str(member["telegram_chat_id"]), channels.Message(titre=titre, corps_text=corps))
+    except Exception:  # noqa: BLE001 - Telegram is a best-effort second channel
+        return False
 
 
 def _notify_membre(membre_id: str, role: str, titre: str, corps: str) -> None:
@@ -115,14 +149,16 @@ def creer_compte_membre(payload: CompteMembreIn, user: Annotated[UserMe, Depends
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="account already exists") from exc
     sent, provider = _send_temp_password(str(payload.email), temp)
+    telegram_envoye = _temp_password_via_telegram(membre_id, user.role, temp)
     audit.log(user.id, user.role, "creation_inscription", "membre", membre_id,
-              {"matricule": matricule, "email_envoye": sent, "canal": provider})
+              {"matricule": matricule, "email_envoye": sent, "canal": provider, "telegram_envoye": telegram_envoye})
     return {
         "membre_id": membre_id,
         "matricule": matricule,
         "expire_le": expire.isoformat(),
         "email_envoye": sent,
         "canal_email": provider,
+        "telegram_envoye": telegram_envoye,
     }
 
 
@@ -140,8 +176,10 @@ def relancer_mdp(membre_id: str, user: Annotated[UserMe, Depends(require_writer)
         role=user.role,
     )
     sent, provider = _send_temp_password(str(row["email"]), temp)
-    audit.log(user.id, user.role, "relance_mdp_temporaire", "membre", membre_id, {"email_envoye": sent})
-    return {"ok": True, "expire_le": expire.isoformat(), "email_envoye": sent, "canal_email": provider}
+    telegram_envoye = _temp_password_via_telegram(membre_id, user.role, temp)
+    audit.log(user.id, user.role, "relance_mdp_temporaire", "membre", membre_id,
+              {"email_envoye": sent, "telegram_envoye": telegram_envoye})
+    return {"ok": True, "expire_le": expire.isoformat(), "email_envoye": sent, "canal_email": provider, "telegram_envoye": telegram_envoye}
 
 
 # --- Admin: review and decision -------------------------------------------
