@@ -79,6 +79,27 @@ def render_temp_password_email(temp_password: str, validity: str = "72 heures", 
     return _shell(inner, "Votre mot de passe temporaire ADSUM")
 
 
+def render_anniversaire_email(titre: str, corps: str, image_url: str | None = None) -> str:
+    """A festive, sober birthday message on the design system."""
+    image = (
+        f'<tr><td style="padding:0 28px 4px;"><img src="{image_url}" alt="" '
+        f'style="width:100%;max-height:200px;object-fit:cover;border-radius:14px;display:block;"></td></tr>'
+        if image_url
+        else ""
+    )
+    inner = f"""\
+<tr><td align="center" style="padding:34px 28px 6px;">
+<div style="font-size:44px;line-height:1;margin-bottom:10px;">🎉🎂</div>
+<h1 style="margin:0 0 10px;font-family:{FONT_DISPLAY};font-weight:700;font-size:23px;color:{INK};">{titre}</h1>
+</td></tr>
+{image}
+<tr><td style="padding:8px 28px 10px;">
+<p style="margin:0;font-family:{FONT_UI};font-size:14.5px;line-height:1.7;color:{MUT};text-align:center;">{corps}</p>
+<p style="margin:18px 0 0;text-align:center;font-family:{FONT_DISPLAY};font-weight:600;font-size:15px;color:{ACC};">La fraternité du Sacerdoce Royal 🙏</p>
+</td></tr>"""
+    return _shell(inner, titre)
+
+
 def render_notification_email(titre: str, corps: str, cta_label: str | None = None, cta_url: str | None = None) -> str:
     cta = ""
     if cta_label and cta_url:

@@ -217,31 +217,41 @@ class PreferencesIn(BaseModel):
     demandes: bool = True
     rappels: bool = True
     email: bool = True
+    telegram: bool = False
+    whatsapp: bool = False
+    sms: bool = False
+    anniversaire: bool = True
+
+
+_PREF_COLS = ("evenements", "demandes", "rappels", "email", "telegram", "whatsapp", "sms", "anniversaire")
 
 
 @router.get("/membres/me/preferences-notification")
 def get_preferences(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, bool]:
     membre_id, role = ctx
-    row = db.fetch_one("SELECT evenements, demandes, rappels, email FROM preference_notification WHERE membre_id = %s", (membre_id,), role=role)
+    row = db.fetch_one(f"SELECT {', '.join(_PREF_COLS)} FROM preference_notification WHERE membre_id = %s", (membre_id,), role=role)
     if not row:
-        return {"evenements": True, "demandes": True, "rappels": True, "email": True}
-    return {"evenements": bool(row["evenements"]), "demandes": bool(row["demandes"]), "rappels": bool(row["rappels"]), "email": bool(row["email"])}
+        defaults = {c: True for c in _PREF_COLS}
+        defaults.update({"telegram": False, "whatsapp": False, "sms": False})
+        return defaults
+    return {c: bool(row[c]) for c in _PREF_COLS}
 
 
 @router.put("/membres/me/preferences-notification")
 def set_preferences(payload: PreferencesIn, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, bool]:
     membre_id, role = ctx
+    values = {c: getattr(payload, c) for c in _PREF_COLS}
+    assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in _PREF_COLS)
     db.execute(
-        """
-        INSERT INTO preference_notification (membre_id, evenements, demandes, rappels, email, maj_le)
-        VALUES (%s, %s, %s, %s, %s, now())
-        ON CONFLICT (membre_id) DO UPDATE SET evenements = EXCLUDED.evenements, demandes = EXCLUDED.demandes,
-            rappels = EXCLUDED.rappels, email = EXCLUDED.email, maj_le = now()
+        f"""
+        INSERT INTO preference_notification (membre_id, {', '.join(_PREF_COLS)}, maj_le)
+        VALUES (%s, {', '.join(['%s'] * len(_PREF_COLS))}, now())
+        ON CONFLICT (membre_id) DO UPDATE SET {assignments}, maj_le = now()
         """,
-        (membre_id, payload.evenements, payload.demandes, payload.rappels, payload.email),
+        (membre_id, *[values[c] for c in _PREF_COLS]),
         role=role,
     )
-    return {"evenements": payload.evenements, "demandes": payload.demandes, "rappels": payload.rappels, "email": payload.email}
+    return values
 
 
 # --- Admin: questionnaire window duration -----------------------------------

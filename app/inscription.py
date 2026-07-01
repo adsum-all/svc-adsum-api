@@ -192,9 +192,10 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
 # --- Member: status and submission ----------------------------------------
 
 _EDITABLE_FIELDS = {
-    "prenoms", "nom", "telephone", "date_naissance", "genre", "pays", "ville",
-    "commission_id", "intendance_id", "tribu_id", "groupe", "profession",
-    "niveau_etudes", "situation_matrimoniale", "type_mariage",
+    "prenoms", "nom", "telephone", "indicatif_telephone", "date_naissance",
+    "naissance_annee_visible", "genre", "pays", "region", "ville", "adresse",
+    "adresse_complement", "commission_id", "intendance_id", "tribu_id", "groupe",
+    "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage",
     "baptise", "confirme", "premiere_communion",
 }
 
@@ -203,10 +204,15 @@ class ProfilUpdate(BaseModel):
     prenoms: str | None = None
     nom: str | None = None
     telephone: str | None = None
+    indicatif_telephone: str | None = None
     date_naissance: str | None = None
+    naissance_annee_visible: bool | None = None
     genre: str | None = None
     pays: str | None = None
+    region: str | None = None
     ville: str | None = None
+    adresse: str | None = None
+    adresse_complement: str | None = None
     commission_id: str | None = None
     intendance_id: str | None = None
     tribu_id: str | None = None

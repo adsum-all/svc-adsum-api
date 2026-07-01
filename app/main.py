@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .admin import router as admin_router
 from .analytics import router as analytics_router
+from .anniversaires import router as anniversaires_router
 from .audit import router as audit_router
 from .auth import router as auth_router
 from .collaboration import router as collaboration_router
@@ -63,6 +64,7 @@ app.include_router(formation_router)
 app.include_router(inscription_router)
 app.include_router(reference_router)
 app.include_router(rgpd_router)
+app.include_router(anniversaires_router)
 app.include_router(gestion_router)
 
 

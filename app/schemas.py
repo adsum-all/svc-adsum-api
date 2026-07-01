@@ -34,14 +34,19 @@ class MembreProfile(BaseModel):
     nom: str | None = None
     prenoms: str | None = None
     telephone: str | None = None
+    indicatif_telephone: str | None = None
     groupe: str | None = None
     photo_url: str | None = None
     statut: str
     verifie: bool
     genre: str | None = None
     date_naissance: date | None = None
+    naissance_annee_visible: bool = False
     pays: str | None = None
+    region: str | None = None
     ville: str | None = None
+    adresse: str | None = None
+    adresse_complement: str | None = None
     date_entree: date | None = None
     cheminement_pastoral: str | None = None
     statut_administratif: str | None = None
