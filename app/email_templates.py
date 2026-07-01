@@ -79,7 +79,7 @@ def render_temp_password_email(temp_password: str, validity: str = "72 heures", 
     return _shell(inner, "Votre mot de passe temporaire ADSUM")
 
 
-def render_anniversaire_email(titre: str, corps: str, image_url: str | None = None) -> str:
+def render_anniversaire_email(titre: str, corps: str, image_url: str | None = None, site: str | None = None) -> str:
     """A festive, sober birthday message on the design system."""
     image = (
         f'<tr><td style="padding:0 28px 4px;"><img src="{image_url}" alt="" '
@@ -95,12 +95,31 @@ def render_anniversaire_email(titre: str, corps: str, image_url: str | None = No
 {image}
 <tr><td style="padding:8px 28px 10px;">
 <p style="margin:0;font-family:{FONT_UI};font-size:14.5px;line-height:1.7;color:{MUT};text-align:center;">{corps}</p>
-<p style="margin:18px 0 0;text-align:center;font-family:{FONT_DISPLAY};font-weight:600;font-size:15px;color:{ACC};">La fraternité du Sacerdoce Royal 🙏</p>
+<p style="margin:18px 0 0;text-align:center;font-family:{FONT_DISPLAY};font-weight:600;font-size:15px;color:{ACC};">Sacerdoce Royal 🙏</p>
+{f'<p style="margin:4px 0 0;text-align:center;font-family:{FONT_MONO};font-size:11px;color:#9498a1;">{site}</p>' if site else ""}
 </td></tr>"""
     return _shell(inner, titre)
 
 
-def render_notification_email(titre: str, corps: str, cta_label: str | None = None, cta_url: str | None = None) -> str:
+def _signature_block(signature: str | None, site: str | None) -> str:
+    if not signature and not site:
+        return ""
+    sig = f'<p style="margin:16px 0 0;font-family:{FONT_DISPLAY};font-weight:600;font-size:14px;color:{ACC};">{signature}</p>' if signature else ""
+    lien = ""
+    if site:
+        href = site if site.startswith("http") else f"https://{site}"
+        lien = f'<p style="margin:4px 0 0;font-family:{FONT_MONO};font-size:11px;color:#9498a1;"><a href="{href}" style="color:#9498a1;text-decoration:none;">{site}</a></p>'
+    return sig + lien
+
+
+def render_notification_email(
+    titre: str,
+    corps: str,
+    cta_label: str | None = None,
+    cta_url: str | None = None,
+    signature: str | None = "Sacerdoce Royal",
+    site: str | None = None,
+) -> str:
     cta = ""
     if cta_label and cta_url:
         cta = (
@@ -114,5 +133,6 @@ def render_notification_email(titre: str, corps: str, cta_label: str | None = No
 <h1 style="margin:0 0 10px;font-family:{FONT_DISPLAY};font-weight:700;font-size:20px;color:{INK};">{titre}</h1>
 <p style="margin:0;font-family:{FONT_UI};font-size:14px;line-height:1.65;color:{MUT};">{corps}</p>
 {cta}
+{_signature_block(signature, site)}
 </td></tr>"""
     return _shell(inner, titre)

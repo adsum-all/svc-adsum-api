@@ -38,6 +38,16 @@ _GUIDE = {
         "obtenir": "C'est le username choisi a la creation (ex. adsum_sr_bot).",
         "roter": "Modifiable via @BotFather (/setname ne change pas le username ; un nouveau username se fait via BotFather).",
     },
+    "signature": {
+        "titre": "Signature des messages",
+        "aide": "Texte de signature ajoute a la fin de chaque notification. Par defaut : Sacerdoce Royal.",
+        "roter": "Modifiez ici pour personnaliser la signature de tous les messages.",
+    },
+    "site_officiel": {
+        "titre": "Site officiel",
+        "aide": "Adresse du site officiel affichee en pied de chaque message.",
+        "roter": "Renseignez l'URL officielle (ex. sacerdoceroyal.info).",
+    },
 }
 
 

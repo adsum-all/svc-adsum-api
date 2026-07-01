@@ -110,8 +110,16 @@ def notifier(
             if already:
                 return []
         titre, corps = _render(type_cle, lang, ctx, role)
-        html = render_anniversaire_email(titre, corps) if type_cle == "anniversaire" else render_notification_email(titre, corps)
-        msg = channels.Message(titre=titre, corps_text=corps, corps_html=html, type_notif=type_cle)
+        signature = channels.integration_value("signature") or "Sacerdoce Royal"
+        site = channels.integration_value("site_officiel")
+        # Plain-text footer for Telegram / in-app (the birthday template already signs off).
+        footer = ("\n\n" + (site if site else "")) if type_cle == "anniversaire" else ("\n\n" + signature + (f"\n{site}" if site else ""))
+        corps_text = corps + (footer if footer.strip() else "")
+        if type_cle == "anniversaire":
+            html = render_anniversaire_email(titre, corps, site=site or None)
+        else:
+            html = render_notification_email(titre, corps, signature=signature, site=site or None)
+        msg = channels.Message(titre=titre, corps_text=corps_text, corps_html=html, type_notif=type_cle)
         used = channels.dispatch(membre_id, role, msg, whatsapp_params=whatsapp_params)
         if dedup:
             db.execute(
