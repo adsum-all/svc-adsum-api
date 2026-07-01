@@ -14,6 +14,8 @@ MEMBRE_PROFILE_SELECT = (
     "m.tribu_id, m.type_membre, m.promotion, m.situation_matrimoniale, m.type_mariage, "
     "m.profession, m.niveau_etudes, m.baptise, m.confirme, m.premiere_communion, "
     "m.champs_deverrouilles, m.langue, "
+    "m.commission_id, m.fonction_cle, m.fonction_confirmee, "
+    "fh.libelle_h AS fonction_h, fh.libelle_f AS fonction_f, fh.libelle_n AS fonction_n, fh.est_vip AS fonction_vip, "
     "c.nom AS commission, i.nom AS intendance, bm.nom AS berger_nom, bm.prenoms AS berger_prenoms, "
     "t.nom AS tribu, t.patriarche, co.nom AS coordination, "
     "cm.nom AS coord_nom, cm.prenoms AS coord_prenoms"
@@ -22,6 +24,7 @@ MEMBRE_PROFILE_SELECT = (
 # The joins that back the columns above. Use together with MEMBRE_PROFILE_SELECT.
 MEMBRE_PROFILE_FROM = (
     "FROM membre m "
+    "LEFT JOIN fonction_honorifique fh ON fh.cle = m.fonction_cle "
     "LEFT JOIN commission c ON c.id = m.commission_id "
     "LEFT JOIN intendance i ON i.id = m.intendance_id "
     "LEFT JOIN utilisateur bu ON bu.id = m.berger_referent_id "
@@ -36,6 +39,22 @@ MEMBRE_PROFILE_FROM = (
 def _join_name(prenoms: object, nom: object) -> str | None:
     name = f"{prenoms or ''} {nom or ''}".strip()
     return name or None
+
+
+def titre_prefixe(genre: object, confirmee: object, h: object, f: object, n: object) -> str | None:
+    """Resolve the honorific prefix by gender, only once an admin confirmed it.
+
+    An unconfirmed function never yields a public prefix, so a member cannot
+    display an unearned title. Gender maps homme -> masculine, femme -> feminine,
+    anything else -> the epicene form.
+    """
+    if not confirmee:
+        return None
+    if genre == "homme":
+        return str(h) if h else None
+    if genre == "femme":
+        return str(f) if f else None
+    return str(n) if n else (str(h) if h else None)
 
 
 def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
@@ -84,4 +103,14 @@ def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
         coordinateur=_join_name(row.get("coord_prenoms"), row.get("coord_nom")),
         champs_deverrouilles=list(row.get("champs_deverrouilles") or []),
         langue=str(row.get("langue") or "fr"),
+        commission_id=str(row["commission_id"]) if row.get("commission_id") else None,
+        fonction_cle=row.get("fonction_cle"),
+        fonction_confirmee=bool(row.get("fonction_confirmee")),
+        titre=titre_prefixe(
+            row.get("genre"),
+            row.get("fonction_confirmee"),
+            row.get("fonction_h"),
+            row.get("fonction_f"),
+            row.get("fonction_n"),
+        ),
     )

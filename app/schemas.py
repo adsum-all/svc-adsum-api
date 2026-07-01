@@ -71,6 +71,10 @@ class MembreProfile(BaseModel):
     coordinateur: str | None = None
     champs_deverrouilles: list[str] = []
     langue: str = "fr"
+    commission_id: str | None = None
+    fonction_cle: str | None = None
+    fonction_confirmee: bool = False
+    titre: str | None = None
 
 
 class EvenementOut(BaseModel):
@@ -188,7 +192,7 @@ class QrToken(BaseModel):
 
 
 _CHEMINEMENT = "^(nouveau|en_accompagnement|membre_actif|responsable|a_relancer|en_pause|ancien_membre)$"
-_TYPE_MEMBRE = "^(membre_simple|nouveau_engage|aspirant|engage|berger|responsable)$"
+_TYPE_MEMBRE = "^(membre_simple|membre_actif|nouveau_engage|aspirant|engage|inspirant|berger|responsable)$"
 _SITUATION = "^(celibataire|en_couple|fiance|marie|veuf|divorce)$"
 _MARIAGE = "^(dot|religieux|dot_et_religieux|civil)$"
 
@@ -211,6 +215,7 @@ class MembreFields(BaseModel):
     cheminement_pastoral: str | None = Field(default=None, pattern=_CHEMINEMENT)
     tribu_id: str | None = None
     type_membre: str | None = Field(default=None, pattern=_TYPE_MEMBRE)
+    fonction_cle: str | None = None
     promotion: str | None = None
     situation_matrimoniale: str | None = Field(default=None, pattern=_SITUATION)
     type_mariage: str | None = Field(default=None, pattern=_MARIAGE)

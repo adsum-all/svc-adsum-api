@@ -196,7 +196,7 @@ _EDITABLE_FIELDS = {
     "naissance_annee_visible", "genre", "pays", "region", "ville", "adresse",
     "adresse_complement", "commission_id", "intendance_id", "tribu_id", "groupe",
     "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage",
-    "baptise", "confirme", "premiere_communion",
+    "baptise", "confirme", "premiere_communion", "type_membre", "fonction_cle",
 }
 
 
@@ -224,6 +224,8 @@ class ProfilUpdate(BaseModel):
     baptise: bool | None = None
     confirme: bool | None = None
     premiere_communion: bool | None = None
+    type_membre: str | None = None
+    fonction_cle: str | None = None
 
 
 @router.patch("/membres/me/profil")

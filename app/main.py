@@ -17,6 +17,7 @@ from .controle import router as controle_router
 from .demandes import router as demandes_router
 from .doublons import router as doublons_router
 from .fichiers import router as fichiers_router
+from .fonctions import router as fonctions_router
 from .formation import router as formation_router
 from .gestion import router as gestion_router
 from .inscription import router as inscription_router
@@ -71,6 +72,7 @@ app.include_router(rgpd_router)
 app.include_router(anniversaires_router)
 app.include_router(notifications_router)
 app.include_router(integrations_router)
+app.include_router(fonctions_router)
 app.include_router(gestion_router)
 
 
