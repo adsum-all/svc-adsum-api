@@ -29,8 +29,25 @@ require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleu
 require_writer = require_roles("super_admin", "admin")
 
 # Signal weights, summing to 1.0. Name and date of birth dominate; the address
-# adds trigram nuance; the city is a weak corroborating signal.
+# adds trigram nuance; the city is a weak corroborating signal. A second set is
+# used when both members have a photo hash, so the photo can weigh in.
 _WEIGHTS = {"nom": 0.35, "date_naissance": 0.25, "telephone": 0.20, "adresse": 0.12, "ville": 0.08}
+_WEIGHTS_PHOTO = {"nom": 0.28, "date_naissance": 0.20, "telephone": 0.16, "adresse": 0.10, "ville": 0.06, "photo": 0.20}
+
+
+def _hamming_hex(a: str, b: str) -> int:
+    """Number of differing bits between two equal-length hex strings."""
+    return bin(int(a, 16) ^ int(b, 16)).count("1")
+
+
+def _photo_similarity(a: object, b: object) -> float | None:
+    """1 - normalized Hamming distance of two 64-bit dHash hex strings, or None."""
+    if not isinstance(a, str) or not isinstance(b, str) or len(a) != 16 or len(b) != 16:
+        return None
+    try:
+        return round(1.0 - _hamming_hex(a, b) / 64.0, 3)
+    except ValueError:
+        return None
 
 _DISPLAY = (
     "id, matricule, prenoms, nom, email, telephone, date_naissance, ville, pays, adresse, verifie, photo_url"
@@ -59,20 +76,25 @@ def _score(row: dict[str, object]) -> tuple[float, dict[str, object]]:
     same_dob = bool(row["same_dob"])
     same_phone = bool(row["same_phone"])
     same_city = bool(row["same_city"])
+    photo_sim = _photo_similarity(row.get("a_phash"), row.get("b_phash"))
+    w = _WEIGHTS_PHOTO if photo_sim is not None else _WEIGHTS
     score = (
-        _WEIGHTS["nom"] * name_sim
-        + _WEIGHTS["date_naissance"] * (1.0 if same_dob else 0.0)
-        + _WEIGHTS["telephone"] * (1.0 if same_phone else 0.0)
-        + _WEIGHTS["adresse"] * addr_sim
-        + _WEIGHTS["ville"] * (1.0 if same_city else 0.0)
+        w["nom"] * name_sim
+        + w["date_naissance"] * (1.0 if same_dob else 0.0)
+        + w["telephone"] * (1.0 if same_phone else 0.0)
+        + w["adresse"] * addr_sim
+        + w["ville"] * (1.0 if same_city else 0.0)
     )
-    signaux = {
+    signaux: dict[str, object] = {
         "nom": round(name_sim, 2),
         "date_naissance": same_dob,
         "telephone": same_phone,
         "ville": same_city,
         "adresse": round(addr_sim, 2),
     }
+    if photo_sim is not None:
+        score += w["photo"] * photo_sim
+        signaux["photo"] = photo_sim
     return round(score, 3), signaux
 
 
@@ -81,7 +103,7 @@ _SCAN_SQL = """
         SELECT id,
                lower(trim(coalesce(prenoms, '') || ' ' || coalesce(nom, ''))) AS fullname,
                regexp_replace(coalesce(telephone, ''), '[^0-9]', '', 'g') AS phone,
-               date_naissance, ville, adresse
+               date_naissance, ville, adresse, photo_phash
         FROM membre
     )
     SELECT a.id AS a_id, b.id AS b_id,
@@ -89,12 +111,14 @@ _SCAN_SQL = """
            (a.date_naissance IS NOT NULL AND a.date_naissance = b.date_naissance) AS same_dob,
            (length(a.phone) >= 6 AND a.phone = b.phone) AS same_phone,
            (a.ville IS NOT NULL AND lower(a.ville) = lower(b.ville)) AS same_city,
-           similarity(coalesce(a.adresse, ''), coalesce(b.adresse, '')) AS addr_sim
+           similarity(coalesce(a.adresse, ''), coalesce(b.adresse, '')) AS addr_sim,
+           a.photo_phash AS a_phash, b.photo_phash AS b_phash
     FROM m a JOIN m b ON a.id < b.id
     WHERE similarity(a.fullname, b.fullname) > 0.3
        OR (length(a.phone) >= 6 AND a.phone = b.phone)
        OR (a.date_naissance IS NOT NULL AND a.date_naissance = b.date_naissance)
        OR similarity(coalesce(a.adresse, ''), coalesce(b.adresse, '')) > 0.5
+       OR (a.photo_phash IS NOT NULL AND a.photo_phash = b.photo_phash)
 """
 
 

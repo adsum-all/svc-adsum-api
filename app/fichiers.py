@@ -34,6 +34,7 @@ def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
 
 class PhotoConfirm(BaseModel):
     path: str
+    phash: str | None = None  # 16-hex-char dHash computed on the client
 
 
 class UploadUrlIn(BaseModel):
@@ -72,7 +73,22 @@ def photo_confirm(payload: PhotoConfirm, ctx: Annotated[tuple[str, str], Depends
     membre_id, role = ctx
     if not payload.path.startswith(f"{membre_id}/"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
-    db.execute("UPDATE membre SET photo_url = %s WHERE id = %s", (payload.path, membre_id), role=role)
+    phash = _clean_phash(payload.phash)
+    db.execute(
+        "UPDATE membre SET photo_url = %s, photo_phash = %s WHERE id = %s",
+        (payload.path, phash, membre_id),
+        role=role,
+    )
+
+
+def _clean_phash(value: str | None) -> str | None:
+    """Keep only a valid 16-hex-char difference hash; ignore anything else."""
+    if not value:
+        return None
+    cleaned = value.strip().lower()
+    if len(cleaned) == 16 and all(c in "0123456789abcdef" for c in cleaned):
+        return cleaned
+    return None
 
 
 @router.get("/photo")
