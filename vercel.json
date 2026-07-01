@@ -2,5 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["cdg1"],
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
-  "crons": [{ "path": "/api/v1/cron/anniversaires", "schedule": "0 6 * * *" }]
+  "crons": [{ "path": "/api/v1/cron/quotidien", "schedule": "30 6 * * *" }]
 }

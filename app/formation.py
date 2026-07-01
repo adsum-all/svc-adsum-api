@@ -67,7 +67,23 @@ def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     audit.log(user.id, user.role, "maj_session_evenement", "evenement", evenement_id, {"ouverte": payload.session_ouverte})
+    # When the live session is opened, notify members that the activity has started.
+    if payload.session_ouverte:
+        _notifier_session_ouverte(evenement_id, str(row["lien_session"] or ""), user.role)
     return {"id": str(row["id"]), "session_ouverte": bool(row["session_ouverte"]), "lien_session": row["lien_session"]}
+
+
+def _notifier_session_ouverte(evenement_id: str, lien: str, role: str) -> None:
+    """Fan out the 'activity started' notification (once, deduplicated)."""
+    try:
+        from .notifications import notifier
+
+        ev = db.fetch_one("SELECT titre FROM evenement WHERE id = %s", (evenement_id,), role=role)
+        titre = ev["titre"] if ev else "l'activite"
+        for m in db.fetch_all("SELECT id FROM membre WHERE statut = 'actif'", (), role=role):
+            notifier(str(m["id"]), role, "activite_demarree", {"titre": titre, "lien": lien}, ref_id=evenement_id, dedup=True)
+    except Exception:  # noqa: BLE001 - notifications must never block the session action
+        pass
 
 
 # --- Admin: questionnaire builder -------------------------------------------
