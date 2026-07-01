@@ -189,11 +189,17 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
     messages = {
         "approuve": ("Inscription validee", "Votre inscription est validee. Votre carte et votre QR sont actifs."),
         "refuse": ("Inscription refusee", f"Votre inscription a ete refusee. Motif : {payload.motif or 'non precise'}."),
-        "modification_demandee": ("Modification demandee", f"L'administration demande une modification : {payload.motif or 'voir details'}."),
+        "modification_demandee": ("Modification demandee", f"L'administration demande une correction : {payload.motif or 'voir details'}. Vos informations sont conservees : rouvrez votre dossier, corrigez uniquement ce qui est demande, puis renvoyez-le."),
         "en_revue": ("Dossier en cours d'examen", "Votre dossier est en cours d'examen par l'administration."),
     }
     titre, corps = messages[payload.decision]
-    _notify_membre(membre_id, user.role, titre, corps)
+    # Multi-channel delivery (in-app + e-mail + Telegram), not in-app only.
+    from . import channels
+
+    mrow = db.fetch_one("SELECT prenoms FROM membre WHERE id = %s", (membre_id,), role=user.role)
+    prenom = (str(mrow.get("prenoms") or "").split(" ")[0]) if mrow else "cher membre"
+    corps_complet = f"Bonjour {prenom},\n\n{corps}"
+    channels.dispatch(membre_id, user.role, channels.Message(titre=titre, corps_text=corps_complet, type_notif="inscription"))
     audit.log(user.id, user.role, "decision_inscription", "membre", membre_id, {"decision": payload.decision})
     return {"ok": True, "statut": payload.decision}
 
@@ -333,5 +339,10 @@ def soumettre_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)])
         (membre_id,),
         role=role,
     )
-    _notify_membre(membre_id, role, "Inscription soumise", "Votre inscription a ete soumise. L'administration va l'examiner.")
-    return {"ok": True, "statut": "soumis"}
+    # Multi-channel acknowledgement (in-app + e-mail + Telegram) so the member is
+    # told, off-app too, that the dossier was received and will be reviewed.
+    from .notifications import notifier
+
+    prenom = (str(row.get("prenoms") or "").split(" ")[0]) or "cher membre"
+    canaux = notifier(membre_id, role, "inscription_soumise", {"prenom": prenom})
+    return {"ok": True, "statut": "soumis", "canaux": canaux}

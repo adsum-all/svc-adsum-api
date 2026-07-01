@@ -49,6 +49,12 @@ _CATEGORY_PREF = {
     "anniversaire": "anniversaire",
     "anniversaire_pairs": "anniv_pairs",
     "activite_test_diffusion": "evenements",
+    "inscription_soumise": None,
+    "engagement_code": None,
+    "attestation_requise": None,
+    "attestation_rappel": "rappels",
+    "attestation_expiree": None,
+    "correction_demandee": None,
 }
 
 # Minimal built-in fallbacks (FR/EN) used only if no template row exists yet.
