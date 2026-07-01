@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 from . import audit, channels, db
 from .config import settings
@@ -47,6 +47,27 @@ _GUIDE = {
         "titre": "Site officiel",
         "aide": "Adresse du site officiel affichee en pied de chaque message.",
         "roter": "Renseignez l'URL officielle (ex. sacerdoceroyal.info).",
+    },
+    "email_from": {
+        "titre": "Adresse expeditrice des e-mails",
+        "aide": "Adresse unique qui envoie tous les e-mails (mot de passe temporaire, notifications). Par defaut : saintgabrielsacerdoceroyal@ikmail.com.",
+        "obtenir": "C'est l'adresse qui apparaitra comme expediteur. Elle DOIT etre validee comme expediteur chez le fournisseur (Brevo).",
+        "roter": "Pour changer d'adresse expeditrice : 1) ajoutez et validez la nouvelle adresse chez Brevo (Expediteurs > Ajouter, puis cliquez le lien de confirmation recu). 2) Mettez l'adresse ici. 3) Envoyez un e-mail de test (bouton ci-dessous) pour verifier la reception. Si vous passez a une adresse sur votre propre domaine, configurez aussi SPF/DKIM/DMARC chez Brevo pour une bonne delivrabilite.",
+    },
+    "email_from_name": {
+        "titre": "Nom expediteur affiche",
+        "aide": "Nom affiche a cote de l'adresse (ex. Sacerdoce Royal).",
+        "roter": "Modifiez ici le nom affiche des e-mails.",
+    },
+    "email_provider": {
+        "titre": "Fournisseur d'e-mail",
+        "aide": "Service qui envoie les e-mails : brevo (recommande), resend, smtp, ou console (dev, n'envoie rien). Plusieurs valeurs separees par des virgules = repli automatique (ex. brevo,resend).",
+        "roter": "Choisissez le fournisseur. Avec Brevo : verifiez que la securite 'Authorised IPs' est DESACTIVEE dans Brevo (sinon les envois depuis le serveur sont bloques), et que la cle API renseignee est une cle API v3 (xkeysib-...), pas une cle SMTP.",
+    },
+    "email_api_key": {
+        "titre": "Cle API du fournisseur d'e-mail",
+        "aide": "Cle API du fournisseur (Brevo : xkeysib-... ; Resend : re_...). Stockee de facon securisee, affichee masquee.",
+        "roter": "Collez ici la nouvelle cle API et enregistrez. Pour Brevo, prenez la cle dans Parametres > Cles API (PAS la cle SMTP). Apres changement, envoyez un e-mail de test.",
     },
 }
 
@@ -118,3 +139,27 @@ def statut_canaux(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, 
         "whatsapp": {"actif": channels.whatsapp_configured(), "gratuit": False, "note": "Payant par message (Meta Cloud API), necessite un compte WABA verifie et des modeles approuves."},
         "sms": {"actif": channels.sms_configured(), "gratuit": False, "note": "Aucun fournisseur configure (payant)."},
     }
+
+
+class TestEmailIn(BaseModel):
+    to: EmailStr | None = None
+
+
+@router.post("/test-email")
+def test_email(payload: TestEmailIn, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+    """Send a real test e-mail through the configured pipeline and report the outcome.
+
+    Lets an administrator confirm end-to-end that outgoing e-mail actually works
+    (or see the exact failure), instead of assuming success.
+    """
+    from .email_gateway import send_email
+
+    dest = str(payload.to) if payload.to else str(user.email)
+    sent, provider = send_email(
+        dest,
+        "ADSUM, e-mail de test",
+        "Ceci est un e-mail de test ADSUM. Si vous le recevez, la configuration d'envoi fonctionne.",
+        "<p>Ceci est un e-mail de test ADSUM. Si vous le recevez, la configuration d'envoi fonctionne.</p>",
+    )
+    audit.log(user.id, user.role, "test_email", "integration_config", "email", {"to": dest, "sent": sent, "provider": provider})
+    return {"sent": sent, "provider": provider, "to": dest}

@@ -17,25 +17,66 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json as _json
+import logging
 import smtplib
 import time
+import urllib.error
 import urllib.request
 from email.message import EmailMessage
 from typing import Protocol
 
+from . import db
 from .config import settings
+
+logger = logging.getLogger("adsum.email")
+
+
+def _config_value(cle: str, fallback: str) -> str:
+    """Admin-managed value from integration_config, falling back to the environment."""
+    try:
+        row = db.fetch_one("SELECT valeur FROM integration_config WHERE cle = %s", (cle,))
+        if row and row.get("valeur"):
+            return str(row["valeur"])
+    except Exception:  # noqa: BLE001 - never let config lookup break a send
+        pass
+    return fallback
+
+
+def _sender() -> tuple[str, str]:
+    """The active sender identity (admin-configurable, default Sacerdoce Royal)."""
+    email = _config_value("email_from", settings.email_from) or "saintgabrielsacerdoceroyal@ikmail.com"
+    name = _config_value("email_from_name", settings.email_from_name) or "Sacerdoce Royal"
+    return email, name
+
+
+def _api_key() -> str:
+    return _config_value("email_api_key", settings.email_api_key)
 
 
 def _http_post(url: str, headers: dict[str, str], body: dict[str, object]) -> int:
-    """POST JSON using the standard library (httpx is unreliable on Vercel)."""
+    """POST JSON using the standard library (httpx is unreliable on Vercel).
+
+    Raises with the provider's error body on any non-2xx response so a rejected
+    send is never mistaken for a success (no silent failure).
+    """
     data = _json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", "ADSUM/1.0")
     for key, value in headers.items():
         req.add_header(key, value)
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (trusted provider URLs)
-        return resp.status
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (trusted provider URLs)
+            if resp.status >= 300:
+                raise RuntimeError(f"provider HTTP {resp.status}")
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "ignore")[:300]
+        except Exception:  # noqa: BLE001
+            pass
+        raise RuntimeError(f"provider HTTP {exc.code}: {detail}") from exc
 
 # One-time code parameters.
 CODE_DIGITS = 6
@@ -76,8 +117,9 @@ class ConsoleProvider:
 
 class SMTPProvider:
     def send(self, to: str, subject: str, text: str, html: str) -> None:
+        sender_email, sender_name = _sender()
         msg = EmailMessage()
-        msg["From"] = settings.email_from
+        msg["From"] = f"{sender_name} <{sender_email}>"
         msg["To"] = to
         msg["Subject"] = subject
         msg.set_content(text)
@@ -98,11 +140,12 @@ class BrevoProvider:
     """Brevo transactional HTTP API (requires an xkeysib API key, not the SMTP key)."""
 
     def send(self, to: str, subject: str, text: str, html: str) -> None:
+        sender_email, sender_name = _sender()
         _http_post(
             "https://api.brevo.com/v3/smtp/email",
-            {"api-key": settings.email_api_key},
+            {"api-key": _api_key()},
             {
-                "sender": {"email": settings.email_from, "name": "ADSUM"},
+                "sender": {"email": sender_email, "name": sender_name},
                 "to": [{"email": to}],
                 "subject": subject,
                 "textContent": text,
@@ -113,10 +156,11 @@ class BrevoProvider:
 
 class ResendProvider:
     def send(self, to: str, subject: str, text: str, html: str) -> None:
+        sender_email, sender_name = _sender()
         _http_post(
             "https://api.resend.com/emails",
-            {"Authorization": f"Bearer {settings.email_api_key}"},
-            {"from": settings.email_from, "to": [to], "subject": subject, "text": text, "html": html},
+            {"Authorization": f"Bearer {_api_key()}"},
+            {"from": f"{sender_name} <{sender_email}>", "to": [to], "subject": subject, "text": text, "html": html},
         )
 
 
@@ -130,22 +174,32 @@ _PROVIDERS: dict[str, type[EmailProvider]] = {
 
 def _provider_chain() -> list[str]:
     """The ordered list of providers to try (comma-separated, no lock-in)."""
-    raw = (settings.email_provider or "console").lower()
+    raw = (_config_value("email_provider", settings.email_provider) or "console").lower()
     names = [n.strip() for n in raw.split(",") if n.strip()]
     return names or ["console"]
 
 
 def send_email(to: str, subject: str, text: str, html: str) -> tuple[bool, str]:
-    """Send via the configured providers in order; never raise to the caller path."""
+    """Send via the configured providers in order; never raise to the caller path.
+
+    A rejected send is logged (with the provider error) rather than silently
+    swallowed, so a failure is observable in the logs instead of looking like a
+    success.
+    """
     last = "console"
+    errors: list[str] = []
     for name in _provider_chain():
         last = name
         cls = _PROVIDERS.get(name, ConsoleProvider)
         try:
             cls().send(to, subject, text, html)
+            if errors:
+                logger.warning("email to %s sent via %s after failures: %s", to, name, "; ".join(errors))
             return True, name
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{name}: {exc}")
             continue
+    logger.error("email to %s FAILED on every provider: %s", to, "; ".join(errors))
     return False, last
 
 

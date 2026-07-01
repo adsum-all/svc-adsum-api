@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     # E-mail gateway, provider switchable by the business at any time (no lock-in).
     # ADSUM_EMAIL_PROVIDER: console | smtp | brevo | resend
     email_provider: str = "console"
-    email_from: str = "no-reply@sacerdoceroyal.info"
+    email_from: str = "saintgabrielsacerdoceroyal@ikmail.com"
+    email_from_name: str = "Sacerdoce Royal"
     email_api_key: str = ""
     email_smtp_host: str = ""
     email_smtp_port: int = 587

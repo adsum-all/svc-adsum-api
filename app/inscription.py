@@ -57,7 +57,9 @@ def _temp_password() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(10))
 
 
-def _send_temp_password(email: str, temp: str) -> None:
+def _send_temp_password(email: str, temp: str) -> tuple[bool, str]:
+    """Send the temporary password. Returns (sent, provider) so the caller can
+    surface a delivery failure instead of assuming success."""
     from .email_templates import render_temp_password_email
 
     text = (
@@ -67,7 +69,7 @@ def _send_temp_password(email: str, temp: str) -> None:
         f"Passe ce delai, contactez l'administration pour un nouveau mot de passe."
     )
     html = render_temp_password_email(temp, validity=f"{TEMP_VALID_HOURS} heures")
-    send_email(email, "ADSUM, votre acces et mot de passe temporaire", text, html)
+    return send_email(email, "ADSUM, votre acces et mot de passe temporaire", text, html)
 
 
 def _notify_membre(membre_id: str, role: str, titre: str, corps: str) -> None:
@@ -112,9 +114,16 @@ def creer_compte_membre(payload: CompteMembreIn, user: Annotated[UserMe, Depends
         )
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="account already exists") from exc
-    _send_temp_password(str(payload.email), temp)
-    audit.log(user.id, user.role, "creation_inscription", "membre", membre_id, {"matricule": matricule})
-    return {"membre_id": membre_id, "matricule": matricule, "expire_le": expire.isoformat()}
+    sent, provider = _send_temp_password(str(payload.email), temp)
+    audit.log(user.id, user.role, "creation_inscription", "membre", membre_id,
+              {"matricule": matricule, "email_envoye": sent, "canal": provider})
+    return {
+        "membre_id": membre_id,
+        "matricule": matricule,
+        "expire_le": expire.isoformat(),
+        "email_envoye": sent,
+        "canal_email": provider,
+    }
 
 
 @router.post("/admin/inscriptions/{membre_id}/relancer-mdp")
@@ -130,9 +139,9 @@ def relancer_mdp(membre_id: str, user: Annotated[UserMe, Depends(require_writer)
         (hash_password(temp), expire, membre_id),
         role=user.role,
     )
-    _send_temp_password(str(row["email"]), temp)
-    audit.log(user.id, user.role, "relance_mdp_temporaire", "membre", membre_id, {})
-    return {"ok": True, "expire_le": expire.isoformat()}
+    sent, provider = _send_temp_password(str(row["email"]), temp)
+    audit.log(user.id, user.role, "relance_mdp_temporaire", "membre", membre_id, {"email_envoye": sent})
+    return {"ok": True, "expire_le": expire.isoformat(), "email_envoye": sent, "canal_email": provider}
 
 
 # --- Admin: review and decision -------------------------------------------
