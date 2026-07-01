@@ -69,6 +69,26 @@ _GUIDE = {
         "aide": "Cle API du fournisseur (Brevo : xkeysib-... ; Resend : re_...). Stockee de facon securisee, affichee masquee.",
         "roter": "Collez ici la nouvelle cle API et enregistrez. Pour Brevo, prenez la cle dans Parametres > Cles API (PAS la cle SMTP). Apres changement, envoyez un e-mail de test.",
     },
+    "email_smtp_host": {
+        "titre": "Serveur SMTP (envoi via votre boite mail)",
+        "aide": "Serveur d'envoi de votre fournisseur de boite mail. Pour ikmail / ik.me (Infomaniak) : mail.infomaniak.com. Utilise quand email_provider = smtp.",
+        "roter": "Renseignez le serveur SMTP de votre fournisseur (Gmail : smtp.gmail.com ; Infomaniak : mail.infomaniak.com).",
+    },
+    "email_smtp_port": {
+        "titre": "Port SMTP",
+        "aide": "465 (SSL, recommande) ou 587 (STARTTLS).",
+        "roter": "Mettez 465 en priorite ; si bloque, essayez 587.",
+    },
+    "email_smtp_user": {
+        "titre": "Identifiant SMTP",
+        "aide": "En general l'adresse e-mail complete (ex. saintgabrielsacerdoceroyal@ikmail.com).",
+        "roter": "C'est l'adresse de la boite qui envoie.",
+    },
+    "email_smtp_password": {
+        "titre": "Mot de passe SMTP",
+        "aide": "Mot de passe de la boite mail (ou mot de passe d'application si la double authentification est active chez le fournisseur). Stocke masque.",
+        "roter": "Chez Infomaniak : activez l'acces IMAP/SMTP dans les parametres de la boite ; si 2FA active, generez un mot de passe d'application dedie. Collez-le ici puis envoyez un e-mail de test.",
+    },
 }
 
 

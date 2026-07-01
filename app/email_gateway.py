@@ -116,6 +116,13 @@ class ConsoleProvider:
 
 
 class SMTPProvider:
+    """Send through a real mailbox's own SMTP (e.g. Infomaniak/ikmail).
+
+    Sending from the mailbox provider's server means SPF/DKIM/DMARC align
+    naturally, so mail reaches the inbox without owning a domain. Host, port and
+    credentials are admin-configurable (integration_config), env as fallback.
+    """
+
     def send(self, to: str, subject: str, text: str, html: str) -> None:
         sender_email, sender_name = _sender()
         msg = EmailMessage()
@@ -124,15 +131,18 @@ class SMTPProvider:
         msg["Subject"] = subject
         msg.set_content(text)
         msg.add_alternative(html, subtype="html")
-        host, port = settings.email_smtp_host, settings.email_smtp_port
+        host = _config_value("email_smtp_host", settings.email_smtp_host)
+        port = int(_config_value("email_smtp_port", str(settings.email_smtp_port)) or "587")
+        user = _config_value("email_smtp_user", settings.email_smtp_user)
+        password = _config_value("email_smtp_password", settings.email_smtp_password)
         if port == 465:
             with smtplib.SMTP_SSL(host, port, timeout=15) as srv:
-                srv.login(settings.email_smtp_user, settings.email_smtp_password)
+                srv.login(user, password)
                 srv.send_message(msg)
         else:
             with smtplib.SMTP(host, port, timeout=15) as srv:
                 srv.starttls()
-                srv.login(settings.email_smtp_user, settings.email_smtp_password)
+                srv.login(user, password)
                 srv.send_message(msg)
 
 
