@@ -13,7 +13,7 @@ MEMBRE_PROFILE_SELECT = (
     "m.cheminement_pastoral, m.statut_administratif, m.intendance_id, m.berger_referent_id, "
     "m.tribu_id, m.type_membre, m.promotion, m.situation_matrimoniale, m.type_mariage, "
     "m.profession, m.niveau_etudes, m.baptise, m.confirme, m.premiere_communion, "
-    "m.champs_deverrouilles, "
+    "m.champs_deverrouilles, m.langue, "
     "c.nom AS commission, i.nom AS intendance, bm.nom AS berger_nom, bm.prenoms AS berger_prenoms, "
     "t.nom AS tribu, t.patriarche, co.nom AS coordination, "
     "cm.nom AS coord_nom, cm.prenoms AS coord_prenoms"
@@ -83,4 +83,5 @@ def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
         coordination=row.get("coordination"),
         coordinateur=_join_name(row.get("coord_prenoms"), row.get("coord_nom")),
         champs_deverrouilles=list(row.get("champs_deverrouilles") or []),
+        langue=str(row.get("langue") or "fr"),
     )

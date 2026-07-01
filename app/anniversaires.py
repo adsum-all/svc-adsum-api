@@ -145,18 +145,19 @@ class WhatsappIn(BaseModel):
 def telegram_lien(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     """Return a Telegram deep link the member opens to link their account."""
     membre_id, role = ctx
-    if not settings.telegram_bot_username:
+    username = channels.telegram_username()
+    if not username:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram not configured")
     token = secrets.token_urlsafe(12)
     db.execute("UPDATE membre SET telegram_link_token = %s WHERE id = %s", (token, membre_id), role=role)
-    return {"deep_link": f"https://t.me/{settings.telegram_bot_username}?start={token}", "token": token}
+    return {"deep_link": f"https://t.me/{username}?start={token}", "token": token}
 
 
 @router.post("/membres/me/telegram/verifier")
 def telegram_verifier(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     """After the member pressed Start, capture their chat id via getUpdates."""
     membre_id, role = ctx
-    if not settings.telegram_bot_token:
+    if not channels.telegram_token():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram not configured")
     row = db.fetch_one("SELECT telegram_link_token FROM membre WHERE id = %s", (membre_id,), role=role)
     token = row["telegram_link_token"] if row else None
@@ -177,7 +178,7 @@ def telegram_verifier(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict
 
 def _find_chat_id_for_token(token: str) -> str | None:
     """Scan recent bot updates for the '/start <token>' message; return its chat id."""
-    url = f"{settings.telegram_api_base}/bot{settings.telegram_bot_token}/getUpdates"
+    url = f"{settings.telegram_api_base}/bot{channels.telegram_token()}/getUpdates"
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:  # noqa: S310 - fixed Telegram host
             import json

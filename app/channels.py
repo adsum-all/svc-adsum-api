@@ -57,10 +57,31 @@ def _post_json(url: str, payload: dict[str, object], headers: dict[str, str]) ->
         return False, {"error": "network"}
 
 
+# --- Integration config (admin-rotatable, falls back to environment) --------
+
+def integration_value(cle: str) -> str:
+    """Read a channel setting from the admin-managed table, else the environment."""
+    try:
+        row = db.fetch_one("SELECT valeur FROM integration_config WHERE cle = %s", (cle,))
+        if row and row.get("valeur"):
+            return str(row["valeur"])
+    except Exception:  # noqa: BLE001 - fall back to env on any DB issue
+        pass
+    return getattr(settings, cle, "") or ""
+
+
+def telegram_token() -> str:
+    return integration_value("telegram_bot_token")
+
+
+def telegram_username() -> str:
+    return integration_value("telegram_bot_username")
+
+
 # --- Channel availability ---------------------------------------------------
 
 def telegram_configured() -> bool:
-    return bool(settings.telegram_bot_token)
+    return bool(telegram_token())
 
 
 def whatsapp_configured() -> bool:
@@ -74,9 +95,10 @@ def sms_configured() -> bool:
 # --- Individual channel sends -----------------------------------------------
 
 def send_telegram(chat_id: str, message: Message) -> bool:
-    if not telegram_configured() or not chat_id:
+    token = telegram_token()
+    if not token or not chat_id:
         return False
-    url = f"{settings.telegram_api_base}/bot{settings.telegram_bot_token}/sendMessage"
+    url = f"{settings.telegram_api_base}/bot{token}/sendMessage"
     text = f"<b>{_esc(message.titre)}</b>\n{_esc(message.corps_text)}"
     ok, _ = _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, {})
     return ok

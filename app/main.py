@@ -20,6 +20,7 @@ from .fichiers import router as fichiers_router
 from .formation import router as formation_router
 from .gestion import router as gestion_router
 from .inscription import router as inscription_router
+from .integrations import router as integrations_router
 from .membres import router as membres_router
 from .middleware import SecurityHeadersMiddleware
 from .notifications import router as notifications_router
@@ -69,6 +70,7 @@ app.include_router(reference_router)
 app.include_router(rgpd_router)
 app.include_router(anniversaires_router)
 app.include_router(notifications_router)
+app.include_router(integrations_router)
 app.include_router(gestion_router)
 
 

@@ -70,6 +70,7 @@ class MembreProfile(BaseModel):
     coordination: str | None = None
     coordinateur: str | None = None
     champs_deverrouilles: list[str] = []
+    langue: str = "fr"
 
 
 class EvenementOut(BaseModel):
