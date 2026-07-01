@@ -156,7 +156,35 @@ def request_otp(payload: OtpRequest, request: Request) -> dict[str, object]:
     if payload.purpose not in _ALLOWED_PURPOSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown purpose")
     sent, provider = send_code(str(payload.email), payload.purpose)
+    _otp_via_telegram(str(payload.email), payload.purpose)
     return {"ok": True, "sent": sent, "provider": provider}
+
+
+def _otp_via_telegram(email: str, purpose: str) -> None:
+    """Also deliver the code over Telegram when the member linked that channel."""
+    try:
+        from . import channels
+        from .email_gateway import generate_code
+
+        member = db.fetch_one(
+            "SELECT m.telegram_chat_id, m.langue, m.prenoms FROM utilisateur u "
+            "JOIN membre m ON m.id = u.membre_id WHERE u.email = %s",
+            (email,),
+        )
+        if not member or not member.get("telegram_chat_id"):
+            return
+        code = generate_code(email, purpose)
+        prenom = (str(member.get("prenoms") or "").split(" ")[0]) or ""
+        en = (member.get("langue") == "en")
+        if en:
+            titre = "Your verification code"
+            corps = f"Hello {prenom}, your ADSUM verification code is {code}. It expires in a few minutes; do not share it."  # noqa: E501
+        else:
+            titre = "Votre code de verification"
+            corps = f"Bonjour {prenom}, votre code de verification ADSUM est {code}. Il expire dans quelques minutes ; ne le communiquez a personne."  # noqa: E501
+        channels.send_telegram(str(member["telegram_chat_id"]), channels.Message(titre=titre, corps_text=corps))
+    except Exception:  # noqa: BLE001 - OTP e-mail already sent; Telegram is best-effort
+        pass
 
 
 @router.post("/verify-otp")

@@ -22,6 +22,7 @@ from .gestion import router as gestion_router
 from .inscription import router as inscription_router
 from .membres import router as membres_router
 from .middleware import SecurityHeadersMiddleware
+from .notifications import router as notifications_router
 from .organisation import router as organisation_router
 from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
@@ -67,6 +68,7 @@ app.include_router(inscription_router)
 app.include_router(reference_router)
 app.include_router(rgpd_router)
 app.include_router(anniversaires_router)
+app.include_router(notifications_router)
 app.include_router(gestion_router)
 
 
