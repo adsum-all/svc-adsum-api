@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from . import db, storage
 from .auth import current_user
 from .config import settings
+from .deps import require_roles
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/membres/me", tags=["fichiers"])
@@ -155,6 +156,29 @@ def doc_download_url(document_id: str, ctx: Annotated[tuple[str, str], Depends(_
         "SELECT bucket, chemin_stockage FROM document WHERE id = %s AND membre_id = %s",
         (document_id, membre_id),
         role=role,
+    )
+    if not row or not row.get("chemin_stockage"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+    try:
+        url = storage.signed_download_url(str(row["bucket"] or settings.storage_bucket_documents), str(row["chemin_stockage"]))
+        return {"url": url}
+    except storage.StorageError:
+        return {"url": None}
+
+
+_require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
+
+admin_router = APIRouter(prefix="/api/v1/admin", tags=["fichiers"])
+
+
+@admin_router.get("/documents/{document_id}/url")
+def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_staff)]) -> dict[str, str | None]:
+    """Signed download URL for any member's document, for admin review (e.g. a
+    hand-signed attestation scan)."""
+    row = db.fetch_one(
+        "SELECT bucket, chemin_stockage FROM document WHERE id = %s",
+        (document_id,),
+        role=user.role,
     )
     if not row or not row.get("chemin_stockage"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
