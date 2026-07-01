@@ -75,8 +75,9 @@ def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(
     if not row:
         return {"statut": None, "source": None, "valide": False, "avis": None, "note": None, "deja_scanne": False, "verrouille": False, "ouvert": ouvert, "disponible_le": disponible_le}
     scanne = row["source"] == "scan"
-    # A scanned presence, or an already-validated declaration, locks the status.
-    verrouille = scanne or bool(row["valide"])
+    # Finalized (validated) participation is fully immutable. A scanned member is
+    # present but may still give their feedback once (which finalizes it).
+    verrouille = bool(row["valide"])
     return {
         "statut": row["statut"],
         "source": row["source"],
@@ -113,40 +114,49 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
         (evenement_id, membre_id),
         role=role,
     )
-    locked = bool(existing) and (existing["source"] == "scan" or existing["valide"])
 
-    # A self-declaration is only accepted once the activity has started: no one can
-    # declare participation to an event that has not happened yet.
-    if not locked and not ev["demarree"]:
+    # Once finalized (validated), participation is immutable: no re-participation,
+    # no changing the rating or opinion afterwards. It is counted exactly once.
+    if existing and existing["valide"]:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Votre participation est deja enregistree et ne peut plus etre modifiee.")
+
+    # The form only opens once the activity has started: no one can declare
+    # participation to an event that has not happened yet.
+    if not existing and not ev["demarree"]:
         quand = ev["debut"].strftime("%d/%m/%Y a %Hh%M") if ev["debut"] else ""
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"le formulaire sera disponible au debut de l'activite ({quand})")
 
-    if locked:
-        # Status is fixed; only feedback can be updated.
-        db.execute(
-            "UPDATE participation SET avis = COALESCE(%s, avis), note = COALESCE(%s, note), maj_le = now() WHERE evenement_id = %s AND membre_id = %s",
-            (payload.avis, payload.note, evenement_id, membre_id),
-            role=role,
-        )
-        return {"ok": True, "verrouille": True, "statut": existing["statut"], "message": "Votre présence est déjà enregistrée."}
+    scanned = bool(existing) and existing["source"] == "scan"
+    if scanned:
+        # A scanned member is present; the status is fixed. They may add feedback,
+        # and validating finalizes it.
+        new_statut, new_source = "present", "scan"
+    else:
+        new_statut = payload.statut or (existing["statut"] if existing else None)
+        if new_statut not in _STATUTS:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statut must be present, partiel or absent")
+        new_source = "declaration"
 
-    statut = payload.statut or (existing["statut"] if existing else None)
-    if statut not in _STATUTS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statut must be present, partiel or absent")
+    # Atomic upsert: a scan always wins (its presence is never downgraded by a
+    # concurrent declaration), and a finalized row is never touched (WHERE NOT valide).
     db.execute(
         """
         INSERT INTO participation (evenement_id, membre_id, statut, source, valide, avis, note)
-        VALUES (%s, %s, %s, 'declaration', %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (evenement_id, membre_id)
-        DO UPDATE SET statut = EXCLUDED.statut, valide = EXCLUDED.valide,
+        DO UPDATE SET
+            statut = CASE WHEN participation.source = 'scan' THEN 'present' ELSE EXCLUDED.statut END,
+            source = CASE WHEN participation.source = 'scan' THEN 'scan' ELSE EXCLUDED.source END,
+            valide = EXCLUDED.valide,
             avis = COALESCE(EXCLUDED.avis, participation.avis),
-            note = COALESCE(EXCLUDED.note, participation.note), maj_le = now()
-        WHERE participation.source <> 'scan' AND NOT participation.valide
+            note = COALESCE(EXCLUDED.note, participation.note),
+            maj_le = now()
+        WHERE NOT participation.valide
         """,
-        (evenement_id, membre_id, statut, payload.valider, payload.avis, payload.note),
+        (evenement_id, membre_id, new_statut, new_source, payload.valider, payload.avis, payload.note),
         role=role,
     )
-    return {"ok": True, "verrouille": payload.valider, "statut": statut, "valide": payload.valider}
+    return {"ok": True, "verrouille": payload.valider, "statut": new_statut, "valide": payload.valider}
 
 
 # --- Admin: per-event statistics --------------------------------------------
