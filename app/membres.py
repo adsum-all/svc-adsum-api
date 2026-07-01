@@ -98,7 +98,7 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
     _, role = ctx
     rows = db.fetch_all(
         """
-        SELECT id, titre, type, volet, debut, fin, lieu, session_ouverte
+        SELECT id, titre, type, volet, debut, fin, lieu, session_ouverte, lien_session
         FROM evenement
         WHERE fin IS NULL OR fin >= now()
         ORDER BY debut ASC
@@ -117,6 +117,8 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
             fin=r["fin"],
             lieu=r["lieu"],
             session_ouverte=r["session_ouverte"],
+            # The session link is only exposed while the session is open.
+            lien_session=r["lien_session"] if r["session_ouverte"] else None,
         )
         for r in rows
     ]
