@@ -100,7 +100,7 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
         """
         SELECT id, titre, type, volet, debut, fin, lieu, session_ouverte, lien_session
         FROM evenement
-        WHERE fin IS NULL OR fin >= now()
+        WHERE fin IS NULL OR fin >= now() - interval '12 hours'
         ORDER BY debut ASC
         LIMIT 100
         """,
