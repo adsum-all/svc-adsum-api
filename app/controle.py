@@ -34,10 +34,24 @@ require_control = require_roles(*CONTROL_ROLES)
 
 def _lookup_membre(membre_id: str, role: str) -> dict[str, object] | None:
     return db.fetch_one(
-        "SELECT id, matricule, nom, prenoms FROM membre WHERE id = %s",
+        "SELECT id, matricule, nom, prenoms, photo_url FROM membre WHERE id = %s",
         (membre_id,),
         role=role,
     )
+
+
+def _signed_photo(path: object) -> str | None:
+    """Short-lived signed URL for a member's identity photo, for the scan card.
+    Best-effort: a signing failure just yields no photo, not an error."""
+    if not path:
+        return None
+    from . import storage
+    from .config import settings
+
+    try:
+        return storage.signed_download_url(settings.storage_bucket_photos, str(path))
+    except storage.StorageError:
+        return None
 
 
 @router.get("/evenements", response_model=list[EvenementOut])
@@ -167,6 +181,7 @@ def checkin_manuel(
             matricule=str(membre["matricule"]),
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
+            photo_url=_signed_photo(membre.get("photo_url")),
         ),
         evenement_id=payload.evenement_id,
         arrivee=arrivee,
@@ -217,6 +232,7 @@ def checkout(
             matricule=str(membre["matricule"]),
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
+            photo_url=_signed_photo(membre.get("photo_url")),
         ),
         evenement_id=payload.evenement_id,
         depart=depart,
@@ -231,13 +247,14 @@ def verify(
 ) -> VerifyResult:
     result = verify_token(payload.token)
     membre_id = result.get("membre_id")
-    matricule = nom = prenoms = None
+    matricule = nom = prenoms = photo_url = None
     if isinstance(membre_id, str):
         row = _lookup_membre(membre_id, user.role)
         if row:
             matricule = row["matricule"]
             nom = row["nom"]
             prenoms = row["prenoms"]
+            photo_url = _signed_photo(row.get("photo_url"))
     return VerifyResult(
         valid=bool(result["valid"]),
         reason=result.get("reason"),
@@ -248,6 +265,7 @@ def verify(
         matricule=matricule,
         nom=nom,
         prenoms=prenoms,
+        photo_url=photo_url,
     )
 
 
@@ -300,6 +318,7 @@ def checkin(
             matricule=str(membre["matricule"]),
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
+            photo_url=_signed_photo(membre.get("photo_url")),
         ),
         evenement_id=payload.evenement_id,
         arrivee=arrivee,

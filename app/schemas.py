@@ -509,6 +509,7 @@ class VerifyResult(BaseModel):
     matricule: str | None = None
     nom: str | None = None
     prenoms: str | None = None
+    photo_url: str | None = None
 
 
 class CheckinRequest(BaseModel):
@@ -525,6 +526,7 @@ class CheckinMembre(BaseModel):
     matricule: str
     nom: str | None = None
     prenoms: str | None = None
+    photo_url: str | None = None
 
 
 class CheckinResult(BaseModel):

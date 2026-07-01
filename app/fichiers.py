@@ -178,12 +178,27 @@ def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_sta
     row = db.fetch_one(
         "SELECT bucket, chemin_stockage FROM document WHERE id = %s",
         (document_id,),
-        role=user.role,
+        role=None,
     )
     if not row or not row.get("chemin_stockage"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
     try:
         url = storage.signed_download_url(str(row["bucket"] or settings.storage_bucket_documents), str(row["chemin_stockage"]))
         return {"url": url}
+    except storage.StorageError:
+        return {"url": None}
+
+
+@admin_router.get("/membres/{membre_id}/photo-url")
+def admin_photo_url(membre_id: str, user: Annotated[UserMe, Depends(_require_staff)]) -> dict[str, str | None]:
+    """Signed download URL for any member's identity photo, for staff views
+    (registration review, QR-scan identity card, member directory). Reads as an
+    owner query since the endpoint is already gated by staff roles."""
+    row = db.fetch_one("SELECT photo_url FROM membre WHERE id = %s", (membre_id,), role=None)
+    path = row.get("photo_url") if row else None
+    if not path:
+        return {"url": None}
+    try:
+        return {"url": storage.signed_download_url(settings.storage_bucket_photos, str(path))}
     except storage.StorageError:
         return {"url": None}

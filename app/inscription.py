@@ -272,6 +272,110 @@ def historique_corrections(membre_id: str, user: Annotated[UserMe, Depends(requi
     ]
 
 
+@router.get("/admin/inscriptions/{membre_id}/dossier")
+def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_reviewer)]) -> dict[str, object]:
+    """Full review dossier for a member: identity photo, uploaded documents (each
+    with a short-lived signed URL) and the electronic-signature proof.
+
+    A reviewer must inspect the real evidence, the photo and the signed documents,
+    before approving, instead of deciding blind on a name and a counter. Reads run
+    as an owner query (the endpoint is already gated by require_reviewer) so every
+    authorised reviewer sees the same dossier regardless of the per-table RLS.
+    """
+    from . import storage
+    from .config import settings
+    from .consentement import _signature_couvre_bloquants
+
+    membre = db.fetch_one(
+        "SELECT id, matricule, prenoms, nom, email, telephone, pays, ville, "
+        "statut_inscription, verifie, photo_url FROM membre WHERE id = %s",
+        (membre_id,),
+        role=None,
+    )
+    if not membre:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+
+    photo_signed = None
+    if membre.get("photo_url"):
+        try:
+            photo_signed = storage.signed_download_url(settings.storage_bucket_photos, str(membre["photo_url"]))
+        except storage.StorageError:
+            photo_signed = None
+
+    documents = []
+    for d in db.fetch_all(
+        "SELECT id, type, statut, nom_fichier, mime, bucket, chemin_stockage, recu_le "
+        "FROM document WHERE membre_id = %s ORDER BY recu_le DESC NULLS LAST",
+        (membre_id,),
+        role=None,
+    ) or []:
+        url = None
+        if d.get("chemin_stockage"):
+            try:
+                url = storage.signed_download_url(str(d["bucket"] or settings.storage_bucket_documents), str(d["chemin_stockage"]))
+            except storage.StorageError:
+                url = None
+        documents.append({
+            "id": str(d["id"]),
+            "type": d["type"],
+            "statut": d["statut"],
+            "nom_fichier": d.get("nom_fichier"),
+            "mime": d.get("mime"),
+            "recu_le": d["recu_le"].isoformat() if d.get("recu_le") else None,
+            "url": url,
+        })
+
+    engagements = [
+        {
+            "type": e["type"],
+            "version": e["version"],
+            "signe_le": e["signe_le"].isoformat() if e.get("signe_le") else None,
+            "canal": e.get("canal"),
+        }
+        for e in db.fetch_all(
+            "SELECT type, version, signe_le, canal FROM engagement "
+            "WHERE membre_id = %s AND code_verifie = true ORDER BY signe_le DESC",
+            (membre_id,),
+            role=None,
+        ) or []
+    ]
+    preuves = [
+        {
+            "id": str(s["id"]),
+            "signe_le": s["signe_le"].isoformat() if s.get("signe_le") else None,
+            "hash_preuve": s.get("hash_preuve"),
+            "canal": s.get("canaux"),
+        }
+        for s in db.fetch_all(
+            "SELECT id, signe_le, hash_preuve, canaux FROM signature_engagement "
+            "WHERE membre_id = %s AND code_verifie = true ORDER BY signe_le DESC",
+            (membre_id,),
+            role=None,
+        ) or []
+    ]
+    return {
+        "membre": {
+            "id": str(membre["id"]),
+            "matricule": membre.get("matricule"),
+            "prenoms": membre.get("prenoms"),
+            "nom": membre.get("nom"),
+            "email": membre.get("email"),
+            "telephone": membre.get("telephone"),
+            "pays": membre.get("pays"),
+            "ville": membre.get("ville"),
+            "statut_inscription": membre.get("statut_inscription"),
+            "verifie": bool(membre.get("verifie")),
+        },
+        "photo_url": photo_signed,
+        "documents": documents,
+        "signature": {
+            "signe": _signature_couvre_bloquants(membre_id, None),
+            "engagements": engagements,
+            "preuves": preuves,
+        },
+    }
+
+
 # --- Member: status and submission ----------------------------------------
 
 _EDITABLE_FIELDS = {
