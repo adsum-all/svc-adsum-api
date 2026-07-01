@@ -111,6 +111,24 @@ def directory(
     ]
 
 
+def _mark_present_scan(membre_id: str, evenement_id: str, role: str) -> None:
+    """A QR/manual check-in is the source of truth for presence: it upserts a
+    validated in-person participation and always wins over a prior declaration."""
+    try:
+        db.execute(
+            """
+            INSERT INTO participation (evenement_id, membre_id, statut, source, valide)
+            VALUES (%s, %s, 'present', 'scan', true)
+            ON CONFLICT (evenement_id, membre_id)
+            DO UPDATE SET statut = 'present', source = 'scan', valide = true, maj_le = now()
+            """,
+            (evenement_id, membre_id),
+            role=role,
+        )
+    except Exception:  # noqa: BLE001 - participation tracking must never block a check-in
+        pass
+
+
 @router.post("/checkin-manuel", response_model=CheckinResult)
 def checkin_manuel(
     payload: ManualCheckinRequest,
@@ -141,6 +159,7 @@ def checkin_manuel(
         )
         arrivee = existing["arrivee"] if existing else None
         deja_present = True
+    _mark_present_scan(payload.membre_id, payload.evenement_id, user.role)
     return CheckinResult(
         deja_present=deja_present,
         membre=CheckinMembre(
@@ -273,6 +292,7 @@ def checkin(
         )
         arrivee = existing["arrivee"] if existing else None
         deja_present = True
+    _mark_present_scan(membre_id, payload.evenement_id, user.role)
     return CheckinResult(
         deja_present=deja_present,
         membre=CheckinMembre(

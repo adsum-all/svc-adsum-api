@@ -217,7 +217,7 @@ class PreferencesIn(BaseModel):
     demandes: bool = True
     rappels: bool = True
     email: bool = True
-    telegram: bool = False
+    telegram: bool = True  # Telegram is the free channel, opt-in by default
     whatsapp: bool = False
     sms: bool = False
     anniversaire: bool = True
@@ -232,7 +232,7 @@ def get_preferences(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[s
     row = db.fetch_one(f"SELECT {', '.join(_PREF_COLS)} FROM preference_notification WHERE membre_id = %s", (membre_id,), role=role)
     if not row:
         defaults = {c: True for c in _PREF_COLS}
-        defaults.update({"telegram": False, "whatsapp": False, "sms": False})
+        defaults.update({"whatsapp": False, "sms": False})
         return defaults
     return {c: bool(row[c]) for c in _PREF_COLS}
 
