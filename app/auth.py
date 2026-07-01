@@ -14,13 +14,16 @@ from .schemas import LoginRequest, TokenResponse, UserMe
 from .security import create_access_token, decode_access_token, hash_password, verify_password
 
 try:
-    from .email_gateway import send_code, verify_code
+    from .email_gateway import send_code, verify_and_consume, verify_code
 except Exception:  # keep the API up even if the e-mail gateway fails to import
 
     def send_code(email: str, purpose: str) -> tuple[bool, str]:  # type: ignore[misc]
         return False, "unavailable"
 
     def verify_code(email: str, purpose: str, code: str) -> bool:  # type: ignore[misc]
+        return False
+
+    def verify_and_consume(email: str, purpose: str, code: str, ip: str | None = None) -> bool:  # type: ignore[misc]
         return False
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -112,7 +115,8 @@ def premiere_connexion(payload: PremiereConnexion, request: Request) -> TokenRes
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid temporary password")
     if user.get("mdp_temporaire") and _temp_expired(user.get("mdp_expire_le")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="temporary password expired")
-    if not verify_code(str(payload.email), "login_2fa", payload.code_otp):
+    client_ip = request.client.host if request.client else None
+    if not verify_and_consume(str(payload.email), "login_2fa", payload.code_otp, ip=client_ip):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid code")
     db.execute(
         "UPDATE utilisateur SET hash_mdp = %s, mdp_temporaire = false, doit_changer_mdp = false, "
@@ -198,7 +202,8 @@ def reset_password(payload: ResetRequest, request: Request) -> None:
     ratelimit.enforce(request, "reset-password")
     if len(payload.nouveau) < 8:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password too short")
-    if not verify_code(str(payload.email), "password_reset", payload.code):
+    client_ip = request.client.host if request.client else None
+    if not verify_and_consume(str(payload.email), "password_reset", payload.code, ip=client_ip):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid code")
     # Owner connection (role=None) bypasses RLS; scoped by e-mail. No reveal if absent.
     db.execute(

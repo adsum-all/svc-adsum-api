@@ -99,9 +99,49 @@ def generate_code(email: str, purpose: str, window: int | None = None) -> str:
 
 
 def verify_code(email: str, purpose: str, code: str) -> bool:
-    """True when ``code`` matches the current or previous window (replay-tolerant)."""
+    """True when ``code`` matches the current or previous window.
+
+    This is the raw HMAC check only. It is replay-tolerant on its own; callers
+    that perform a state change (first login, password reset, e-signature) must
+    use :func:`verify_and_consume` so the code becomes single-use.
+    """
     cleaned = (code or "").strip()
     return any(hmac.compare_digest(cleaned, generate_code(email, purpose, w)) for w in _windows())
+
+
+def _code_fingerprint(email: str, purpose: str, code: str) -> str:
+    """Keyed hash stored in the consumption ledger (never the code in clear)."""
+    msg = f"{email.lower().strip()}|{purpose}|{(code or '').strip()}".encode()
+    return hmac.new(settings.jwt_secret.encode() or b"adsum", msg, hashlib.sha256).hexdigest()
+
+
+def consume_code(email: str, purpose: str, code: str, ip: str | None = None) -> bool:
+    """Atomically mark a code as used. True the first time, False on replay.
+
+    The unique constraint on ``(email, purpose, code_hash)`` plus
+    ``ON CONFLICT DO NOTHING`` makes this a single atomic step: two concurrent
+    requests carrying the same code can never both receive ``True``.
+    """
+    fingerprint = _code_fingerprint(email, purpose, code)
+    row = db.execute(
+        "INSERT INTO code_consomme (email, purpose, code_hash, ip) VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (email, purpose, code_hash) DO NOTHING RETURNING id",
+        (email.lower().strip(), purpose, fingerprint, ip),
+        role=None,
+    )
+    return row is not None
+
+
+def verify_and_consume(email: str, purpose: str, code: str, ip: str | None = None) -> bool:
+    """Verify a one-time code and burn it in the same call (true single-use).
+
+    Returns ``True`` only when the code is cryptographically valid AND has never
+    been consumed before for this ``(email, purpose)``. Any later attempt with
+    the same code returns ``False``.
+    """
+    if not verify_code(email, purpose, code):
+        return False
+    return consume_code(email, purpose, code, ip)
 
 
 class EmailProvider(Protocol):

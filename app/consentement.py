@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from . import audit, db
 from .deps import require_roles
-from .email_gateway import generate_code, send_code, verify_code
+from .email_gateway import consume_code, generate_code, send_code, verify_code
 from .inscription import _membre_ctx
 from .notifications import notifier
 from .schemas import (
@@ -253,6 +253,10 @@ def verifier_signature(payload: SignatureVerifIn, ctx: Annotated[tuple[str, str]
     )
     if not pending:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"no_pending_signature": True})
+    # Burn the code now (single-use). Atomic against a concurrent replay of the
+    # same code: only the first request wins, the loser is rejected here.
+    if not consume_code(email, SIGNATURE_PURPOSE, payload.code, ip=pending.get("ip")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code_deja_utilise": True})
     signature_id = str(pending["id"])
     documents = pending["documents"] or []
     if isinstance(documents, str):
