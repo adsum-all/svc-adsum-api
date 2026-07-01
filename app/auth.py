@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
-from . import db
+from . import db, ratelimit
 from .schemas import LoginRequest, TokenResponse, UserMe
 from .security import create_access_token, decode_access_token, hash_password, verify_password
 
@@ -48,6 +48,7 @@ class ResetRequest(BaseModel):
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, request: Request) -> TokenResponse:
+    ratelimit.enforce(request, "login")
     user = db.get_user_by_email(payload.email)
     if not user or not user["actif"] or not verify_password(payload.password, user["hash_mdp"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
@@ -100,9 +101,10 @@ class PremiereConnexion(BaseModel):
 
 
 @router.post("/premiere-connexion", response_model=TokenResponse)
-def premiere_connexion(payload: PremiereConnexion) -> TokenResponse:
+def premiere_connexion(payload: PremiereConnexion, request: Request) -> TokenResponse:
     """First login: validate the temporary password and an e-mail OTP, then set
     the member's own password (banking-style double validation)."""
+    ratelimit.enforce(request, "premiere-connexion")
     if len(payload.nouveau_mdp) < 8:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password too short")
     user = db.get_user_by_email(payload.email)
@@ -144,12 +146,13 @@ def me(user: Annotated[UserMe, Depends(current_user)]) -> UserMe:
 
 
 @router.post("/request-otp")
-def request_otp(payload: OtpRequest) -> dict[str, object]:
+def request_otp(payload: OtpRequest, request: Request) -> dict[str, object]:
     """Send a one-time code by e-mail for 2FA, password reset or signature.
 
     Always returns ok (does not reveal whether the e-mail exists), so it cannot
     be used to enumerate accounts.
     """
+    ratelimit.enforce(request, "request-otp")
     if payload.purpose not in _ALLOWED_PURPOSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown purpose")
     sent, provider = send_code(str(payload.email), payload.purpose)
@@ -162,8 +165,9 @@ def verify_otp(payload: OtpVerify) -> dict[str, object]:
 
 
 @router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
-def reset_password(payload: ResetRequest) -> None:
+def reset_password(payload: ResetRequest, request: Request) -> None:
     """Set a new password after a valid password_reset code, self-service."""
+    ratelimit.enforce(request, "reset-password")
     if len(payload.nouveau) < 8:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password too short")
     if not verify_code(str(payload.email), "password_reset", payload.code):
