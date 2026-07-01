@@ -126,6 +126,17 @@ def doc_confirm(payload: DocConfirm, ctx: Annotated[tuple[str, str], Depends(_me
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown document type")
     if not payload.path.startswith(f"{membre_id}/"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
+    # One logical document per (member, type): a new upload replaces the previous
+    # one instead of piling up duplicates. This also means a valid document stays
+    # attached across a correction cycle unless the member re-uploads that type.
+    updated = db.execute(
+        "UPDATE document SET statut = 'recu', bucket = %s, chemin_stockage = %s, nom_fichier = %s, mime = %s, recu_le = now() "
+        "WHERE membre_id = %s AND type = %s RETURNING id",
+        (settings.storage_bucket_documents, payload.path, payload.nom_fichier, payload.mime, membre_id, payload.type),
+        role=role,
+    )
+    if updated:
+        return {"id": str(updated["id"])}
     created = db.execute(
         "INSERT INTO document (membre_id, type, statut, bucket, chemin_stockage, nom_fichier, mime, recu_le) "
         "VALUES (%s, %s, 'recu', %s, %s, %s, %s, now()) RETURNING id",

@@ -173,6 +173,7 @@ def list_inscriptions(user: Annotated[UserMe, Depends(require_reviewer)]) -> lis
 class DecisionIn(BaseModel):
     decision: str
     motif: str | None = None
+    champs_cibles: list[str] | None = None  # fields the member must correct (targeted correction)
 
 
 @router.post("/admin/inscriptions/{membre_id}/decision")
@@ -180,10 +181,13 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
     if payload.decision not in DECISIONS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown decision")
     verifie = payload.decision == "approuve"
+    # On a correction request, record which fields the member must fix; clear it
+    # otherwise. The member's data stays intact (it lives on the membre row).
+    cibles = payload.champs_cibles if payload.decision == "modification_demandee" else None
     db.execute(
-        "UPDATE membre SET statut_inscription = %s, motif_refus = %s, decision_le = now(), decision_par = %s, "
-        "verifie = CASE WHEN %s THEN true ELSE verifie END WHERE id = %s",
-        (payload.decision, payload.motif, user.id, verifie, membre_id),
+        "UPDATE membre SET statut_inscription = %s, motif_refus = %s, champs_a_corriger = %s, "
+        "decision_le = now(), decision_par = %s, verifie = CASE WHEN %s THEN true ELSE verifie END WHERE id = %s",
+        (payload.decision, payload.motif, cibles, user.id, verifie, membre_id),
         role=user.role,
     )
     messages = {
@@ -202,6 +206,26 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
     channels.dispatch(membre_id, user.role, channels.Message(titre=titre, corps_text=corps_complet, type_notif="inscription"))
     audit.log(user.id, user.role, "decision_inscription", "membre", membre_id, {"decision": payload.decision})
     return {"ok": True, "statut": payload.decision}
+
+
+@router.get("/admin/inscriptions/{membre_id}/corrections")
+def historique_corrections(membre_id: str, user: Annotated[UserMe, Depends(require_reviewer)]) -> list[dict[str, object]]:
+    """Old/new/who/when trail of a member's corrections, for fast admin re-review."""
+    rows = db.fetch_all(
+        "SELECT champ, ancienne_valeur, nouvelle_valeur, modifie_le FROM correction_historique "
+        "WHERE membre_id = %s ORDER BY modifie_le DESC",
+        (membre_id,),
+        role=user.role,
+    )
+    return [
+        {
+            "champ": r["champ"],
+            "ancienne_valeur": r["ancienne_valeur"],
+            "nouvelle_valeur": r["nouvelle_valeur"],
+            "modifie_le": r["modifie_le"].isoformat() if r["modifie_le"] else None,
+        }
+        for r in rows
+    ]
 
 
 # --- Member: status and submission ----------------------------------------
@@ -260,10 +284,28 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
     fields = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if k in _EDITABLE_FIELDS}
     if not fields:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
+    en_correction = row["statut_inscription"] == "modification_demandee"
     incomplet = row["statut_inscription"] in ("incomplet", "modification_demandee")
     if incomplet:
+        # On a correction cycle, keep an old/new trail before overwriting so the
+        # admin can see exactly what changed (data itself is preserved, only the
+        # requested fields are touched).
+        before = {}
+        if en_correction:
+            cols = ", ".join(fields)
+            before = db.fetch_one(f"SELECT {cols} FROM membre WHERE id = %s", (membre_id,), role=role) or {}
         sets = ", ".join(f"{k} = %s" for k in fields)
         db.execute(f"UPDATE membre SET {sets} WHERE id = %s", (*fields.values(), membre_id), role=role)
+        if en_correction:
+            for k, v in fields.items():
+                old = before.get(k)
+                if str(old) != str(v):
+                    db.execute(
+                        "INSERT INTO correction_historique (membre_id, champ, ancienne_valeur, nouvelle_valeur, modifie_par, modifie_le) "
+                        "VALUES (%s, %s, %s, %s, %s, now())",
+                        (membre_id, k, None if old is None else str(old), None if v is None else str(v), membre_id),
+                        role=role,
+                    )
         return {"ok": True, "updated": list(fields)}
     # Verified member: only admin-unlocked fields, and never a direct write.
     unlocked = set(row["champs_deverrouilles"] or [])
@@ -299,7 +341,7 @@ def _propose_modification(membre_id: str, role: str, fields: dict[str, object]) 
 def mon_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)]) -> dict[str, object]:
     membre_id, role = ctx
     row = db.fetch_one(
-        "SELECT statut_inscription, motif_refus, soumis_le, decision_le, verifie FROM membre WHERE id = %s",
+        "SELECT statut_inscription, motif_refus, champs_a_corriger, soumis_le, decision_le, verifie FROM membre WHERE id = %s",
         (membre_id,),
         role=role,
     )
@@ -308,6 +350,7 @@ def mon_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)]) -> di
     return {
         "statut": row["statut_inscription"],
         "motif_refus": row["motif_refus"],
+        "champs_a_corriger": list(row["champs_a_corriger"] or []),
         "soumis_le": row["soumis_le"].isoformat() if row["soumis_le"] else None,
         "decision_le": row["decision_le"].isoformat() if row["decision_le"] else None,
         "verifie": bool(row["verifie"]),
