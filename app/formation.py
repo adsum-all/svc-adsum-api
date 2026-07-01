@@ -14,7 +14,7 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import audit, db
 from .auth import current_user
@@ -46,16 +46,24 @@ def _fenetre_heures(role: str) -> int:
 class SessionPatch(BaseModel):
     lien_session: str | None = None
     session_ouverte: bool | None = None
+    type_diffusion: str | None = Field(default=None, pattern="^(embed|externe|aucun)$")
+    visibilite: str | None = Field(default=None, pattern="^(public|membres|prive)$")
 
 
 @router.patch("/admin/evenements/{evenement_id}/session")
 def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
-    """Set the session link and/or open or close the live session."""
+    """Set the session link, broadcast kind/visibility, and open or close the live session."""
     sets: list[str] = []
     params: list[object] = []
     if payload.lien_session is not None:
         sets.append("lien_session = %s")
         params.append(payload.lien_session or None)
+    if payload.type_diffusion is not None:
+        sets.append("type_diffusion = %s")
+        params.append(payload.type_diffusion)
+    if payload.visibilite is not None:
+        sets.append("visibilite = %s")
+        params.append(payload.visibilite)
     if payload.session_ouverte is not None:
         sets.append("session_ouverte = %s")
         params.append(payload.session_ouverte)
@@ -71,6 +79,26 @@ def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe
     if payload.session_ouverte:
         _notifier_session_ouverte(evenement_id, str(row["lien_session"] or ""), user.role)
     return {"id": str(row["id"]), "session_ouverte": bool(row["session_ouverte"]), "lien_session": row["lien_session"]}
+
+
+@router.post("/admin/evenements/{evenement_id}/test-diffusion")
+def test_diffusion(evenement_id: str, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
+    """Send a 'live broadcast test' notification so members can verify the stream view.
+
+    The message clearly flags itself as a test. Not deduplicated: each explicit
+    admin trigger is a fresh test send.
+    """
+    from .notifications import notifier
+
+    ev = db.fetch_one("SELECT titre FROM evenement WHERE id = %s", (evenement_id,), role=user.role)
+    if not ev:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
+    sent = 0
+    for m in db.fetch_all("SELECT id FROM membre WHERE statut = 'actif'", (), role=user.role):
+        if notifier(str(m["id"]), user.role, "activite_test_diffusion", {"titre": ev["titre"]}, ref_id=evenement_id, dedup=False):
+            sent += 1
+    audit.log(user.id, user.role, "test_diffusion", "evenement", evenement_id, {"sent": sent})
+    return {"ok": True, "sent": sent}
 
 
 def _notifier_session_ouverte(evenement_id: str, lien: str, role: str) -> None:
@@ -237,9 +265,17 @@ class PreferencesIn(BaseModel):
     whatsapp: bool = False
     sms: bool = False
     anniversaire: bool = True
+    anniv_pairs: bool = True  # receive the daily "today's birthdays" digest
+    cal_vip: bool = True  # show VIP birthdays in the calendar by default
+    cal_responsables: bool = False  # responsables birthdays off by default
+    cal_commission: bool = False  # own-commission birthdays behind a filter
 
 
-_PREF_COLS = ("evenements", "demandes", "rappels", "email", "telegram", "whatsapp", "sms", "anniversaire")
+_PREF_COLS = (
+    "evenements", "demandes", "rappels", "email", "telegram", "whatsapp", "sms",
+    "anniversaire", "anniv_pairs", "cal_vip", "cal_responsables", "cal_commission",
+)
+_PREF_OFF_DEFAULT = ("whatsapp", "sms", "cal_responsables", "cal_commission")
 
 
 @router.get("/membres/me/preferences-notification")
@@ -248,7 +284,7 @@ def get_preferences(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[s
     row = db.fetch_one(f"SELECT {', '.join(_PREF_COLS)} FROM preference_notification WHERE membre_id = %s", (membre_id,), role=role)
     if not row:
         defaults = {c: True for c in _PREF_COLS}
-        defaults.update({"whatsapp": False, "sms": False})
+        defaults.update({c: False for c in _PREF_OFF_DEFAULT})
         return defaults
     return {c: bool(row[c]) for c in _PREF_COLS}
 

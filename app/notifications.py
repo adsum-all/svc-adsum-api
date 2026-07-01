@@ -47,6 +47,8 @@ _CATEGORY_PREF = {
     "activite_modifiee": "evenements",
     "questionnaire_disponible": "evenements",
     "anniversaire": "anniversaire",
+    "anniversaire_pairs": "anniv_pairs",
+    "activite_test_diffusion": "evenements",
 }
 
 # Minimal built-in fallbacks (FR/EN) used only if no template row exists yet.
@@ -145,7 +147,7 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     now = datetime.now(tz=UTC)
     weekday = now.weekday()  # Monday = 0, Sunday = 6
     annee = now.year
-    result = {"anniversaires": 0, "rappels_j1": 0, "agenda": 0, "recap": 0}
+    result = {"anniversaires": 0, "rappels_j1": 0, "agenda": 0, "recap": 0, "digest_pairs": 0}
 
     # 1) Birthdays today.
     for r in db.fetch_all(
@@ -158,6 +160,23 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
         prenom = _prenom(r)
         if notifier(str(r["id"]), role, "anniversaire", {"prenom": prenom}, ref_id=str(annee), dedup=True, whatsapp_params=[prenom]):
             result["anniversaires"] += 1
+
+    # 1b) Peer digest: "today's birthdays" to members who opted into it. Only
+    # celebrants who kept their birthday visible in the directory are listed.
+    celebrants = db.fetch_all(
+        "SELECT prenoms, nom FROM membre WHERE date_naissance IS NOT NULL AND statut = 'actif' "
+        "AND anniversaire_visible_annuaire = true "
+        "AND extract(month from date_naissance) = extract(month from now()) "
+        "AND extract(day from date_naissance) = extract(day from now()) ORDER BY prenoms",
+        (),
+        role=role,
+    )
+    if celebrants:
+        liste = ", ".join(f"{c['prenoms'] or ''} {c['nom'] or ''}".strip() for c in celebrants)
+        ref = now.strftime("%Y-%m-%d") + "-pairs"
+        for m in db.fetch_all("SELECT id FROM membre WHERE statut = 'actif'", (), role=role):
+            if notifier(str(m["id"]), role, "anniversaire_pairs", {"liste": liste}, ref_id=ref, dedup=True):
+                result["digest_pairs"] += 1
 
     # 2) Day-before reminders: events starting in the next 24-36h.
     evs = db.fetch_all(

@@ -196,7 +196,7 @@ def create_commission(
 def list_evenements(user: Annotated[UserMe, Depends(require_staff)]) -> list[EvenementOut]:
     rows = db.fetch_all(
         """
-        SELECT id, titre, type, volet, debut, fin, lieu, session_ouverte, lien_session
+        SELECT id, titre, type, volet, debut, fin, lieu, mode, session_ouverte, lien_session, type_diffusion, visibilite
         FROM evenement
         ORDER BY debut DESC
         LIMIT 200
@@ -204,20 +204,24 @@ def list_evenements(user: Annotated[UserMe, Depends(require_staff)]) -> list[Eve
         (),
         role=user.role,
     )
-    return [
-        EvenementOut(
-            id=str(r["id"]),
-            titre=r["titre"],
-            type=r["type"],
-            volet=r["volet"],
-            debut=r["debut"],
-            fin=r["fin"],
-            lieu=r["lieu"],
-            session_ouverte=r["session_ouverte"],
-            lien_session=r["lien_session"],
-        )
-        for r in rows
-    ]
+    return [_evenement_out(r) for r in rows]
+
+
+def _evenement_out(r: dict[str, object]) -> EvenementOut:
+    return EvenementOut(
+        id=str(r["id"]),
+        titre=r["titre"],
+        type=r["type"],
+        volet=r["volet"],
+        debut=r["debut"],
+        fin=r["fin"],
+        lieu=r["lieu"],
+        mode=r.get("mode"),
+        session_ouverte=r["session_ouverte"],
+        lien_session=r["lien_session"],
+        type_diffusion=r.get("type_diffusion") or "aucun",
+        visibilite=r.get("visibilite") or "membres",
+    )
 
 
 @router.post("/evenements", response_model=EvenementOut, status_code=status.HTTP_201_CREATED)
@@ -227,23 +231,17 @@ def create_evenement(
 ) -> EvenementOut:
     created = db.execute(
         """
-        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, lien_session)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        RETURNING id, titre, type, volet, debut, fin, lieu, session_ouverte, lien_session
+        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, type_diffusion, visibilite)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
+                  lien_session, type_diffusion, visibilite
         """,
-        (payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu, payload.lien_session),
+        (
+            payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
+            payload.mode, payload.lien_session, payload.type_diffusion, payload.visibilite,
+        ),
         role=user.role,
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
-    return EvenementOut(
-        id=str(created["id"]),
-        titre=created["titre"],
-        type=created["type"],
-        volet=created["volet"],
-        debut=created["debut"],
-        fin=created["fin"],
-        lieu=created["lieu"],
-        session_ouverte=created["session_ouverte"],
-        lien_session=created["lien_session"],
-    )
+    return _evenement_out(created)

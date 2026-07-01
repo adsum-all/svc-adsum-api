@@ -95,16 +95,18 @@ def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> Memb
 
 @router.get("/me/evenements", response_model=list[EvenementOut])
 def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[EvenementOut]:
-    _, role = ctx
+    membre_id, role = ctx
     rows = db.fetch_all(
         """
-        SELECT id, titre, type, volet, debut, fin, lieu, session_ouverte, lien_session
-        FROM evenement
-        WHERE fin IS NULL OR fin >= now() - interval '12 hours'
-        ORDER BY debut ASC
+        SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode,
+               e.session_ouverte, e.lien_session, e.type_diffusion, e.visibilite,
+               EXISTS (SELECT 1 FROM participation p WHERE p.evenement_id = e.id AND p.membre_id = %s) AS inscrit
+        FROM evenement e
+        WHERE e.fin IS NULL OR e.fin >= now() - interval '12 hours'
+        ORDER BY e.debut ASC
         LIMIT 100
         """,
-        (),
+        (membre_id,),
         role=role,
     )
     return [
@@ -116,12 +118,24 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
             debut=r["debut"],
             fin=r["fin"],
             lieu=r["lieu"],
+            mode=r["mode"],
             session_ouverte=r["session_ouverte"],
-            # The session link is only exposed while the session is open.
-            lien_session=r["lien_session"] if r["session_ouverte"] else None,
+            # The session link is exposed only while open, and a private event
+            # additionally requires the member to be registered (a participation row).
+            lien_session=_visible_link(r),
+            type_diffusion=r["type_diffusion"] or "aucun",
+            visibilite=r["visibilite"] or "membres",
         )
         for r in rows
     ]
+
+
+def _visible_link(r: dict[str, object]) -> str | None:
+    if not r["session_ouverte"]:
+        return None
+    if r["visibilite"] == "prive" and not r.get("inscrit"):
+        return None
+    return r["lien_session"]  # type: ignore[return-value]
 
 
 @router.get("/me/historique", response_model=list[PresenceOut])

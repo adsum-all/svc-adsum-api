@@ -94,12 +94,22 @@ def add_comptage(
 @comptage_public_router.get("/evenement/{evenement_id}", response_model=PublicEvent)
 def public_event(evenement_id: str) -> PublicEvent:
     row = db.fetch_one(
-        "SELECT id, titre, volet, session_ouverte FROM evenement WHERE id = %s",
+        "SELECT id, titre, volet, visibilite, session_ouverte, lien_session, type_diffusion "
+        "FROM evenement WHERE id = %s",
         (evenement_id,),
     )
-    if not row or row["volet"] != "B":
+    if not row or (row["volet"] != "B" and row["visibilite"] != "public"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="public event not found")
-    return PublicEvent(id=str(row["id"]), titre=str(row["titre"]), ouvert=bool(row["session_ouverte"]))
+    ouvert = bool(row["session_ouverte"])
+    # A public broadcast link is only served while the session is open.
+    public_live = row["visibilite"] == "public" and ouvert
+    return PublicEvent(
+        id=str(row["id"]),
+        titre=str(row["titre"]),
+        ouvert=ouvert,
+        lien_session=row["lien_session"] if public_live else None,
+        type_diffusion=(row["type_diffusion"] or "aucun") if public_live else "aucun",
+    )
 
 
 @comptage_public_router.post("/presence/{evenement_id}", status_code=status.HTTP_201_CREATED)

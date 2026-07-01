@@ -72,6 +72,7 @@ class MembreProfile(BaseModel):
     champs_deverrouilles: list[str] = []
     langue: str = "fr"
     commission_id: str | None = None
+    anniversaire_visible_annuaire: bool = True
     fonction_cle: str | None = None
     fonction_confirmee: bool = False
     titre: str | None = None
@@ -87,8 +88,11 @@ class EvenementOut(BaseModel):
     debut: datetime
     fin: datetime | None = None
     lieu: str | None = None
+    mode: str | None = None
     session_ouverte: bool
     lien_session: str | None = None
+    type_diffusion: str = "aucun"
+    visibilite: str = "membres"
 
 
 class PresenceOut(BaseModel):
@@ -402,6 +406,8 @@ class PublicEvent(BaseModel):
     id: str
     titre: str
     ouvert: bool
+    lien_session: str | None = None
+    type_diffusion: str = "aucun"
 
 
 class AuditEntry(BaseModel):
@@ -479,7 +485,10 @@ class CreateEvenement(BaseModel):
     debut: datetime
     fin: datetime | None = None
     lieu: str | None = None
+    mode: str | None = None
     lien_session: str | None = None
+    type_diffusion: str = Field(default="aucun", pattern="^(embed|externe|aucun)$")
+    visibilite: str = Field(default="membres", pattern="^(public|membres|prive)$")
 
 
 class VerifyResult(BaseModel):
