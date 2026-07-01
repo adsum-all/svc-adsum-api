@@ -372,10 +372,20 @@ def soumettre_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)])
     required = ["prenoms", "nom", "telephone", "date_naissance", "genre", "ville", "pays", "commission_id", "tribu_id"]
     missing = [k for k in required if not row.get(k)]
     docs = db.fetch_one("SELECT count(*) AS n FROM document WHERE membre_id = %s AND chemin_stockage IS NOT NULL", (membre_id,), role=role)
-    if missing or (docs and int(docs["n"]) == 0):
+    # A verified electronic signature covering every active blocking consent
+    # document is required on top of the profile and document gates. Imported
+    # locally to avoid a circular import (consentement imports from this module).
+    from .consentement import _signature_couvre_bloquants
+
+    signe = _signature_couvre_bloquants(membre_id, role)
+    if missing or (docs and int(docs["n"]) == 0) or not signe:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"missing_fields": missing, "needs_document": bool(docs and int(docs["n"]) == 0)},
+            detail={
+                "missing_fields": missing,
+                "needs_document": bool(docs and int(docs["n"]) == 0),
+                "needs_signature": not signe,
+            },
         )
     db.execute(
         "UPDATE membre SET statut_inscription = 'soumis', soumis_le = now() WHERE id = %s",

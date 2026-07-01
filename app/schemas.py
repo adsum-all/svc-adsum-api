@@ -567,3 +567,52 @@ class CheckoutResult(BaseModel):
     evenement_id: str
     depart: datetime | None = None
     deja_sorti: bool = False
+
+
+class ConsentDocSummary(BaseModel):
+    """A consent document reduced to what a member needs before reading it."""
+
+    cle: str
+    version: int
+    titre: str
+    bloquant: bool
+    ordre: int
+
+
+class ConsentDocOut(BaseModel):
+    """A full consent document, title and body resolved to one language."""
+
+    cle: str
+    version: int
+    titre: str
+    contenu: str
+
+
+class ConsentDocPublishIn(BaseModel):
+    """Payload to publish a new version of a consent document (admin)."""
+
+    titre: str = Field(min_length=1)
+    titre_en: str | None = None
+    contenu: str = Field(min_length=1)
+    contenu_en: str | None = None
+    bloquant: bool = True
+    ordre: int = 100
+
+
+class SignatureDocRef(BaseModel):
+    """One document the member intends to sign, pinned to its version."""
+
+    cle: str = Field(min_length=1)
+    version: int = Field(ge=1)
+
+
+class SignatureDemandeIn(BaseModel):
+    """Request a one-time code to electronically sign the listed documents."""
+
+    documents: list[SignatureDocRef] = Field(min_length=1, max_length=50)
+
+
+class SignatureVerifIn(BaseModel):
+    """Confirm the electronic signature with the one-time code."""
+
+    code: str = Field(min_length=1, max_length=12)
