@@ -229,9 +229,9 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
         role=user.role,
     )
     messages = {
-        "approuve": ("Inscription validee", "Votre inscription est validee. Votre carte et votre QR sont actifs."),
-        "refuse": ("Inscription refusee", f"Votre inscription a ete refusee. Motif : {payload.motif or 'non precise'}."),
-        "modification_demandee": ("Modification demandee", f"L'administration demande une correction : {payload.motif or 'voir details'}. Vos informations sont conservees : rouvrez votre dossier, corrigez uniquement ce qui est demande, puis renvoyez-le."),
+        "approuve": ("Inscription validée", "Votre inscription est validée. Votre carte et votre QR sont actifs."),
+        "refuse": ("Inscription refusée", f"Votre inscription a été refusée. Motif : {payload.motif or 'non précisé'}."),
+        "modification_demandee": ("Modification demandée", f"L'administration demande une correction : {payload.motif or 'voir détails'}. Vos informations sont conservées : rouvrez votre dossier, corrigez uniquement ce qui est demandé, puis renvoyez-le."),
         "en_revue": ("Dossier en cours d'examen", "Votre dossier est en cours d'examen par l'administration."),
     }
     titre, corps = messages[payload.decision]
@@ -246,8 +246,11 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
     # requires it (country legal matrix), with a one-month deadline.
     if payload.decision == "approuve":
         from .matrice_pays import ouvrir_attestation_si_besoin
+        from .retention import set_retention
 
         ouvrir_attestation_si_besoin(membre_id, user.role)
+        # Start the data-retention window (kept, not deleted) on approval.
+        set_retention(membre_id, user.role)
     audit.log(user.id, user.role, "decision_inscription", "membre", membre_id, {"decision": payload.decision})
     return {"ok": True, "statut": payload.decision}
 

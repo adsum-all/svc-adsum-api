@@ -55,6 +55,7 @@ _CATEGORY_PREF = {
     "attestation_rappel": "rappels",
     "attestation_expiree": None,
     "correction_demandee": None,
+    "retention_renouvellement": None,
 }
 
 # Minimal built-in fallbacks (FR/EN) used only if no template row exists yet.
@@ -264,6 +265,11 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     # 6) Housekeeping: delete Telegram messages past the retention window.
     purge = channels.purge_old_telegram(role)
     result["telegram_purges"] = purge.get("supprimes", 0)
+
+    # 7) Data-retention renewal: yearly consent notice + automatic window renewal.
+    from .retention import scan_renouvellement
+
+    result["retention_renouvellements"] = scan_renouvellement(role)
 
     return {"ok": True, **result}
 
