@@ -24,6 +24,7 @@ from .membres import router as membres_router
 from .middleware import SecurityHeadersMiddleware
 from .organisation import router as organisation_router
 from .organisation_admin import router as organisation_admin_router
+from .participation import router as participation_router
 from .reference import router as reference_router
 from .rgpd import router as rgpd_router
 from .terminaux import router as terminaux_router
@@ -50,6 +51,7 @@ app.include_router(admin_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(organisation_admin_router)
+app.include_router(participation_router)
 app.include_router(analytics_router)
 app.include_router(users_router)
 app.include_router(terminaux_router)
