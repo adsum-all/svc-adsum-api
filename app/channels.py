@@ -99,7 +99,8 @@ def send_telegram(chat_id: str, message: Message) -> bool:
     if not token or not chat_id:
         return False
     url = f"{settings.telegram_api_base}/bot{token}/sendMessage"
-    text = f"<b>{_esc(message.titre)}</b>\n{_esc(message.corps_text)}"
+    # Telegram rejects messages over 4096 characters; keep a safe margin.
+    text = f"<b>{_esc(message.titre)}</b>\n{_esc(message.corps_text)}"[:4000]
     ok, _ = _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, {})
     return ok
 

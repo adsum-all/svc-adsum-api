@@ -64,7 +64,7 @@ def _mask(value: str | None) -> str:
 
 
 @router.get("")
-def list_integrations(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_integrations(user: Annotated[UserMe, Depends(require_admin)]) -> list[dict[str, object]]:
     rows = db.fetch_all("SELECT cle, valeur, categorie, maj_le FROM integration_config ORDER BY categorie, cle", (), role=user.role)
     out: list[dict[str, object]] = []
     for r in rows:

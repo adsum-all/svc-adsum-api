@@ -12,7 +12,6 @@ number) so the birthday and other notifications can reach those channels.
 # ruff: noqa: E501
 from __future__ import annotations
 
-import os
 import secrets
 import urllib.request
 from typing import Annotated
@@ -23,6 +22,7 @@ from pydantic import BaseModel
 from . import audit, channels, db
 from .auth import current_user
 from .config import settings
+from .cron_auth import require_cron_auth
 from .deps import require_roles
 from .email_templates import render_anniversaire_email
 from .schemas import UserMe
@@ -99,6 +99,18 @@ def _run_anniversaires(role: str | None) -> dict[str, object]:
     )
     envoyes = 0
     for r in rows:
+        # Reserve the (member, year) slot BEFORE sending. If another concurrent
+        # run already claimed it, the RETURNING yields no row and we skip: the
+        # unique constraint guarantees a single wish per member per year even
+        # under overlapping cron executions.
+        reserved = db.fetch_one(
+            "INSERT INTO notification_anniversaire (membre_id, annee, canaux) VALUES (%s, %s, '') "
+            "ON CONFLICT (membre_id, annee) DO NOTHING RETURNING id",
+            (str(r["id"]), int(r["annee"])),
+            role=role,
+        )
+        if not reserved:
+            continue
         prenom = (r["prenoms"] or "cher membre").split(" ")[0]
         titre = str(modele["titre"]).replace("{prenom}", prenom)
         corps = str(modele["corps"]).replace("{prenom}", prenom)
@@ -106,8 +118,8 @@ def _run_anniversaires(role: str | None) -> dict[str, object]:
         msg = channels.Message(titre=titre, corps_text=corps, corps_html=html, image_url=modele["image_url"], type_notif="anniversaire")
         used = channels.dispatch(str(r["id"]), role, msg, whatsapp_params=[prenom])
         db.execute(
-            "INSERT INTO notification_anniversaire (membre_id, annee, canaux) VALUES (%s, %s, %s) ON CONFLICT (membre_id, annee) DO NOTHING",
-            (str(r["id"]), int(r["annee"]), ",".join(used)),
+            "UPDATE notification_anniversaire SET canaux = %s WHERE membre_id = %s AND annee = %s",
+            (",".join(used), str(r["id"]), int(r["annee"])),
             role=role,
         )
         envoyes += 1
@@ -121,9 +133,7 @@ def cron_anniversaires(authorization: Annotated[str | None, Header()] = None) ->
     Vercel injects ``Authorization: Bearer $CRON_SECRET`` (the un-prefixed env var)
     on scheduled invocations; we also accept ADSUM_CRON_SECRET for parity.
     """
-    secret = os.environ.get("CRON_SECRET") or settings.cron_secret
-    if secret and authorization != f"Bearer {secret}":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    require_cron_auth(authorization)
     return _run_anniversaires(role=None)
 
 
@@ -148,9 +158,12 @@ def telegram_lien(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str
     username = channels.telegram_username()
     if not username:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram not configured")
-    token = secrets.token_urlsafe(12)
+    # High-entropy, single-use secret. It travels only inside the deep link the
+    # member opens; it is never returned separately in the response body, so it
+    # cannot leak into logs and let a third party pre-claim the chat via getUpdates.
+    token = secrets.token_urlsafe(24)
     db.execute("UPDATE membre SET telegram_link_token = %s WHERE id = %s", (token, membre_id), role=role)
-    return {"deep_link": f"https://t.me/{username}?start={token}", "token": token}
+    return {"deep_link": f"https://t.me/{username}?start={token}"}
 
 
 @router.post("/membres/me/telegram/verifier")

@@ -13,7 +13,6 @@ all deduplicated. A single daily cron keeps it within the free hosting tier.
 # ruff: noqa: E501
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -21,7 +20,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 
 from . import audit, channels, db
-from .config import settings
+from .cron_auth import require_cron_auth
 from .deps import require_roles
 from .email_templates import render_anniversaire_email, render_notification_email
 from .schemas import UserMe
@@ -102,12 +101,16 @@ def notifier(
             if pref and not pref[pref_col]:
                 return []
         if dedup:
-            already = db.fetch_one(
-                "SELECT 1 FROM notification_log WHERE membre_id = %s AND type_cle = %s AND ref_id = %s",
+            # Reserve the log row BEFORE sending. If a concurrent run already
+            # claimed it, RETURNING yields nothing and we skip: the unique
+            # constraint makes the send exactly-once even under overlapping crons.
+            reserved = db.fetch_one(
+                "INSERT INTO notification_log (membre_id, type_cle, ref_id, canaux) VALUES (%s, %s, %s, '') "
+                "ON CONFLICT (membre_id, type_cle, ref_id) DO NOTHING RETURNING id",
                 (membre_id, type_cle, ref_id),
                 role=role,
             )
-            if already:
+            if not reserved:
                 return []
         titre, corps = _render(type_cle, lang, ctx, role)
         signature = channels.integration_value("signature") or "Sacerdoce Royal"
@@ -123,9 +126,8 @@ def notifier(
         used = channels.dispatch(membre_id, role, msg, whatsapp_params=whatsapp_params)
         if dedup:
             db.execute(
-                "INSERT INTO notification_log (membre_id, type_cle, ref_id, canaux) VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (membre_id, type_cle, ref_id) DO NOTHING",
-                (membre_id, type_cle, ref_id, ",".join(used)),
+                "UPDATE notification_log SET canaux = %s WHERE membre_id = %s AND type_cle = %s AND ref_id = %s",
+                (",".join(used), membre_id, type_cle, ref_id),
                 role=role,
             )
         return used
@@ -206,9 +208,7 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
 @router.get("/cron/quotidien")
 def cron_quotidien(authorization: Annotated[str | None, Header()] = None) -> dict[str, object]:
     """Daily scheduled notifications, secured by the CRON_SECRET bearer."""
-    secret = os.environ.get("CRON_SECRET") or settings.cron_secret
-    if secret and authorization != f"Bearer {secret}":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    require_cron_auth(authorization)
     return _run_quotidien(role=None)
 
 

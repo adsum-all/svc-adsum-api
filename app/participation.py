@@ -141,6 +141,7 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
         DO UPDATE SET statut = EXCLUDED.statut, valide = EXCLUDED.valide,
             avis = COALESCE(EXCLUDED.avis, participation.avis),
             note = COALESCE(EXCLUDED.note, participation.note), maj_le = now()
+        WHERE participation.source <> 'scan' AND NOT participation.valide
         """,
         (evenement_id, membre_id, statut, payload.valider, payload.avis, payload.note),
         role=role,
