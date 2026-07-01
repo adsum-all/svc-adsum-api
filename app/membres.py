@@ -96,42 +96,60 @@ def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> Memb
 @router.get("/me/evenements", response_model=list[EvenementOut])
 def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[EvenementOut]:
     membre_id, role = ctx
+    # Lifecycle is computed from the server clock, never from a manual flag: a
+    # future event can never look joinable, and a stored link stays hidden until
+    # the joinable window opens (15 min before the start, until the end + 6 h).
     rows = db.fetch_all(
         """
         SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode,
                e.session_ouverte, e.lien_session, e.type_diffusion, e.visibilite,
-               EXISTS (SELECT 1 FROM participation p WHERE p.evenement_id = e.id AND p.membre_id = %s) AS inscrit
+               EXISTS (SELECT 1 FROM participation p WHERE p.evenement_id = e.id AND p.membre_id = %s) AS inscrit,
+               CASE
+                 WHEN now() < e.debut - interval '15 minutes' THEN 'a_venir'
+                 WHEN now() < e.debut THEN 'bientot'
+                 WHEN now() <= COALESCE(e.fin, e.debut + interval '6 hours') THEN 'en_cours'
+                 ELSE 'termine'
+               END AS phase,
+               (now() >= e.debut) AS formulaire_ouvert,
+               (now() >= e.debut - interval '15 minutes'
+                AND now() <= COALESCE(e.fin, e.debut + interval '6 hours')) AS in_window
         FROM evenement e
-        WHERE e.fin IS NULL OR e.fin >= now() - interval '12 hours'
+        WHERE e.debut >= now() - interval '30 days'
         ORDER BY e.debut ASC
         LIMIT 100
         """,
         (membre_id,),
         role=role,
     )
-    return [
-        EvenementOut(
-            id=str(r["id"]),
-            titre=r["titre"],
-            type=r["type"],
-            volet=r["volet"],
-            debut=r["debut"],
-            fin=r["fin"],
-            lieu=r["lieu"],
-            mode=r["mode"],
-            session_ouverte=r["session_ouverte"],
-            # The session link is exposed only while open, and a private event
-            # additionally requires the member to be registered (a participation row).
-            lien_session=_visible_link(r),
-            type_diffusion=r["type_diffusion"] or "aucun",
-            visibilite=r["visibilite"] or "membres",
+    out: list[EvenementOut] = []
+    for r in rows:
+        lien = _visible_link(r)
+        out.append(
+            EvenementOut(
+                id=str(r["id"]),
+                titre=r["titre"],
+                type=r["type"],
+                volet=r["volet"],
+                debut=r["debut"],
+                fin=r["fin"],
+                lieu=r["lieu"],
+                mode=r["mode"],
+                session_ouverte=r["session_ouverte"],
+                lien_session=lien,
+                type_diffusion=r["type_diffusion"] or "aucun",
+                visibilite=r["visibilite"] or "membres",
+                phase=str(r["phase"]),
+                joignable=lien is not None,
+                formulaire_ouvert=bool(r["formulaire_ouvert"]),
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 def _visible_link(r: dict[str, object]) -> str | None:
-    if not r["session_ouverte"]:
+    # A link is only shown inside the joinable time window (never merely because
+    # it was stored), and a private event additionally requires registration.
+    if not r["in_window"]:
         return None
     if r["visibilite"] == "prive" and not r.get("inscrit"):
         return None

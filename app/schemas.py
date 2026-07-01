@@ -93,6 +93,10 @@ class EvenementOut(BaseModel):
     lien_session: str | None = None
     type_diffusion: str = "aucun"
     visibilite: str = "membres"
+    # Server-computed lifecycle (source of truth for time-gated UI actions).
+    phase: str = "a_venir"  # a_venir | bientot | en_cours | termine
+    joignable: bool = False  # the join button may show (in window and a link is available)
+    formulaire_ouvert: bool = False  # the participation form may show (session started)
 
 
 class PresenceOut(BaseModel):

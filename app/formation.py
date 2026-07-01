@@ -205,8 +205,10 @@ def get_questionnaire_membre(evenement_id: str, ctx: Annotated[tuple[str, str], 
     if not q:
         return {"disponible": False, "raison": "aucun_questionnaire"}
     fenetre = _fenetre_heures(role)
+    # Available from the moment the session starts, and up to the configured
+    # window (default 6 h) after the end (or after the start when no end is set).
     window = db.fetch_one(
-        "SELECT (fin IS NOT NULL AND now() BETWEEN fin AND fin + (%s || ' hours')::interval) AS ouvert, fin FROM evenement WHERE id = %s",
+        "SELECT (now() >= debut AND now() <= COALESCE(fin, debut) + (%s || ' hours')::interval) AS ouvert, fin FROM evenement WHERE id = %s",
         (str(fenetre), evenement_id),
         role=role,
     )
