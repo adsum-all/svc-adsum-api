@@ -227,7 +227,47 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
                 if notifier(str(m["id"]), role, "recap_hebdo", {"prenom": _prenom(m), "liste": liste}, ref_id=ref, dedup=True):
                     result["recap"] += 1
 
+    # 5) Manual-attestation follow-up: strategic reminders and expiry.
+    result["attest_rappels"], result["attest_expirees"] = _scan_attestations(role)
+
     return {"ok": True, **result}
+
+
+def _scan_attestations(role: str | None) -> tuple[int, int]:
+    """Strategic reminders (14/7/2/0 days before) and automatic invalidation of
+    hand-signed attestations that were never returned by the deadline."""
+    rappels = expirees = 0
+    # Reminders at discrete milestones (not daily), deduplicated per milestone.
+    pending = db.fetch_all(
+        "SELECT a.id, a.membre_id, m.prenoms, to_char(a.echeance, 'DD/MM/YYYY') AS ech, "
+        "floor(extract(epoch FROM (a.echeance - now())) / 86400)::int AS jours "
+        "FROM attestation_manuelle a JOIN membre m ON m.id = a.membre_id "
+        "WHERE a.statut IN ('awaiting', 'reminded') AND a.echeance IS NOT NULL AND a.echeance >= now()",
+        (),
+        role=role,
+    )
+    for a in pending:
+        jours = int(a["jours"])
+        jalon = next((j for j in (14, 7, 2, 0) if jours == j), None)
+        if jalon is None:
+            continue
+        prenom = (str(a.get("prenoms") or "").split(" ")[0]) or "cher membre"
+        if notifier(str(a["membre_id"]), role, "attestation_rappel", {"prenom": prenom, "echeance": a["ech"]}, ref_id=f"{a['id']}:{jalon}", dedup=True):
+            rappels += 1
+            db.execute("UPDATE attestation_manuelle SET statut = 'reminded' WHERE id = %s", (a["id"],), role=role)
+    # Expiry: past deadline and not returned -> invalidate the registration.
+    for a in db.fetch_all(
+        "SELECT a.id, a.membre_id, m.prenoms FROM attestation_manuelle a JOIN membre m ON m.id = a.membre_id "
+        "WHERE a.statut IN ('awaiting', 'reminded', 'overdue') AND a.echeance IS NOT NULL AND a.echeance < now()",
+        (),
+        role=role,
+    ):
+        db.execute("UPDATE attestation_manuelle SET statut = 'invalidated' WHERE id = %s", (a["id"],), role=role)
+        db.execute("UPDATE membre SET attestation_statut = 'invalidated' WHERE id = %s", (a["membre_id"],), role=role)
+        prenom = (str(a.get("prenoms") or "").split(" ")[0]) or "cher membre"
+        if notifier(str(a["membre_id"]), role, "attestation_expiree", {"prenom": prenom}, ref_id=f"{a['id']}:exp", dedup=True):
+            expirees += 1
+    return rappels, expirees
 
 
 @router.get("/cron/quotidien")

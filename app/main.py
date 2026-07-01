@@ -24,6 +24,7 @@ from .formation import router as formation_router
 from .gestion import router as gestion_router
 from .inscription import router as inscription_router
 from .integrations import router as integrations_router
+from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
 from .middleware import SecurityHeadersMiddleware
 from .notifications import router as notifications_router
@@ -70,6 +71,7 @@ app.include_router(fichiers_router)
 app.include_router(formation_router)
 app.include_router(inscription_router)
 app.include_router(consentement_router)
+app.include_router(matrice_pays_router)
 app.include_router(reference_router)
 app.include_router(rgpd_router)
 app.include_router(anniversaires_router)

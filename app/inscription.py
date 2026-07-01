@@ -204,6 +204,12 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
     prenom = (str(mrow.get("prenoms") or "").split(" ")[0]) if mrow else "cher membre"
     corps_complet = f"Bonjour {prenom},\n\n{corps}"
     channels.dispatch(membre_id, user.role, channels.Message(titre=titre, corps_text=corps_complet, type_notif="inscription"))
+    # On approval, open a hand-signed attestation task when the member's country
+    # requires it (country legal matrix), with a one-month deadline.
+    if payload.decision == "approuve":
+        from .matrice_pays import ouvrir_attestation_si_besoin
+
+        ouvrir_attestation_si_besoin(membre_id, user.role)
     audit.log(user.id, user.role, "decision_inscription", "membre", membre_id, {"decision": payload.decision})
     return {"ok": True, "statut": payload.decision}
 
