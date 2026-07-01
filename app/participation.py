@@ -55,16 +55,25 @@ class ParticipationIn(BaseModel):
 @router.get("/membres/me/evenements/{evenement_id}/participation")
 def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     membre_id, role = ctx
-    ev = db.fetch_one("SELECT id FROM evenement WHERE id = %s", (evenement_id,), role=role)
+    ev = db.fetch_one(
+        "SELECT debut, (debut IS NOT NULL AND now() >= debut) AS demarree FROM evenement WHERE id = %s",
+        (evenement_id,),
+        role=role,
+    )
     if not ev:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
+    # The declaration form is only available once the activity has started; it can
+    # never be filled in advance, so a member cannot claim to have taken part in an
+    # event that has not happened yet.
+    ouvert = bool(ev["demarree"])
+    disponible_le = ev["debut"].isoformat() if ev["debut"] else None
     row = db.fetch_one(
         "SELECT statut, source, valide, avis, note FROM participation WHERE evenement_id = %s AND membre_id = %s",
         (evenement_id, membre_id),
         role=role,
     )
     if not row:
-        return {"statut": None, "source": None, "valide": False, "avis": None, "note": None, "deja_scanne": False, "verrouille": False}
+        return {"statut": None, "source": None, "valide": False, "avis": None, "note": None, "deja_scanne": False, "verrouille": False, "ouvert": ouvert, "disponible_le": disponible_le}
     scanne = row["source"] == "scan"
     # A scanned presence, or an already-validated declaration, locks the status.
     verrouille = scanne or bool(row["valide"])
@@ -76,6 +85,8 @@ def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(
         "note": row["note"],
         "deja_scanne": scanne,
         "verrouille": verrouille,
+        "ouvert": ouvert,
+        "disponible_le": disponible_le,
     }
 
 
@@ -90,12 +101,25 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     membre_id, role = ctx
     if payload.note is not None and not 1 <= payload.note <= 5:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="note must be between 1 and 5")
+    ev = db.fetch_one(
+        "SELECT (debut IS NOT NULL AND now() >= debut) AS demarree, debut FROM evenement WHERE id = %s",
+        (evenement_id,),
+        role=role,
+    )
+    if not ev:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     existing = db.fetch_one(
         "SELECT statut, source, valide FROM participation WHERE evenement_id = %s AND membre_id = %s",
         (evenement_id, membre_id),
         role=role,
     )
     locked = bool(existing) and (existing["source"] == "scan" or existing["valide"])
+
+    # A self-declaration is only accepted once the activity has started: no one can
+    # declare participation to an event that has not happened yet.
+    if not locked and not ev["demarree"]:
+        quand = ev["debut"].strftime("%d/%m/%Y a %Hh%M") if ev["debut"] else ""
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"le formulaire sera disponible au debut de l'activite ({quand})")
 
     if locked:
         # Status is fixed; only feedback can be updated.
