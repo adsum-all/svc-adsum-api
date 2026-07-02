@@ -222,8 +222,8 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
         role=role,
     ) or {}
 
-    # 2) E-mail (existing gateway).
-    if prefs.get("email") and contact.get("email"):
+    # 2) E-mail (existing gateway). The admin global switch can disable it.
+    if canal_actif("email") and prefs.get("email") and contact.get("email"):
         html = message.corps_html or f"<p>{message.corps_text}</p>"
         try:
             ok, _ = send_email(str(contact["email"]), message.titre, message.corps_text, html)
@@ -233,11 +233,17 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
             pass
 
     # 3) Telegram (free).
-    if prefs.get("telegram") and contact.get("telegram_chat_id") and send_telegram(str(contact["telegram_chat_id"]), message):
+    if canal_actif("telegram") and prefs.get("telegram") and contact.get("telegram_chat_id") and send_telegram(str(contact["telegram_chat_id"]), message):
         used.append("telegram")
 
     # 4) WhatsApp (paid, config-gated).
-    if prefs.get("whatsapp") and contact.get("whatsapp_numero") and send_whatsapp(str(contact["whatsapp_numero"]), whatsapp_params or []):
+    if canal_actif("whatsapp") and prefs.get("whatsapp") and contact.get("whatsapp_numero") and send_whatsapp(str(contact["whatsapp_numero"]), whatsapp_params or []):
         used.append("whatsapp")
 
     return used
+
+
+def canal_actif(canal: str) -> bool:
+    """Global admin On/Off for a delivery channel (default on). A kill-switch on
+    top of the channel configuration and the per-member preferences."""
+    return (integration_value(f"canal_{canal}") or "on").lower() != "off"

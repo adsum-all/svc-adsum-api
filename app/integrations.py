@@ -183,11 +183,11 @@ def statut_canaux(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, 
         except Exception:  # noqa: BLE001
             telegram_ok = False
     return {
-        "in_app": {"actif": True, "note": "Toujours actif."},
-        "email": {"actif": settings.email_provider not in ("", "console"), "provider": settings.email_provider, "note": "Livraison a toute adresse possible uniquement apres verification du domaine (SPF/DKIM)."},
-        "telegram": {"actif": telegram_ok, "bot": telegram_bot, "gratuit": True, "note": "Canal gratuit. Chaque membre doit lier son compte (Demarrer sur le bot)."},
-        "whatsapp": {"actif": channels.whatsapp_configured(), "gratuit": False, "note": "Payant par message (Meta Cloud API), necessite un compte WABA verifie et des modeles approuves."},
-        "sms": {"actif": channels.sms_configured(), "gratuit": False, "note": "Aucun fournisseur configure (payant)."},
+        "in_app": {"actif": True, "autorise": True, "verrouille": True, "note": "Toujours actif."},
+        "email": {"actif": settings.email_provider not in ("", "console"), "autorise": channels.canal_actif("email"), "provider": settings.email_provider, "note": "Livraison a toute adresse possible uniquement apres verification du domaine (SPF/DKIM)."},
+        "telegram": {"actif": telegram_ok, "autorise": channels.canal_actif("telegram"), "bot": telegram_bot, "gratuit": True, "note": "Canal gratuit. Chaque membre doit lier son compte (Demarrer sur le bot)."},
+        "whatsapp": {"actif": channels.whatsapp_configured(), "autorise": channels.canal_actif("whatsapp"), "gratuit": False, "note": "Payant par message (Meta Cloud API), necessite un compte WABA verifie et des modeles approuves."},
+        "sms": {"actif": channels.sms_configured(), "autorise": channels.canal_actif("sms"), "gratuit": False, "note": "Aucun fournisseur configure (payant)."},
     }
 
 
