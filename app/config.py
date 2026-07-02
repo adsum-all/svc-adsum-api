@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # derived from jwt_secret so encryption still works; set a dedicated key
     # (ADSUM_DOC_ENCRYPTION_KEY) in production for proper key separation.
     doc_encryption_key: str = ""
+    # Retired keys kept for decryption during a rotation (comma-separated Fernet
+    # keys). New data is always encrypted with doc_encryption_key.
+    doc_encryption_keys_old: str = ""
     # Notification channels. Each channel is only attempted when configured.
     # Telegram (free): create a bot with @BotFather and set ADSUM_TELEGRAM_BOT_TOKEN.
     telegram_bot_token: str = ""
