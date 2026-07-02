@@ -102,8 +102,13 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     membre_id, role = ctx
     if payload.note is not None and not 1 <= payload.note <= 5:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="note must be between 1 and 5")
+    # Attendance window, enforced server-side: the form opens at the event start
+    # and closes two days after the event end (or after debut + 1 day when no end
+    # is set). No one can declare for a future event, nor for a long-past one.
     ev = db.fetch_one(
-        "SELECT (debut IS NOT NULL AND now() >= debut) AS demarree, debut FROM evenement WHERE id = %s",
+        "SELECT debut, (debut IS NOT NULL AND now() >= debut) AS demarree, "
+        "(debut IS NOT NULL AND now() > coalesce(fin, debut + interval '1 day') + interval '2 days') AS cloture "
+        "FROM evenement WHERE id = %s",
         (evenement_id,),
         role=role,
     )
@@ -125,6 +130,10 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     if not existing and not ev["demarree"]:
         quand = ev["debut"].strftime("%d/%m/%Y à %Hh%M") if ev["debut"] else ""
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"le formulaire sera disponible au début de l'activité ({quand})")
+    # The form closes after the activity: a member who did not declare in time can
+    # no longer create a record (an admin correction remains possible server-side).
+    if not existing and ev["cloture"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le formulaire de présence de cette activité est clôturé.")
 
     scanned = bool(existing) and existing["source"] == "scan"
     if scanned:
