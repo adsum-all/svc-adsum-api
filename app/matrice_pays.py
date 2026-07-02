@@ -122,12 +122,20 @@ def maj_pays(code: str, payload: PaysPatch, user: Annotated[UserMe, Depends(requ
 def _texte_attestation(membre_id: str, role: str | None, langue: str) -> str:
     m = db.fetch_one("SELECT prenoms, nom FROM membre WHERE id = %s", (membre_id,), role=role)
     nom = f"{(m or {}).get('prenoms') or ''} {(m or {}).get('nom') or ''}".strip()
+    # Join the readable document title (per key + version) instead of showing the
+    # technical key, and fall back to the key/latest title if a version differs.
+    title_col = "titre_en" if langue == "en" else "titre"
     docs = db.fetch_all(
-        "SELECT DISTINCT e.type, e.version FROM engagement e WHERE e.membre_id = %s ORDER BY e.type",
+        f"SELECT DISTINCT e.type, e.version, "
+        f"coalesce(dc.{title_col}, dc2.{title_col}, e.type) AS titre "
+        "FROM engagement e "
+        "LEFT JOIN document_consentement dc ON dc.cle = e.type AND dc.version::text = e.version "
+        "LEFT JOIN document_consentement dc2 ON dc2.cle = e.type AND dc2.actif = true "
+        "WHERE e.membre_id = %s ORDER BY e.type",
         (membre_id,),
         role=role,
     )
-    liste = ", ".join(f"{d['type']} (v{d['version']})" for d in docs) or "-"
+    liste = ", ".join(f"{d['titre']} (v{d['version']})" for d in docs) or "-"
     date_str = datetime.now(tz=UTC).strftime("%d/%m/%Y")
     if langue == "en":
         return (
