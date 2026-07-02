@@ -118,13 +118,13 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     # Once finalized (validated), participation is immutable: no re-participation,
     # no changing the rating or opinion afterwards. It is counted exactly once.
     if existing and existing["valide"]:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Votre participation est deja enregistree et ne peut plus etre modifiee.")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Votre participation est déjà enregistrée et ne peut plus être modifiée.")
 
     # The form only opens once the activity has started: no one can declare
     # participation to an event that has not happened yet.
     if not existing and not ev["demarree"]:
-        quand = ev["debut"].strftime("%d/%m/%Y a %Hh%M") if ev["debut"] else ""
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"le formulaire sera disponible au debut de l'activite ({quand})")
+        quand = ev["debut"].strftime("%d/%m/%Y à %Hh%M") if ev["debut"] else ""
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"le formulaire sera disponible au début de l'activité ({quand})")
 
     scanned = bool(existing) and existing["source"] == "scan"
     if scanned:

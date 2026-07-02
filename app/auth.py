@@ -184,8 +184,8 @@ def _otp_via_telegram(email: str, purpose: str) -> None:
             titre = "Your verification code"
             corps = f"Hello {prenom}, your ADSUM verification code is {code}. It expires in a few minutes; do not share it."  # noqa: E501
         else:
-            titre = "Votre code de verification"
-            corps = f"Bonjour {prenom}, votre code de verification ADSUM est {code}. Il expire dans quelques minutes ; ne le communiquez a personne."  # noqa: E501
+            titre = "Votre code de vérification"
+            corps = f"Bonjour {prenom}, votre code de vérification ADSUM est {code}. Il expire dans quelques minutes ; ne le communiquez à personne."  # noqa: E501
         channels.send_telegram(str(member["telegram_chat_id"]), channels.Message(titre=titre, corps_text=corps))
     except Exception:  # noqa: BLE001 - OTP e-mail already sent; Telegram is best-effort
         pass

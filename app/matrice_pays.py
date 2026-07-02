@@ -136,8 +136,8 @@ def _texte_attestation(membre_id: str, role: str | None, langue: str) -> str:
             f"Date: {date_str}\nHandwritten signature: ______________________"
         )
     return (
-        f"Je soussigne(e) {nom}, atteste avoir lu, compris et approuve les documents suivants du Sacerdoce Royal : "
-        f"{liste}. Je confirme mon engagement en qualite de membre.\n\n"
+        f"Je soussigné(e) {nom}, atteste avoir lu, compris et approuvé les documents suivants du Sacerdoce Royal : "
+        f"{liste}. Je confirme mon engagement en qualité de membre.\n\n"
         f"Fait le : {date_str}\nSignature manuscrite : ______________________"
     )
 

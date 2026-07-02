@@ -28,39 +28,39 @@ require_staff = require_roles("super_admin", "admin", "gestionnaire", "direction
 _GUIDE = {
     "telegram_bot_token": {
         "titre": "Jeton du bot Telegram",
-        "aide": "Jeton d'acces du bot @adsum_sr_bot. Il autorise l'envoi des notifications Telegram.",
+        "aide": "Jeton d'accès du bot @adsum_sr_bot. Il autorise l'envoi des notifications Telegram.",
         "obtenir": "Dans Telegram, ouvrez @BotFather, envoyez /mybots, choisissez le bot, puis API Token pour voir le jeton.",
-        "roter": "En cas de fuite ou d'intrusion : @BotFather > /mybots > le bot > API Token > Revoke current token. BotFather genere un nouveau jeton ; collez-le ici et enregistrez. L'ancien cesse aussitot de fonctionner.",
+        "roter": "En cas de fuite ou d'intrusion : @BotFather > /mybots > le bot > API Token > Revoke current token. BotFather génère un nouveau jeton ; collez-le ici et enregistrez. L'ancien cesse aussitôt de fonctionner.",
     },
     "telegram_bot_username": {
         "titre": "Identifiant du bot Telegram",
-        "aide": "Nom d'utilisateur du bot (sans @), utilise pour les liens de liaison des membres.",
-        "obtenir": "C'est le username choisi a la creation (ex. adsum_sr_bot).",
+        "aide": "Nom d'utilisateur du bot (sans @), utilisé pour les liens de liaison des membres.",
+        "obtenir": "C'est le username choisi à la création (ex. adsum_sr_bot).",
         "roter": "Modifiable via @BotFather (/setname ne change pas le username ; un nouveau username se fait via BotFather).",
     },
     "signature": {
         "titre": "Signature des messages",
-        "aide": "Texte de signature ajoute a la fin de chaque notification. Par defaut : Sacerdoce Royal.",
+        "aide": "Texte de signature ajouté à la fin de chaque notification. Par défaut : Sacerdoce Royal.",
         "roter": "Modifiez ici pour personnaliser la signature de tous les messages.",
     },
     "signature_anniversaire": {
         "titre": "Signature des messages d'anniversaire",
-        "aide": "Signature specifique aux messages d'anniversaire. Vide = signature globale.",
+        "aide": "Signature spécifique aux messages d'anniversaire. Vide = signature globale.",
         "roter": "Exemple : Fraternellement, Sacerdoce Royal.",
     },
     "signature_information": {
         "titre": "Signature des messages d'information",
-        "aide": "Signature des annonces, agendas et recapitulatifs. Vide = signature globale.",
+        "aide": "Signature des annonces, agendas et récapitulatifs. Vide = signature globale.",
         "roter": "Exemple : Sacerdoce Royal.",
     },
     "signature_accuse": {
-        "titre": "Signature des accuses de reception",
-        "aide": "Signature des confirmations de reception (dossier d'adhesion recu). Vide = signature globale.",
+        "titre": "Signature des accusés de réception",
+        "aide": "Signature des confirmations de réception (dossier d'adhésion reçu). Vide = signature globale.",
         "roter": "Exemple : Sacerdoce Royal.",
     },
     "signature_approbation": {
         "titre": "Signature des messages d'approbation",
-        "aide": "Signature des decisions favorables (adhesion validee, attestation requise). Vide = signature globale.",
+        "aide": "Signature des décisions favorables (adhésion validée, attestation requise). Vide = signature globale.",
         "roter": "Exemple : Fraternellement, Sacerdoce Royal.",
     },
     "signature_correction": {
@@ -70,54 +70,54 @@ _GUIDE = {
     },
     "signature_rappel": {
         "titre": "Signature des rappels",
-        "aide": "Signature des rappels (attestation, activites). Vide = signature globale.",
+        "aide": "Signature des rappels (attestation, activités). Vide = signature globale.",
         "roter": "Exemple : Sacerdoce Royal.",
     },
     "site_officiel": {
         "titre": "Site officiel",
-        "aide": "Adresse du site officiel affichee en pied de chaque message.",
+        "aide": "Adresse du site officiel affichée en pied de chaque message.",
         "roter": "Renseignez l'URL officielle (ex. sacerdoceroyal.info).",
     },
     "email_from": {
-        "titre": "Adresse expeditrice des e-mails",
-        "aide": "Adresse unique qui envoie tous les e-mails (mot de passe temporaire, notifications). Par defaut : saintgabrielsacerdoceroyal@ikmail.com.",
-        "obtenir": "C'est l'adresse qui apparaitra comme expediteur. Elle DOIT etre validee comme expediteur chez le fournisseur (Brevo).",
-        "roter": "Pour changer d'adresse expeditrice : 1) ajoutez et validez la nouvelle adresse chez Brevo (Expediteurs > Ajouter, puis cliquez le lien de confirmation recu). 2) Mettez l'adresse ici. 3) Envoyez un e-mail de test (bouton ci-dessous) pour verifier la reception. Si vous passez a une adresse sur votre propre domaine, configurez aussi SPF/DKIM/DMARC chez Brevo pour une bonne delivrabilite.",
+        "titre": "Adresse expéditrice des e-mails",
+        "aide": "Adresse unique qui envoie tous les e-mails (mot de passe temporaire, notifications). Par défaut : saintgabrielsacerdoceroyal@ikmail.com.",
+        "obtenir": "C'est l'adresse qui apparaîtra comme expéditeur. Elle DOIT être validée comme expéditeur chez le fournisseur (Brevo).",
+        "roter": "Pour changer d'adresse expéditrice : 1) ajoutez et validez la nouvelle adresse chez Brevo (Expéditeurs > Ajouter, puis cliquez le lien de confirmation reçu). 2) Mettez l'adresse ici. 3) Envoyez un e-mail de test (bouton ci-dessous) pour vérifier la réception. Si vous passez à une adresse sur votre propre domaine, configurez aussi SPF/DKIM/DMARC chez Brevo pour une bonne délivrabilité.",
     },
     "email_from_name": {
-        "titre": "Nom expediteur affiche",
-        "aide": "Nom affiche a cote de l'adresse (ex. Sacerdoce Royal).",
-        "roter": "Modifiez ici le nom affiche des e-mails.",
+        "titre": "Nom expéditeur affiché",
+        "aide": "Nom affiché à côté de l'adresse (ex. Sacerdoce Royal).",
+        "roter": "Modifiez ici le nom affiché des e-mails.",
     },
     "email_provider": {
         "titre": "Fournisseur d'e-mail",
-        "aide": "Service qui envoie les e-mails : brevo (recommande), resend, smtp, ou console (dev, n'envoie rien). Plusieurs valeurs separees par des virgules = repli automatique (ex. brevo,resend).",
-        "roter": "Choisissez le fournisseur. Avec Brevo : verifiez que la securite 'Authorised IPs' est DESACTIVEE dans Brevo (sinon les envois depuis le serveur sont bloques), et que la cle API renseignee est une cle API v3 (xkeysib-...), pas une cle SMTP.",
+        "aide": "Service qui envoie les e-mails : brevo (recommandé), resend, smtp, ou console (dev, n'envoie rien). Plusieurs valeurs séparées par des virgules = repli automatique (ex. brevo,resend).",
+        "roter": "Choisissez le fournisseur. Avec Brevo : vérifiez que la sécurité 'Authorised IPs' est DÉSACTIVÉE dans Brevo (sinon les envois depuis le serveur sont bloqués), et que la clé API renseignée est une clé API v3 (xkeysib-...), pas une clé SMTP.",
     },
     "email_api_key": {
-        "titre": "Cle API du fournisseur d'e-mail",
-        "aide": "Cle API du fournisseur (Brevo : xkeysib-... ; Resend : re_...). Stockee de facon securisee, affichee masquee.",
-        "roter": "Collez ici la nouvelle cle API et enregistrez. Pour Brevo, prenez la cle dans Parametres > Cles API (PAS la cle SMTP). Apres changement, envoyez un e-mail de test.",
+        "titre": "Clé API du fournisseur d'e-mail",
+        "aide": "Clé API du fournisseur (Brevo : xkeysib-... ; Resend : re_...). Stockée de façon sécurisée, affichée masquée.",
+        "roter": "Collez ici la nouvelle clé API et enregistrez. Pour Brevo, prenez la clé dans Paramètres > Clés API (PAS la clé SMTP). Après changement, envoyez un e-mail de test.",
     },
     "email_smtp_host": {
-        "titre": "Serveur SMTP (envoi via votre boite mail)",
-        "aide": "Serveur d'envoi de votre fournisseur de boite mail. Pour ikmail / ik.me (Infomaniak) : mail.infomaniak.com. Utilise quand email_provider = smtp.",
+        "titre": "Serveur SMTP (envoi via votre boîte mail)",
+        "aide": "Serveur d'envoi de votre fournisseur de boîte mail. Pour ikmail / ik.me (Infomaniak) : mail.infomaniak.com. Utilisé quand email_provider = smtp.",
         "roter": "Renseignez le serveur SMTP de votre fournisseur (Gmail : smtp.gmail.com ; Infomaniak : mail.infomaniak.com).",
     },
     "email_smtp_port": {
         "titre": "Port SMTP",
-        "aide": "465 (SSL, recommande) ou 587 (STARTTLS).",
-        "roter": "Mettez 465 en priorite ; si bloque, essayez 587.",
+        "aide": "465 (SSL, recommandé) ou 587 (STARTTLS).",
+        "roter": "Mettez 465 en priorité ; si bloqué, essayez 587.",
     },
     "email_smtp_user": {
         "titre": "Identifiant SMTP",
-        "aide": "En general l'adresse e-mail complete (ex. saintgabrielsacerdoceroyal@ikmail.com).",
-        "roter": "C'est l'adresse de la boite qui envoie.",
+        "aide": "En général l'adresse e-mail complète (ex. saintgabrielsacerdoceroyal@ikmail.com).",
+        "roter": "C'est l'adresse de la boîte qui envoie.",
     },
     "email_smtp_password": {
         "titre": "Mot de passe SMTP",
-        "aide": "Mot de passe de la boite mail (ou mot de passe d'application si la double authentification est active chez le fournisseur). Stocke masque.",
-        "roter": "Chez Infomaniak : activez l'acces IMAP/SMTP dans les parametres de la boite ; si 2FA active, generez un mot de passe d'application dedie. Collez-le ici puis envoyez un e-mail de test.",
+        "aide": "Mot de passe de la boîte mail (ou mot de passe d'application si la double authentification est active chez le fournisseur). Stocké masqué.",
+        "roter": "Chez Infomaniak : activez l'accès IMAP/SMTP dans les paramètres de la boîte ; si 2FA active, générez un mot de passe d'application dédié. Collez-le ici puis envoyez un e-mail de test.",
     },
 }
 
@@ -184,10 +184,10 @@ def statut_canaux(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, 
             telegram_ok = False
     return {
         "in_app": {"actif": True, "autorise": True, "verrouille": True, "note": "Toujours actif."},
-        "email": {"actif": settings.email_provider not in ("", "console"), "autorise": channels.canal_actif("email"), "provider": settings.email_provider, "note": "Livraison a toute adresse possible uniquement apres verification du domaine (SPF/DKIM)."},
-        "telegram": {"actif": telegram_ok, "autorise": channels.canal_actif("telegram"), "bot": telegram_bot, "gratuit": True, "note": "Canal gratuit. Chaque membre doit lier son compte (Demarrer sur le bot)."},
-        "whatsapp": {"actif": channels.whatsapp_configured(), "autorise": channels.canal_actif("whatsapp"), "gratuit": False, "note": "Payant par message (Meta Cloud API), necessite un compte WABA verifie et des modeles approuves."},
-        "sms": {"actif": channels.sms_configured(), "autorise": channels.canal_actif("sms"), "gratuit": False, "note": "Aucun fournisseur configure (payant)."},
+        "email": {"actif": settings.email_provider not in ("", "console"), "autorise": channels.canal_actif("email"), "provider": settings.email_provider, "note": "Livraison à toute adresse possible uniquement après vérification du domaine (SPF/DKIM)."},
+        "telegram": {"actif": telegram_ok, "autorise": channels.canal_actif("telegram"), "bot": telegram_bot, "gratuit": True, "note": "Canal gratuit. Chaque membre doit lier son compte (Démarrer sur le bot)."},
+        "whatsapp": {"actif": channels.whatsapp_configured(), "autorise": channels.canal_actif("whatsapp"), "gratuit": False, "note": "Payant par message (Meta Cloud API), nécessite un compte WABA vérifié et des modèles approuvés."},
+        "sms": {"actif": channels.sms_configured(), "autorise": channels.canal_actif("sms"), "gratuit": False, "note": "Aucun fournisseur configuré (payant)."},
     }
 
 

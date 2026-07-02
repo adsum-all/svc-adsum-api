@@ -119,7 +119,7 @@ def _notifier_session_ouverte(evenement_id: str, lien: str, role: str) -> None:
         from .notifications import notifier
 
         ev = db.fetch_one("SELECT titre FROM evenement WHERE id = %s", (evenement_id,), role=role)
-        titre = ev["titre"] if ev else "l'activite"
+        titre = ev["titre"] if ev else "l'activité"
         for m in db.fetch_all("SELECT id FROM membre WHERE statut = 'actif'", (), role=role):
             notifier(str(m["id"]), role, "activite_demarree", {"titre": titre, "lien": lien}, ref_id=evenement_id, dedup=True)
     except Exception:  # noqa: BLE001 - notifications must never block the session action
