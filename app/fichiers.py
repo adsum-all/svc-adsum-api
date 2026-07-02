@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/v1/membres/me", tags=["fichiers"])
 
 PHOTO_EXTS = {"jpg", "jpeg", "png", "webp"}
 DOC_EXTS = {"jpg", "jpeg", "png", "webp", "pdf"}
-DOC_TYPES = {"piece_identite", "passeport", "permis", "carte_consulaire", "justificatif_domicile", "photo_identite", "autre"}
+DOC_TYPES = {"piece_identite", "passeport", "permis", "carte_consulaire", "justificatif_domicile", "photo_identite", "attestation", "autre"}
 
 
 def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
