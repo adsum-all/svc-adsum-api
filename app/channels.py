@@ -193,11 +193,15 @@ def _esc(s: str) -> str:
 
 # --- Fan-out ----------------------------------------------------------------
 
-def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params: list[str] | None = None) -> list[str]:
+def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params: list[str] | None = None, critique: bool = False) -> list[str]:
     """Deliver a message to a member over every opted-in, configured channel.
 
     Always records an in-app notification. Returns the list of channels used.
     Never raises: a channel failure is skipped, not propagated.
+
+    ``critique`` (security-sensitive messages: OTP, unusual login, security alert)
+    bypasses both the admin channel kill-switch and the member's channel
+    preferences: the message must reach the member on every channel it can.
     """
     used: list[str] = []
     # 1) In-app is unconditional.
@@ -222,8 +226,13 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
         role=role,
     ) or {}
 
-    # 2) E-mail (existing gateway). The admin global switch can disable it.
-    if canal_actif("email") and prefs.get("email") and contact.get("email"):
+    def autorise(canal: str) -> bool:
+        # Critical messages ignore both the admin kill-switch and the member's
+        # channel preference; other messages honour both.
+        return critique or (canal_actif(canal) and bool(prefs.get(canal)))
+
+    # 2) E-mail (existing gateway).
+    if autorise("email") and contact.get("email"):
         html = message.corps_html or f"<p>{message.corps_text}</p>"
         try:
             ok, _ = send_email(str(contact["email"]), message.titre, message.corps_text, html)
@@ -233,11 +242,11 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
             pass
 
     # 3) Telegram (free).
-    if canal_actif("telegram") and prefs.get("telegram") and contact.get("telegram_chat_id") and send_telegram(str(contact["telegram_chat_id"]), message):
+    if autorise("telegram") and contact.get("telegram_chat_id") and send_telegram(str(contact["telegram_chat_id"]), message):
         used.append("telegram")
 
     # 4) WhatsApp (paid, config-gated).
-    if canal_actif("whatsapp") and prefs.get("whatsapp") and contact.get("whatsapp_numero") and send_whatsapp(str(contact["whatsapp_numero"]), whatsapp_params or []):
+    if autorise("whatsapp") and contact.get("whatsapp_numero") and send_whatsapp(str(contact["whatsapp_numero"]), whatsapp_params or []):
         used.append("whatsapp")
 
     return used

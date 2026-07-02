@@ -1,7 +1,7 @@
 """Authentication endpoints: real login and current user."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
 import jwt
@@ -79,13 +79,49 @@ def _record_session(user_id: str, role: str, request: Request) -> None:
     try:
         ip = _client_ip(request)
         ua = (request.headers.get("user-agent") or "")[:300]
+        # Detect a login from a device we have never seen for this account, but
+        # only once the account already has a history (never on the first login).
+        seen = db.fetch_one(
+            "SELECT count(*) AS total, count(*) FILTER (WHERE appareil = %s) AS meme "
+            "FROM session WHERE utilisateur_id = %s",
+            (ua, user_id),
+            role=role,
+        ) or {"total": 0, "meme": 0}
+        nouvel_appareil = int(seen.get("total") or 0) > 0 and int(seen.get("meme") or 0) == 0
         db.execute(
             "INSERT INTO session (utilisateur_id, ip, appareil, cree_le) VALUES (%s, %s::inet, %s, now())",
             (user_id, ip, ua),
             role=role,
         )
         db.execute("UPDATE utilisateur SET dernier_login = now() WHERE id = %s", (user_id,), role=role)
+        if nouvel_appareil:
+            _alerter_connexion_inhabituelle(user_id, role)
     except Exception:  # noqa: BLE001 - tracking must never block authentication
+        pass
+
+
+def _alerter_connexion_inhabituelle(user_id: str, role: str) -> None:
+    """Warn the member (critical channel) that a new device signed in. Best-effort:
+    a notification failure must never affect the login that already succeeded."""
+    try:
+        from .notifications import notifier
+
+        row = db.fetch_one(
+            "SELECT m.id AS membre_id, m.prenoms FROM utilisateur u "
+            "JOIN membre m ON m.id = u.membre_id WHERE u.id = %s",
+            (user_id,),
+            role=role,
+        )
+        if not row or not row.get("membre_id"):
+            return
+        prenom = (str(row.get("prenoms") or "").split(" ")[0]) or "cher membre"
+        # Anti-flood: this alert is critical, so it bypasses the member's channel
+        # preferences and the admin kill-switch. A holder of valid credentials could
+        # otherwise loop logins with a varying User-Agent and drown the member. Cap
+        # it to at most one alert per member and per hour via the dedup log.
+        bucket = datetime.now(tz=UTC).strftime("%Y-%m-%d-%H")
+        notifier(str(row["membre_id"]), role, "connexion_inhabituelle", {"prenom": prenom}, ref_id=bucket, dedup=True)
+    except Exception:  # noqa: BLE001 - a security notice must never break authentication
         pass
 
 

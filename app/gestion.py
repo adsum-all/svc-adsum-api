@@ -34,6 +34,19 @@ def _notify(membre_id: str, role: str, titre: str, corps: str) -> None:
     )
 
 
+def _notifier_membre(membre_id: str, role: str, type_cle: str, ctx: dict[str, object]) -> None:
+    """Multi-channel catalogue notification (in-app + e-mail + Telegram), with the
+    member's prenom prefilled. Best-effort: never breaks the admin action."""
+    try:
+        from .notifications import notifier
+
+        row = db.fetch_one("SELECT prenoms FROM membre WHERE id = %s", (membre_id,), role=role)
+        prenom = (str((row or {}).get("prenoms") or "").split(" ")[0]) or "cher membre"
+        notifier(membre_id, role, type_cle, {"prenom": prenom, **ctx})
+    except Exception:  # noqa: BLE001 - a notification must never break the action
+        pass
+
+
 @router.post("/{membre_id}/bloquer")
 def bloquer(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
     row = db.execute("UPDATE membre SET statut = 'suspendu' WHERE id = %s RETURNING email", (membre_id,), role=user.role)
@@ -41,6 +54,7 @@ def bloquer(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
     db.execute("UPDATE utilisateur SET actif = false WHERE membre_id = %s", (membre_id,), role=user.role)
     audit.log(user.id, user.role, "blocage_membre", "membre", membre_id, {})
+    _notifier_membre(membre_id, user.role, "compte_bloque", {"motif": "décision administrative"})
     return {"ok": True, "statut": "suspendu"}
 
 
@@ -51,6 +65,7 @@ def debloquer(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
     db.execute("UPDATE utilisateur SET actif = true WHERE membre_id = %s", (membre_id,), role=user.role)
     audit.log(user.id, user.role, "deblocage_membre", "membre", membre_id, {})
+    _notifier_membre(membre_id, user.role, "compte_debloque", {})
     return {"ok": True, "statut": "actif"}
 
 

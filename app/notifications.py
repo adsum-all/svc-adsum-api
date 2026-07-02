@@ -57,6 +57,14 @@ _CATEGORY_PREF = {
     "attestation_expiree": None,
     "correction_demandee": None,
     "retention_renouvellement": None,
+    "compte_bloque": None,
+    "compte_debloque": None,
+    "connexion_inhabituelle": None,
+    "securite_alerte": None,
+    "otp_expire": None,
+    "modification_complement": None,
+    "activite_annulee": "evenements",
+    "participation_bientot_close": "rappels",
 }
 
 # Minimal built-in fallbacks (FR/EN) used only if no template row exists yet.
@@ -83,6 +91,9 @@ _SIGNATURE_KEY = {
     "attestation_expiree": "signature_rappel",
     "activite_rappel_j1": "signature_rappel",
     "activite_rappel_start": "signature_rappel",
+    "activite_annulee": "signature_information",
+    "participation_bientot_close": "signature_rappel",
+    "modification_complement": "signature_approbation",
 }
 
 
@@ -138,13 +149,20 @@ def notifier(
     """Send one notification honouring admin toggle, member prefs and language."""
     ctx = ctx or {}
     try:
-        active = db.fetch_one("SELECT actif FROM type_notification WHERE cle = %s", (type_cle,), role=role)
-        if active and not active["actif"]:
+        active = db.fetch_one("SELECT actif, sensibilite FROM type_notification WHERE cle = %s", (type_cle,), role=role)
+        sensibilite = (active or {}).get("sensibilite") or "operationnel"
+        critique = sensibilite == "critique"
+        # A critical security message is never silenced by an admin toggle; other
+        # types can be turned off in the catalogue.
+        if active and not active["actif"] and not critique:
             return []
         member = db.fetch_one("SELECT langue FROM membre WHERE id = %s", (membre_id,), role=role)
         lang = (member["langue"] if member and member.get("langue") else "fr") or "fr"
+        # Sensitivity matrix: critical and private messages are always delivered
+        # (they must reach the member); only operational/informational messages are
+        # gated by the member's per-category preference.
         pref_col = _CATEGORY_PREF.get(type_cle)
-        if pref_col:
+        if pref_col and sensibilite in ("operationnel", "informationnel"):
             pref = db.fetch_one(f"SELECT {pref_col} FROM preference_notification WHERE membre_id = %s", (membre_id,), role=role)
             if pref and not pref[pref_col]:
                 return []
@@ -171,7 +189,9 @@ def notifier(
         else:
             html = render_notification_email(titre, corps, signature=signature, site=site or None)
         msg = channels.Message(titre=titre, corps_text=corps_text, corps_html=html, type_notif=type_cle)
-        used = channels.dispatch(membre_id, role, msg, whatsapp_params=whatsapp_params)
+        # Critical messages ignore the channel kill-switch and the member's channel
+        # preferences: security must always be attempted on every reachable channel.
+        used = channels.dispatch(membre_id, role, msg, whatsapp_params=whatsapp_params, critique=critique)
         if dedup:
             db.execute(
                 "UPDATE notification_log SET canaux = %s WHERE membre_id = %s AND type_cle = %s AND ref_id = %s",
@@ -193,7 +213,7 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     now = datetime.now(tz=UTC)
     weekday = now.weekday()  # Monday = 0, Sunday = 6
     annee = now.year
-    result = {"anniversaires": 0, "rappels_j1": 0, "agenda": 0, "recap": 0, "digest_pairs": 0}
+    result = {"anniversaires": 0, "rappels_j1": 0, "agenda": 0, "recap": 0, "digest_pairs": 0, "participation_close": 0}
 
     # 1) Birthdays today.
     for r in db.fetch_all(
@@ -240,6 +260,25 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
             ctx = {"prenom": _prenom(m), "titre": ev["titre"], "date": date_str, "heure": heure_str, "lien": lien_app}
             if notifier(str(m["id"]), role, "activite_rappel_j1", ctx, ref_id=str(ev["id"]), dedup=True):
                 result["rappels_j1"] += 1
+
+    # 2b) Attendance form closing within the next 24h: nudge members who began a
+    # declaration but never validated it (drafts), so their presence is counted.
+    # A scanned member is already present, so is excluded; a validated one too.
+    fermetures = db.fetch_all(
+        "SELECT e.id, e.titre, p.membre_id, m.prenoms "
+        "FROM evenement e "
+        "JOIN participation p ON p.evenement_id = e.id AND NOT p.valide AND p.source <> 'scan' "
+        "JOIN membre m ON m.id = p.membre_id AND m.statut = 'actif' "
+        "WHERE e.debut IS NOT NULL "
+        "AND coalesce(e.fin, e.debut + interval '1 day') + interval '2 days' "
+        "BETWEEN now() AND now() + interval '24 hours'",
+        (),
+        role=role,
+    )
+    for f in fermetures:
+        ctx = {"prenom": _prenom(f), "titre": f["titre"], "lien": lien_app}
+        if notifier(str(f["membre_id"]), role, "participation_bientot_close", ctx, ref_id=str(f["id"]), dedup=True):
+            result["participation_close"] += 1
 
     # 3) Monday: weekly agenda of the coming week.
     if weekday == 0:
@@ -344,12 +383,26 @@ class TypeToggle(BaseModel):
 
 @router.get("/admin/notifications/types")
 def list_types(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
-    rows = db.fetch_all("SELECT cle, libelle, categorie, actif, scheduled FROM type_notification ORDER BY categorie, libelle", (), role=user.role)
-    return [{"cle": r["cle"], "libelle": r["libelle"], "categorie": r["categorie"], "actif": bool(r["actif"]), "scheduled": bool(r["scheduled"])} for r in rows]
+    rows = db.fetch_all("SELECT cle, libelle, categorie, actif, scheduled, sensibilite FROM type_notification ORDER BY categorie, libelle", (), role=user.role)
+    return [
+        {"cle": r["cle"], "libelle": r["libelle"], "categorie": r["categorie"], "actif": bool(r["actif"]),
+         "scheduled": bool(r["scheduled"]), "sensibilite": r.get("sensibilite") or "operationnel"}
+        for r in rows
+    ]
 
 
 @router.put("/admin/notifications/types/{cle}")
 def toggle_type(cle: str, payload: TypeToggle, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+    current = db.fetch_one("SELECT sensibilite FROM type_notification WHERE cle = %s", (cle,), role=user.role)
+    if not current:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown type")
+    # A critical security type (unusual login, security alert, expired code) is
+    # always delivered by the engine; letting an admin "disable" it would be a lie.
+    if (current.get("sensibilite") or "") == "critique" and not payload.actif:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Un type critique de sécurité ne peut pas être désactivé.",
+        )
     row = db.execute("UPDATE type_notification SET actif = %s, maj_le = now() WHERE cle = %s RETURNING cle", (payload.actif, cle), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown type")
