@@ -13,6 +13,7 @@ all deduplicated. A single daily cron keeps it within the free hosting tier.
 # ruff: noqa: E501
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -99,7 +100,14 @@ def _resolve_signature(type_cle: str) -> str:
 def _subst(text: str, ctx: dict[str, object]) -> str:
     for key, value in ctx.items():
         text = text.replace("{" + key + "}", str(value))
-    return text
+    # Defensive safety net: never leak an unsubstituted placeholder to the member.
+    # Drop any remaining "{word}" and tidy the punctuation/space it leaves behind
+    # (e.g. "details ici : {lien}." -> "details." ; " a {heure}." -> ".").
+    if "{" in text:
+        text = re.sub(r"\s*(?:ici\s*)?:?\s*\{[a-zA-Z_]+\}", "", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"\s+([.,;!?])", r"\1", text)
+    return text.strip()
 
 
 def _render(type_cle: str, lang: str, ctx: dict[str, object], role: str | None) -> tuple[str, str]:
@@ -224,10 +232,12 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
         role=role,
     )
     actifs = db.fetch_all("SELECT id, prenoms, langue FROM membre WHERE statut = 'actif'", (), role=role)
+    lien_app = channels.integration_value("site_officiel") or "https://adsum-web-membre.pages.dev"
     for ev in evs:
-        date_str = ev["debut"].strftime("%d/%m/%Y a %Hh%M") if ev["debut"] else ""
+        date_str = ev["debut"].strftime("%d/%m/%Y") if ev["debut"] else ""
+        heure_str = ev["debut"].strftime("%Hh%M") if ev["debut"] else ""
         for m in actifs:
-            ctx = {"prenom": _prenom(m), "titre": ev["titre"], "date": date_str}
+            ctx = {"prenom": _prenom(m), "titre": ev["titre"], "date": date_str, "heure": heure_str, "lien": lien_app}
             if notifier(str(m["id"]), role, "activite_rappel_j1", ctx, ref_id=str(ev["id"]), dedup=True):
                 result["rappels_j1"] += 1
 
@@ -242,7 +252,7 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
             liste = "; ".join(f"{e['titre']} ({e['debut'].strftime('%a %d/%m %Hh%M')})" for e in semaine if e["debut"])
             ref = now.strftime("%G-W%V")
             for m in actifs:
-                if notifier(str(m["id"]), role, "agenda_hebdo", {"prenom": _prenom(m), "liste": liste}, ref_id=ref, dedup=True):
+                if notifier(str(m["id"]), role, "agenda_hebdo", {"prenom": _prenom(m), "liste": liste, "lien": lien_app}, ref_id=ref, dedup=True):
                     result["agenda"] += 1
 
     # 4) Sunday: recap of the past week.
