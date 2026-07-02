@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     # JWT signing
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
-    access_token_minutes: int = 60
+    # Session length. A membership app is used casually, so a short 60-minute
+    # token logged people out constantly on refresh; 14 days keeps a persisted
+    # session usable. Sensitive operations are still gated by single-use codes.
+    access_token_minutes: int = 20160
     cors_origins: str = "*"
     # QR check-in token signing (Ed25519 private seed, base64url of 32 bytes)
     qr_signing_key: str = ""
