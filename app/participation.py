@@ -32,9 +32,22 @@ router = APIRouter(prefix="/api/v1", tags=["participation"])
 require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 _STATUTS = ("present", "partiel", "absent")
+_MODALITES = ("presentiel", "en_ligne")
 
 # A participation is counted when it is a scan or a validated declaration.
 _COMPTE = "(source = 'scan' OR valide)"
+
+# Single source of truth for the response window: the real end of the session
+# (or debut + 1 day when no end is set) plus the per-event duration when the
+# administration set one, else the global admin parameter
+# questionnaire_fenetre_heures, else 6 hours. Every read (display), write
+# (submission guard) and reminder must use this same formula.
+FENETRE_FIN_SQL = (
+    "coalesce(e.fin, e.debut + interval '1 day') + make_interval(hours => coalesce("
+    "e.fenetre_reponse_heures, "
+    "(SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'questionnaire_fenetre_heures'), "
+    "6))"
+)
 
 
 def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
@@ -47,6 +60,7 @@ def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
 
 class ParticipationIn(BaseModel):
     statut: str | None = None  # present | partiel | absent
+    modalite: str | None = None  # presentiel | en_ligne (declarative; ignored when scanned)
     avis: str | None = None
     note: int | None = None
     valider: bool = False
@@ -56,10 +70,10 @@ class ParticipationIn(BaseModel):
 def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     membre_id, role = ctx
     ev = db.fetch_one(
-        "SELECT debut, (debut IS NOT NULL AND now() >= debut) AS demarree, "
-        "(debut IS NOT NULL AND now() > coalesce(fin, debut + interval '1 day') + interval '2 days') AS cloture, "
-        "coalesce(fin, debut + interval '1 day') + interval '2 days' AS cloture_le "
-        "FROM evenement WHERE id = %s",
+        f"SELECT e.debut, (e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
+        f"(e.debut IS NOT NULL AND now() > {FENETRE_FIN_SQL}) AS cloture, "
+        f"{FENETRE_FIN_SQL} AS cloture_le "
+        "FROM evenement e WHERE e.id = %s",
         (evenement_id,),
         role=role,
     )
@@ -73,12 +87,12 @@ def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(
     disponible_le = ev["debut"].isoformat() if ev["debut"] else None
     cloture_le = ev["cloture_le"].isoformat() if ev.get("cloture_le") else None
     row = db.fetch_one(
-        "SELECT statut, source, valide, avis, note FROM participation WHERE evenement_id = %s AND membre_id = %s",
+        "SELECT statut, source, valide, avis, note, modalite FROM participation WHERE evenement_id = %s AND membre_id = %s",
         (evenement_id, membre_id),
         role=role,
     )
     if not row:
-        return {"statut": None, "source": None, "valide": False, "avis": None, "note": None, "deja_scanne": False, "verrouille": False, "ouvert": ouvert, "disponible_le": disponible_le, "cloture": cloture, "cloture_le": cloture_le}
+        return {"statut": None, "source": None, "valide": False, "avis": None, "note": None, "modalite": None, "deja_scanne": False, "verrouille": False, "ouvert": ouvert, "disponible_le": disponible_le, "cloture": cloture, "cloture_le": cloture_le}
     scanne = row["source"] == "scan"
     # Finalized (validated) participation is fully immutable. A scanned member is
     # present but may still give their feedback once (which finalizes it).
@@ -89,6 +103,7 @@ def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(
         "valide": bool(row["valide"]),
         "avis": row["avis"],
         "note": row["note"],
+        "modalite": row.get("modalite"),
         "deja_scanne": scanne,
         "verrouille": verrouille,
         "ouvert": ouvert,
@@ -109,20 +124,22 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     membre_id, role = ctx
     if payload.note is not None and not 1 <= payload.note <= 5:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="note must be between 1 and 5")
-    # Attendance window, enforced server-side: the form opens at the event start
-    # and closes two days after the event end (or after debut + 1 day when no end
-    # is set). No one can declare for a future event, nor for a long-past one.
+    if payload.modalite is not None and payload.modalite not in _MODALITES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="modalite must be presentiel or en_ligne")
+    # Attendance window, enforced server-side with the same formula the display
+    # uses (per-event duration, else the admin parameter, else 6 hours). No one
+    # can declare for a future event, nor once the window is over.
     ev = db.fetch_one(
-        "SELECT debut, (debut IS NOT NULL AND now() >= debut) AS demarree, "
-        "(debut IS NOT NULL AND now() > coalesce(fin, debut + interval '1 day') + interval '2 days') AS cloture "
-        "FROM evenement WHERE id = %s",
+        f"SELECT e.debut, (e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
+        f"(e.debut IS NOT NULL AND now() > {FENETRE_FIN_SQL}) AS cloture "
+        "FROM evenement e WHERE e.id = %s",
         (evenement_id,),
         role=role,
     )
     if not ev:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     existing = db.fetch_one(
-        "SELECT statut, source, valide FROM participation WHERE evenement_id = %s AND membre_id = %s",
+        "SELECT statut, source, valide, modalite FROM participation WHERE evenement_id = %s AND membre_id = %s",
         (evenement_id, membre_id),
         role=role,
     )
@@ -144,35 +161,49 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
 
     scanned = bool(existing) and existing["source"] == "scan"
     if scanned:
-        # A scanned member is present; the status is fixed. They may add feedback,
-        # and validating finalizes it.
-        new_statut, new_source = "present", "scan"
+        # A scanned member is present on site; status and modality are strong
+        # proof and cannot be edited. They may add feedback, and validating
+        # finalizes it.
+        new_statut, new_source, new_modalite = "present", "scan", "presentiel"
     else:
         new_statut = payload.statut or (existing["statut"] if existing else None)
         if new_statut not in _STATUTS:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statut must be present, partiel or absent")
         new_source = "declaration"
+        # Declarative modality: asked only when there is no scan proof. It is
+        # required to validate an attended/partial declaration, meaningless for
+        # an absence.
+        new_modalite = payload.modalite or (existing.get("modalite") if existing else None)
+        if new_statut == "absent":
+            new_modalite = None
+        elif payload.valider and new_modalite is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Précisez comment vous avez suivi l'activité (présentiel ou en ligne).",
+            )
 
-    # Atomic upsert: a scan always wins (its presence is never downgraded by a
-    # concurrent declaration), and a finalized row is never touched (WHERE NOT valide).
+    # Atomic upsert: a scan always wins (its presence and modality are never
+    # downgraded by a concurrent declaration), and a finalized row is never
+    # touched (WHERE NOT valide).
     db.execute(
         """
-        INSERT INTO participation (evenement_id, membre_id, statut, source, valide, avis, note)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO participation (evenement_id, membre_id, statut, source, valide, avis, note, modalite)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (evenement_id, membre_id)
         DO UPDATE SET
             statut = CASE WHEN participation.source = 'scan' THEN 'present' ELSE EXCLUDED.statut END,
             source = CASE WHEN participation.source = 'scan' THEN 'scan' ELSE EXCLUDED.source END,
+            modalite = CASE WHEN participation.source = 'scan' THEN 'presentiel' ELSE EXCLUDED.modalite END,
             valide = EXCLUDED.valide,
             avis = COALESCE(EXCLUDED.avis, participation.avis),
             note = COALESCE(EXCLUDED.note, participation.note),
             maj_le = now()
         WHERE NOT participation.valide
         """,
-        (evenement_id, membre_id, new_statut, new_source, payload.valider, payload.avis, payload.note),
+        (evenement_id, membre_id, new_statut, new_source, payload.valider, payload.avis, payload.note, new_modalite),
         role=role,
     )
-    return {"ok": True, "verrouille": payload.valider, "statut": new_statut, "valide": payload.valider}
+    return {"ok": True, "verrouille": payload.valider, "statut": new_statut, "valide": payload.valider, "modalite": new_modalite}
 
 
 # --- Admin: per-event statistics --------------------------------------------
@@ -237,7 +268,9 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
           count(*) FILTER (WHERE {_COMPTE}) AS repondants,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'present') AS presents,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source = 'scan') AS presents_presentiel,
-          count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source = 'declaration') AS presents_enligne,
+          count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite = 'presentiel') AS presents_presentiel_declare,
+          count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND modalite = 'en_ligne') AS presents_enligne,
+          count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite IS NULL) AS presents_modalite_inconnue,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'partiel') AS partiels,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'absent') AS absents,
           count(*) FILTER (WHERE NOT {_COMPTE}) AS brouillons,
@@ -248,16 +281,54 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
         (evenement_id,),
         role=user.role,
     ) or {}
+    # Modality x follow-up cross table, with the proof level made explicit:
+    # a scan is strong on-site proof; everything else is declarative.
+    croisement = db.fetch_all(
+        f"""
+        SELECT CASE WHEN source = 'scan' THEN 'presentiel_prouve'
+                    WHEN modalite = 'presentiel' THEN 'presentiel_declare'
+                    WHEN modalite = 'en_ligne' THEN 'en_ligne_declare'
+                    ELSE 'modalite_inconnue' END AS modalite,
+               statut, count(*) AS n
+        FROM participation WHERE evenement_id = %s AND {_COMPTE}
+        GROUP BY 1, 2 ORDER BY 1, 2
+        """,
+        (evenement_id,),
+        role=user.role,
+    )
+    # Non-respondents split by whether they signed in during the response
+    # window (weak connectivity signal, never counted as participation).
+    nr = db.fetch_one(
+        f"""
+        SELECT count(*) AS n,
+               count(*) FILTER (WHERE EXISTS (
+                   SELECT 1 FROM utilisateur u JOIN session s ON s.utilisateur_id = u.id
+                   WHERE u.membre_id = m.id AND s.cree_le BETWEEN e.debut AND {FENETRE_FIN_SQL}
+               )) AS connectes
+        FROM membre m, evenement e
+        WHERE e.id = %s AND m.statut = 'actif'
+          AND NOT EXISTS (
+              SELECT 1 FROM participation p
+              WHERE p.evenement_id = e.id AND p.membre_id = m.id AND (p.source = 'scan' OR p.valide)
+          )
+        """,
+        (evenement_id,),
+        role=user.role,
+    ) or {}
     attendus = db.fetch_one("SELECT count(*) AS n FROM membre WHERE statut = 'actif'", (), role=user.role)
     total_attendus = int(attendus["n"]) if attendus else 0
     presents = int(agg.get("presents") or 0)
     presentiel = int(agg.get("presents_presentiel") or 0)
+    presentiel_declare = int(agg.get("presents_presentiel_declare") or 0)
     enligne = int(agg.get("presents_enligne") or 0)
+    modalite_inconnue = int(agg.get("presents_modalite_inconnue") or 0)
     partiels = int(agg.get("partiels") or 0)
     absents = int(agg.get("absents") or 0)
     repondants = int(agg.get("repondants") or 0)
     brouillons = int(agg.get("brouillons") or 0)
     non_repondants = max(0, total_attendus - repondants - brouillons)
+    nr_connectes = int(nr.get("connectes") or 0)
+    nr_total = int(nr.get("n") or 0)
     notes_dist = db.fetch_all(
         "SELECT note, count(*) AS n FROM participation WHERE evenement_id = %s AND note IS NOT NULL GROUP BY note ORDER BY note",
         (evenement_id,),
@@ -274,10 +345,26 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
         "non_repondants": non_repondants,
         "presents": presents,
         "presents_presentiel": presentiel,
+        "presents_presentiel_declare": presentiel_declare,
         "presents_enligne": enligne,
+        "presents_modalite_inconnue": modalite_inconnue,
         "partiels": partiels,
         "absents": absents,
         "brouillons": brouillons,
+        "non_repondants_connectes": nr_connectes,
+        "non_repondants_non_connectes": max(0, nr_total - nr_connectes),
+        "croisement_modalite": [
+            {"modalite": r["modalite"], "statut": r["statut"], "n": int(r["n"])} for r in croisement
+        ],
+        "definitions": {
+            "presents_presentiel": "Présents contrôlés par scan du QR membre (preuve forte, nominative).",
+            "presents_presentiel_declare": "Présents ayant déclaré un suivi en présentiel, sans scan (déclaratif).",
+            "presents_enligne": "Présents ayant déclaré un suivi en ligne (déclaratif, aucune preuve forte en ligne n'existe).",
+            "presents_modalite_inconnue": "Déclarations validées avant l'introduction de la modalité (historique).",
+            "non_repondants_connectes": "Membres actifs sans participation comptée, connectés à l'application pendant la fenêtre de réponse (signal faible, jamais compté comme participation).",
+            "non_repondants_non_connectes": "Membres actifs sans participation comptée et sans connexion pendant la fenêtre.",
+            "population": "Membres actifs. Le comptage anonyme des activités publiques (volet B) est un autre système et n'entre jamais ici.",
+        },
         "taux_reponse": taux(repondants, total_attendus),
         "taux_non_reponse": taux(non_repondants, total_attendus),
         "taux_presence": taux(presents, total_attendus),

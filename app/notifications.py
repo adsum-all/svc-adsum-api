@@ -264,14 +264,16 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     # 2b) Attendance form closing within the next 24h: nudge members who began a
     # declaration but never validated it (drafts), so their presence is counted.
     # A scanned member is already present, so is excluded; a validated one too.
+    # Same window formula as the participation engine (admin-configured hours).
+    from .participation import FENETRE_FIN_SQL
+
     fermetures = db.fetch_all(
         "SELECT e.id, e.titre, p.membre_id, m.prenoms "
         "FROM evenement e "
         "JOIN participation p ON p.evenement_id = e.id AND NOT p.valide AND p.source <> 'scan' "
         "JOIN membre m ON m.id = p.membre_id AND m.statut = 'actif' "
         "WHERE e.debut IS NOT NULL "
-        "AND coalesce(e.fin, e.debut + interval '1 day') + interval '2 days' "
-        "BETWEEN now() AND now() + interval '24 hours'",
+        f"AND {FENETRE_FIN_SQL} BETWEEN now() AND now() + interval '24 hours'",
         (),
         role=role,
     )

@@ -495,6 +495,9 @@ class CreateEvenement(BaseModel):
     liens: list[str] = []
     type_diffusion: str = Field(default="aucun", pattern="^(embed|externe|aucun)$")
     visibilite: str = Field(default="membres", pattern="^(public|membres|prive)$")
+    # Response-window override in hours after the session end; when empty the
+    # global admin parameter applies (questionnaire_fenetre_heures, default 6h).
+    fenetre_reponse_heures: int | None = Field(default=None, ge=1, le=336)
 
 
 class VerifyResult(BaseModel):
