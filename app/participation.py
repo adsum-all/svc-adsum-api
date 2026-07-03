@@ -56,24 +56,29 @@ class ParticipationIn(BaseModel):
 def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     membre_id, role = ctx
     ev = db.fetch_one(
-        "SELECT debut, (debut IS NOT NULL AND now() >= debut) AS demarree FROM evenement WHERE id = %s",
+        "SELECT debut, (debut IS NOT NULL AND now() >= debut) AS demarree, "
+        "(debut IS NOT NULL AND now() > coalesce(fin, debut + interval '1 day') + interval '2 days') AS cloture, "
+        "coalesce(fin, debut + interval '1 day') + interval '2 days' AS cloture_le "
+        "FROM evenement WHERE id = %s",
         (evenement_id,),
         role=role,
     )
     if not ev:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
-    # The declaration form is only available once the activity has started; it can
-    # never be filled in advance, so a member cannot claim to have taken part in an
-    # event that has not happened yet.
+    # The declaration form is only available once the activity has started, and
+    # closes after the window: the screen must tell the same truth as the server
+    # (a form shown after closure would silently fail on submit).
     ouvert = bool(ev["demarree"])
+    cloture = bool(ev["cloture"])
     disponible_le = ev["debut"].isoformat() if ev["debut"] else None
+    cloture_le = ev["cloture_le"].isoformat() if ev.get("cloture_le") else None
     row = db.fetch_one(
         "SELECT statut, source, valide, avis, note FROM participation WHERE evenement_id = %s AND membre_id = %s",
         (evenement_id, membre_id),
         role=role,
     )
     if not row:
-        return {"statut": None, "source": None, "valide": False, "avis": None, "note": None, "deja_scanne": False, "verrouille": False, "ouvert": ouvert, "disponible_le": disponible_le}
+        return {"statut": None, "source": None, "valide": False, "avis": None, "note": None, "deja_scanne": False, "verrouille": False, "ouvert": ouvert, "disponible_le": disponible_le, "cloture": cloture, "cloture_le": cloture_le}
     scanne = row["source"] == "scan"
     # Finalized (validated) participation is fully immutable. A scanned member is
     # present but may still give their feedback once (which finalizes it).
@@ -88,6 +93,8 @@ def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(
         "verrouille": verrouille,
         "ouvert": ouvert,
         "disponible_le": disponible_le,
+        "cloture": cloture,
+        "cloture_le": cloture_le,
     }
 
 
