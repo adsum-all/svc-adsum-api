@@ -156,8 +156,9 @@ def mon_attestation(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[s
     m = db.fetch_one("SELECT attestation_statut, langue FROM membre WHERE id = %s", (membre_id,), role=role)
     statut = (m or {}).get("attestation_statut") or "not_required"
     att = db.fetch_one(
-        "SELECT statut, to_char(echeance, 'YYYY-MM-DD') AS echeance FROM attestation_manuelle "
-        "WHERE membre_id = %s ORDER BY ouverte_le DESC LIMIT 1",
+        "SELECT statut, to_char(echeance, 'YYYY-MM-DD') AS echeance, "
+        "to_char(soumise_le, 'DD/MM/YYYY') AS soumise_le, motif_rejet "
+        "FROM attestation_manuelle WHERE membre_id = %s ORDER BY ouverte_le DESC LIMIT 1",
         (membre_id,),
         role=role,
     )
@@ -165,6 +166,8 @@ def mon_attestation(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[s
         "requise": statut not in ("not_required",),
         "statut": (att or {}).get("statut") or statut,
         "echeance": (att or {}).get("echeance"),
+        "soumise_le": (att or {}).get("soumise_le"),
+        "motif_rejet": (att or {}).get("motif_rejet"),
         "texte": _texte_attestation(membre_id, role, str((m or {}).get("langue") or "fr")),
     }
 
@@ -178,7 +181,7 @@ def deposer_attestation(payload: AttestationUploadIn, ctx: Annotated[tuple[str, 
     """Attach the uploaded scan of the hand-signed attestation for admin review."""
     membre_id, role = ctx
     row = db.execute(
-        "UPDATE attestation_manuelle SET document_id = %s, statut = 'under_review' "
+        "UPDATE attestation_manuelle SET document_id = %s, statut = 'under_review', soumise_le = now(), motif_rejet = NULL "
         "WHERE membre_id = %s AND statut IN ('awaiting', 'reminded', 'overdue', 'rejected') RETURNING id",
         (payload.document_id, membre_id),
         role=role,
@@ -206,19 +209,24 @@ def list_attestations(user: Annotated[UserMe, Depends(require_staff)]) -> list[d
 
 class ValiderAttestationIn(BaseModel):
     decision: str  # accepted | rejected
+    motif: str | None = None  # shown to the member when rejected
 
 
 @router.post("/admin/attestations/{attestation_id}/valider")
 def valider_attestation(attestation_id: str, payload: ValiderAttestationIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
     if payload.decision not in ("accepted", "rejected"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown decision")
+    motif = (payload.motif or "").strip() or None
     row = db.execute(
-        "UPDATE attestation_manuelle SET statut = %s, valide_le = now(), valide_par = %s WHERE id = %s RETURNING membre_id",
-        (payload.decision, user.id, attestation_id),
+        "UPDATE attestation_manuelle SET statut = %s, valide_le = now(), valide_par = %s, "
+        "motif_rejet = CASE WHEN %s = 'rejected' THEN %s ELSE NULL END "
+        "WHERE id = %s RETURNING membre_id",
+        (payload.decision, user.id, payload.decision, motif, attestation_id),
         role=user.role,
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown attestation")
     db.execute("UPDATE membre SET attestation_statut = %s WHERE id = %s", (payload.decision, row["membre_id"]), role=user.role)
-    audit.log(user.id, user.role, "validation_attestation", "attestation_manuelle", attestation_id, {"decision": payload.decision})
+    audit.log(user.id, user.role, "validation_attestation", "attestation_manuelle", attestation_id,
+              {"decision": payload.decision, "motif": motif})
     return {"ok": True, "statut": payload.decision}

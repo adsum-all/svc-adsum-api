@@ -80,10 +80,19 @@ class DemandeOut(BaseModel):
     cree_le: datetime | None = None
     membre_nom: str | None = None
     nb_messages: int = 0
+    # Step tracking: when the staff took the request over, and when it closed.
+    pris_en_charge_le: datetime | None = None
+    clos_le: datetime | None = None
 
 
 class DemandeDetail(DemandeOut):
     messages: list[MessageOut] = []
+
+
+class DemandeDetailAdmin(DemandeDetail):
+    """Admin view adds who handles the request (never shown to the member)."""
+
+    pris_en_charge_par_email: str | None = None
 
 
 # Controlled state machine of a ticket. Keys are current states, values the
@@ -128,7 +137,21 @@ def _demande_row(r: dict[str, object]) -> DemandeOut:
         cree_le=r.get("cree_le"),  # type: ignore[arg-type]
         membre_nom=r.get("membre_nom"),  # type: ignore[arg-type]
         nb_messages=int(r.get("nb_messages") or 0),
+        pris_en_charge_le=r.get("pris_en_charge_le"),  # type: ignore[arg-type]
+        clos_le=r.get("clos_le"),  # type: ignore[arg-type]
     )
+
+
+def _prise_en_charge(demande_id: str, user: UserMe) -> bool:
+    """Record the take-over (who, when) the first time a staff member acts on a
+    request. Returns True when this call actually took the request over."""
+    row = db.execute(
+        "UPDATE demande SET pris_en_charge_par = %s, pris_en_charge_le = now() "
+        "WHERE id = %s AND pris_en_charge_le IS NULL RETURNING id",
+        (user.id, demande_id),
+        role=user.role,
+    )
+    return bool(row)
 
 
 def _system_message(demande_id: str, role: str | None, corps: str) -> None:
@@ -264,7 +287,7 @@ def my_demandes(ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) 
     membre_id, role, _ = ctx
     rows = db.fetch_all(
         """
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le,
+        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le,
                (SELECT count(*) FROM demande_message m WHERE m.demande_id = d.id) AS nb_messages
         FROM demande d WHERE d.membre_id = %s ORDER BY d.maj_le DESC
         """,
@@ -284,7 +307,7 @@ def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depe
     )
     auteur = (nom_row["nom"] if nom_row and nom_row.get("nom") else "Membre") or "Membre"
     created = db.execute(
-        "INSERT INTO demande (membre_id, type, sujet, champ_concerne, categorie, sous_categorie) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le",
+        "INSERT INTO demande (membre_id, type, sujet, champ_concerne, categorie, sous_categorie) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le",
         (membre_id, payload.type, payload.sujet, payload.champ_concerne, payload.categorie or payload.type, payload.sous_categorie),
         role=role,
     )
@@ -307,7 +330,7 @@ def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depe
 def my_demande(demande_id: str, ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) -> DemandeDetail:
     membre_id, role, _ = ctx
     row = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le FROM demande WHERE id = %s AND membre_id = %s",
+        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le FROM demande WHERE id = %s AND membre_id = %s",
         (demande_id, membre_id),
         role=role,
     )
@@ -355,6 +378,7 @@ def admin_demandes(
     statut: str | None = None,
     categorie: str | None = None,
     q: str | None = None,
+    membre_id: str | None = None,
 ) -> list[DemandeOut]:
     where = ["1=1"]
     params: list[object] = []
@@ -364,12 +388,16 @@ def admin_demandes(
     if categorie:
         where.append("d.categorie = %s")
         params.append(categorie)
+    if membre_id:
+        # Per-member view: the full request history of one member's file.
+        where.append("d.membre_id = %s")
+        params.append(membre_id)
     if q:
         where.append("(d.sujet ILIKE %s OR trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) ILIKE %s)")
         params.extend([f"%{q}%", f"%{q}%"])
     rows = db.fetch_all(
         f"""
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le,
+        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le,
                trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre_nom,
                (SELECT count(*) FROM demande_message dm WHERE dm.demande_id = d.id) AS nb_messages
         FROM demande d JOIN membre m ON m.id = d.membre_id
@@ -382,20 +410,27 @@ def admin_demandes(
     return [_demande_row(r) for r in rows]
 
 
-@router.get("/admin/demandes/{demande_id}", response_model=DemandeDetail)
-def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> DemandeDetail:
+@router.get("/admin/demandes/{demande_id}", response_model=DemandeDetailAdmin)
+def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> DemandeDetailAdmin:
     row = db.fetch_one(
         """
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le,
-               trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre_nom
-        FROM demande d JOIN membre m ON m.id = d.membre_id WHERE d.id = %s
+        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le,
+               trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre_nom,
+               u.email AS agent_email
+        FROM demande d JOIN membre m ON m.id = d.membre_id
+        LEFT JOIN utilisateur u ON u.id = d.pris_en_charge_par
+        WHERE d.id = %s
         """,
         (demande_id,),
         role=user.role,
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
-    return DemandeDetail(**_demande_row(row).model_dump(), messages=_messages(demande_id, user.role))
+    return DemandeDetailAdmin(
+        **_demande_row(row).model_dump(),
+        messages=_messages(demande_id, user.role),
+        pris_en_charge_par_email=row.get("agent_email"),
+    )
 
 
 @router.post("/admin/demandes/{demande_id}/messages", response_model=MessageOut, status_code=status.HTTP_201_CREATED)
@@ -409,9 +444,43 @@ def admin_reply(demande_id: str, payload: MessageIn, user: Annotated[UserMe, Dep
     db.execute("UPDATE demande SET maj_le = now(), statut = 'en_cours' WHERE id = %s AND statut = 'ouverte'", (demande_id,), role=user.role)
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="message not sent")
+    # A first staff reply implicitly takes the request over: the timeline says so.
+    if _prise_en_charge(demande_id, user):
+        _system_message(demande_id, user.role, "Demande prise en charge par l'administration.")
     _notify_ticket(demande_id, user.role, "Réponse de l'administration",
                    "L'administration a répondu à votre demande. Ouvrez-la dans l'application pour lire la réponse et poursuivre l'échange.")
     return MessageOut(id=str(created["id"]), auteur_type="staff", auteur_nom="Administration", corps=payload.corps, cree_le=created["cree_le"])
+
+
+@router.post("/admin/demandes/{demande_id}/prendre-en-charge", response_model=DemandeOut)
+def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> DemandeOut:
+    """Explicitly take a request over: records who and when, moves an open
+    request to 'en cours', writes the timeline entry and informs the member."""
+    from . import audit
+
+    current = db.fetch_one("SELECT statut FROM demande WHERE id = %s", (demande_id,), role=user.role)
+    if not current:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
+    if str(current["statut"]) in ("resolue", "refusee"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="request is closed")
+    premiere = _prise_en_charge(demande_id, user)
+    db.execute(
+        "UPDATE demande SET statut = 'en_cours', maj_le = now() WHERE id = %s AND statut = 'ouverte'",
+        (demande_id,),
+        role=user.role,
+    )
+    if premiere:
+        _system_message(demande_id, user.role, "Demande prise en charge par l'administration.")
+        _notify_ticket(demande_id, user.role, "Demande prise en charge",
+                       "Votre demande a été prise en charge par l'administration. Elle est maintenant en cours de traitement.")
+        audit.log(user.id, user.role, "demande_prise_en_charge", "demande", demande_id, {})
+    fresh = db.fetch_one(
+        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le FROM demande WHERE id = %s",
+        (demande_id,), role=user.role,
+    )
+    if not fresh:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
+    return _demande_row(fresh)
 
 
 @router.post("/admin/demandes/{demande_id}/demander-piece", response_model=DemandeOut)
@@ -434,13 +503,15 @@ def admin_demander_piece(
         role=user.role,
     )
     db.execute("UPDATE demande SET statut = 'pieces_demandees', maj_le = now() WHERE id = %s", (demande_id,), role=user.role)
+    if _prise_en_charge(demande_id, user):
+        _system_message(demande_id, user.role, "Demande prise en charge par l'administration.")
     _system_message(demande_id, user.role, "Statut : pièces demandées. La demande attend votre réponse.")
     _notify_ticket(demande_id, user.role, "Pièce justificative demandée",
                    f"L'administration a besoin d'une pièce pour traiter votre demande : {payload.description}. "
                    "Ouvrez la demande dans l'application, répondez-y et joignez le document demandé.")
     audit.log(user.id, user.role, "demande_piece_requise", "demande", demande_id, {"description": payload.description})
     fresh = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le FROM demande WHERE id = %s",
+        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le FROM demande WHERE id = %s",
         (demande_id,), role=user.role,
     )
     return _demande_row(fresh or row)
@@ -463,6 +534,9 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
                 detail={"transition_invalide": True, "de": current["statut"], "vers": payload.statut},
             )
         closing = payload.statut in ("resolue", "refusee")
+        # Any staff-driven transition on a not-yet-handled request takes it over.
+        if _prise_en_charge(demande_id, user):
+            _system_message(demande_id, user.role, "Demande prise en charge par l'administration.")
         db.execute(
             "UPDATE demande SET statut = %s, maj_le = now(), "
             "motif_cloture = CASE WHEN %s THEN %s ELSE motif_cloture END, "
@@ -494,7 +568,7 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
             )
         _notify_member(demande_id, user.role, "Modification autorisée", "L'administration a débloqué la modification demandée.")
     row = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le FROM demande WHERE id = %s", (demande_id,), role=user.role
+        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le FROM demande WHERE id = %s", (demande_id,), role=user.role
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
