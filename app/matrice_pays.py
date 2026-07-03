@@ -221,8 +221,10 @@ def deposer_attestation(payload: AttestationUploadIn, ctx: Annotated[tuple[str, 
             (did, payload.document_id, membre_id),
             role=role,
         )
+        # A new scan starts a new validation round, even on a closed ticket:
+        # reopen it so the member and the staff see one coherent truth.
         db.execute(
-            "UPDATE demande SET statut = 'en_validation', maj_le = now() WHERE id = %s AND statut NOT IN ('resolue', 'refusee')",
+            "UPDATE demande SET statut = 'en_validation', maj_le = now(), clos_le = NULL, motif_cloture = NULL WHERE id = %s",
             (did,),
             role=role,
         )

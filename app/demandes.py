@@ -142,6 +142,43 @@ def _demande_row(r: dict[str, object]) -> DemandeOut:
     )
 
 
+def _sync_attestation_liee(demande_id: str, statut: str, motif: str | None, user: UserMe) -> None:
+    """Keep the linked attestation task (and the member profile flag) in step
+    with the ticket. The administration can act from the Demandes screen or
+    from the Attestations screen: both must tell the member the same truth."""
+    att = db.fetch_one(
+        "SELECT id, membre_id, document_id FROM attestation_manuelle WHERE demande_id = %s",
+        (demande_id,),
+        role=user.role,
+    )
+    if not att:
+        return
+    if statut == "resolue":
+        nouveau = "accepted"
+    elif statut == "refusee":
+        nouveau = "rejected"
+    elif statut == "en_cours":
+        # Reopened ticket: the attestation goes back to review (scan present)
+        # or to awaiting the member's upload.
+        nouveau = "under_review" if att.get("document_id") else "awaiting"
+    else:
+        return
+    db.execute(
+        "UPDATE attestation_manuelle SET statut = %s, "
+        "valide_le = CASE WHEN %s IN ('accepted', 'rejected') THEN now() ELSE NULL END, "
+        "valide_par = CASE WHEN %s IN ('accepted', 'rejected') THEN %s::uuid ELSE NULL END, "
+        "motif_rejet = CASE WHEN %s = 'rejected' THEN %s ELSE NULL END "
+        "WHERE id = %s",
+        (nouveau, nouveau, nouveau, user.id, nouveau, motif, str(att["id"])),
+        role=user.role,
+    )
+    db.execute(
+        "UPDATE membre SET attestation_statut = %s WHERE id = %s",
+        (nouveau, str(att["membre_id"])),
+        role=user.role,
+    )
+
+
 def _prise_en_charge(demande_id: str, user: UserMe) -> bool:
     """Record the take-over (who, when) the first time a staff member acts on a
     request. Returns True when this call actually took the request over."""
@@ -547,6 +584,9 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
         )
         libelle = STATUTS_LISIBLES.get(payload.statut, payload.statut)
         _system_message(demande_id, user.role, f"Statut : {libelle}." + (f" Motif : {payload.motif}" if closing and payload.motif else ""))
+        # A ticket linked to an attestation task carries the same truth: closing
+        # or reopening the ticket updates the attestation and the member profile.
+        _sync_attestation_liee(demande_id, payload.statut, payload.motif, user)
         if closing:
             _notify_ticket(demande_id, user.role,
                            "Demande résolue" if payload.statut == "resolue" else "Demande refusée",
