@@ -28,6 +28,7 @@ from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
 from .middleware import SecurityHeadersMiddleware
+from .modifications import router as modifications_router
 from .notifications import router as notifications_router
 from .organisation import router as organisation_router
 from .organisation_admin import router as organisation_admin_router
@@ -72,6 +73,7 @@ app.include_router(fichiers_router)
 app.include_router(fichiers_admin_router)
 app.include_router(formation_router)
 app.include_router(inscription_router)
+app.include_router(modifications_router)
 app.include_router(consentement_router)
 app.include_router(matrice_pays_router)
 app.include_router(reference_router)
