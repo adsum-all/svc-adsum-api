@@ -20,7 +20,9 @@ class StorageError(RuntimeError):
     pass
 
 
-def _request(method: str, path: str, body: dict[str, object] | None = None, headers: dict[str, str] | None = None) -> dict[str, object]:
+def _request(
+    method: str, path: str, body: dict[str, object] | None = None, headers: dict[str, str] | None = None
+) -> dict[str, object]:
     if not settings.supabase_url or not settings.supabase_service_key:
         raise StorageError("storage is not configured")
     url = f"{settings.supabase_url.rstrip('/')}/storage/v1{path}"
