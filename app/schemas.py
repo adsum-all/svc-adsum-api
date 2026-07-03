@@ -510,6 +510,7 @@ class VerifyResult(BaseModel):
     nom: str | None = None
     prenoms: str | None = None
     photo_url: str | None = None
+    titre: str | None = None
 
 
 class CheckinRequest(BaseModel):
@@ -527,6 +528,7 @@ class CheckinMembre(BaseModel):
     nom: str | None = None
     prenoms: str | None = None
     photo_url: str | None = None
+    titre: str | None = None
 
 
 class CheckinResult(BaseModel):
@@ -560,6 +562,7 @@ class ControlMembre(BaseModel):
     prenoms: str | None = None
     commission: str | None = None
     statut: str
+    titre: str | None = None
 
 
 class CheckoutResult(BaseModel):

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from . import db
 from .deps import require_roles
+from .mappers import titre_prefixe
 from .qr import verify_token
 from .schemas import (
     CheckinMembre,
@@ -33,11 +34,22 @@ require_control = require_roles(*CONTROL_ROLES)
 
 
 def _lookup_membre(membre_id: str, role: str) -> dict[str, object] | None:
-    return db.fetch_one(
-        "SELECT id, matricule, nom, prenoms, photo_url FROM membre WHERE id = %s",
+    """Member identity for the scan card, with the confirmed honorific prefix
+    (Berger, Coordinatrice...) resolved by gender so the controller greets the
+    member properly. An unconfirmed function yields no title."""
+    row = db.fetch_one(
+        "SELECT m.id, m.matricule, m.nom, m.prenoms, m.photo_url, m.genre, m.fonction_confirmee, "
+        "fh.libelle_h AS fh, fh.libelle_f AS ff, fh.libelle_n AS fn "
+        "FROM membre m LEFT JOIN fonction_honorifique fh ON fh.cle = m.fonction_cle AND fh.actif "
+        "WHERE m.id = %s",
         (membre_id,),
         role=role,
     )
+    if row:
+        row["titre"] = titre_prefixe(
+            row.get("genre"), row.get("fonction_confirmee"), row.get("fh"), row.get("ff"), row.get("fn")
+        )
+    return row
 
 
 def _signed_photo(path: object) -> str | None:
@@ -102,9 +114,12 @@ def directory(
         params = (like, like, like, like)
     rows = db.fetch_all(
         f"""
-        SELECT m.id, m.matricule, m.nom, m.prenoms, m.statut, c.nom AS commission
+        SELECT m.id, m.matricule, m.nom, m.prenoms, m.statut, c.nom AS commission,
+               m.genre, m.fonction_confirmee,
+               fh.libelle_h AS fh, fh.libelle_f AS ff, fh.libelle_n AS fn
         FROM membre m
         LEFT JOIN commission c ON c.id = m.commission_id
+        LEFT JOIN fonction_honorifique fh ON fh.cle = m.fonction_cle AND fh.actif
         {where}
         ORDER BY m.matricule ASC
         LIMIT {limit}
@@ -120,6 +135,7 @@ def directory(
             prenoms=r["prenoms"] if isinstance(r["prenoms"], str) else None,
             commission=r["commission"] if isinstance(r["commission"], str) else None,
             statut=str(r["statut"]),
+            titre=titre_prefixe(r.get("genre"), r.get("fonction_confirmee"), r.get("fh"), r.get("ff"), r.get("fn")),
         )
         for r in rows
     ]
@@ -182,6 +198,7 @@ def checkin_manuel(
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
             photo_url=_signed_photo(membre.get("photo_url")),
+            titre=membre.get("titre") if isinstance(membre.get("titre"), str) else None,
         ),
         evenement_id=payload.evenement_id,
         arrivee=arrivee,
@@ -233,6 +250,7 @@ def checkout(
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
             photo_url=_signed_photo(membre.get("photo_url")),
+            titre=membre.get("titre") if isinstance(membre.get("titre"), str) else None,
         ),
         evenement_id=payload.evenement_id,
         depart=depart,
@@ -247,7 +265,7 @@ def verify(
 ) -> VerifyResult:
     result = verify_token(payload.token)
     membre_id = result.get("membre_id")
-    matricule = nom = prenoms = photo_url = None
+    matricule = nom = prenoms = photo_url = titre = None
     if isinstance(membre_id, str):
         row = _lookup_membre(membre_id, user.role)
         if row:
@@ -255,6 +273,7 @@ def verify(
             nom = row["nom"]
             prenoms = row["prenoms"]
             photo_url = _signed_photo(row.get("photo_url"))
+            titre = row.get("titre") if isinstance(row.get("titre"), str) else None
     return VerifyResult(
         valid=bool(result["valid"]),
         reason=result.get("reason"),
@@ -266,6 +285,7 @@ def verify(
         nom=nom,
         prenoms=prenoms,
         photo_url=photo_url,
+        titre=titre,
     )
 
 
@@ -319,6 +339,7 @@ def checkin(
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
             photo_url=_signed_photo(membre.get("photo_url")),
+            titre=membre.get("titre") if isinstance(membre.get("titre"), str) else None,
         ),
         evenement_id=payload.evenement_id,
         arrivee=arrivee,
