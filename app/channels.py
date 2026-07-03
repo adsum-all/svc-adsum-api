@@ -193,6 +193,20 @@ def _esc(s: str) -> str:
 
 # --- Fan-out ----------------------------------------------------------------
 
+def _record_echec(membre_id: str, role: str | None, type_cle: str, canal: str, detail: str) -> None:
+    """Record a failed channel delivery for admin observability. Best-effort: it
+    must never break the fan-out, and it stays silent if the ledger table is not
+    present yet (migration not applied)."""
+    try:
+        db.execute(
+            "INSERT INTO notification_echec (membre_id, type_cle, canal, detail) VALUES (%s, %s, %s, %s)",
+            (membre_id, type_cle, canal, detail),
+            role=role,
+        )
+    except Exception:  # noqa: BLE001 - observability must never affect delivery
+        pass
+
+
 def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params: list[str] | None = None, critique: bool = False) -> list[str]:
     """Deliver a message to a member over every opted-in, configured channel.
 
@@ -235,19 +249,27 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
     if autorise("email") and contact.get("email"):
         html = message.corps_html or f"<p>{message.corps_text}</p>"
         try:
-            ok, _ = send_email(str(contact["email"]), message.titre, message.corps_text, html)
+            ok, info = send_email(str(contact["email"]), message.titre, message.corps_text, html)
             if ok:
                 used.append("email")
-        except Exception:  # noqa: BLE001
-            pass
+            else:
+                _record_echec(membre_id, role, message.type_notif, "email", str(info)[:250])
+        except Exception as exc:  # noqa: BLE001
+            _record_echec(membre_id, role, message.type_notif, "email", f"exception: {exc}"[:250])
 
     # 3) Telegram (free).
-    if autorise("telegram") and contact.get("telegram_chat_id") and send_telegram(str(contact["telegram_chat_id"]), message):
-        used.append("telegram")
+    if autorise("telegram") and contact.get("telegram_chat_id"):
+        if send_telegram(str(contact["telegram_chat_id"]), message):
+            used.append("telegram")
+        else:
+            _record_echec(membre_id, role, message.type_notif, "telegram", "envoi Telegram non abouti")
 
     # 4) WhatsApp (paid, config-gated).
-    if autorise("whatsapp") and contact.get("whatsapp_numero") and send_whatsapp(str(contact["whatsapp_numero"]), whatsapp_params or []):
-        used.append("whatsapp")
+    if autorise("whatsapp") and contact.get("whatsapp_numero"):
+        if send_whatsapp(str(contact["whatsapp_numero"]), whatsapp_params or []):
+            used.append("whatsapp")
+        else:
+            _record_echec(membre_id, role, message.type_notif, "whatsapp", "envoi WhatsApp non abouti")
 
     return used
 

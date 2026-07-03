@@ -410,6 +410,49 @@ def toggle_type(cle: str, payload: TypeToggle, user: Annotated[UserMe, Depends(r
     return {"ok": True, "actif": payload.actif}
 
 
+@router.get("/admin/notifications/echecs")
+def list_echecs(
+    user: Annotated[UserMe, Depends(require_staff)], limit: int = 100, inclure_resolus: bool = False
+) -> dict[str, object]:
+    """Delivery-failure observability: the recent failed channel sends so the
+    administration can see who did not receive a message and follow up."""
+    where = "" if inclure_resolus else "WHERE NOT e.resolu"
+    rows = db.fetch_all(
+        "SELECT e.id, e.membre_id, e.type_cle, e.canal, e.detail, e.resolu, e.cree_le, "
+        "trim(coalesce(m.prenoms, '') || ' ' || coalesce(m.nom, '')) AS membre "
+        "FROM notification_echec e LEFT JOIN membre m ON m.id = e.membre_id "
+        f"{where} ORDER BY e.cree_le DESC LIMIT %s",
+        (max(1, min(limit, 500)),),
+        role=user.role,
+    )
+    ouverts = db.fetch_one("SELECT count(*) AS n FROM notification_echec WHERE NOT resolu", (), role=user.role) or {"n": 0}
+    return {
+        "ouverts": int(ouverts.get("n") or 0),
+        "echecs": [
+            {
+                "id": str(r["id"]),
+                "membre_id": str(r["membre_id"]) if r.get("membre_id") else None,
+                "membre": (str(r.get("membre") or "").strip() or None),
+                "type_cle": r["type_cle"],
+                "canal": r["canal"],
+                "detail": r["detail"],
+                "resolu": bool(r["resolu"]),
+                "cree_le": r["cree_le"].isoformat() if r["cree_le"] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/admin/notifications/echecs/{echec_id}/resolu", status_code=status.HTTP_204_NO_CONTENT)
+def resoudre_echec(echec_id: str, user: Annotated[UserMe, Depends(require_writer)]) -> None:
+    """Mark a delivery failure as handled so it leaves the open list."""
+    row = db.execute("UPDATE notification_echec SET resolu = true WHERE id = %s RETURNING id", (echec_id,), role=user.role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown failure")
+    audit.log(user.id, user.role, "resoudre_echec_notification", "notification_echec", echec_id, {})
+
+
 # --- Member: language -------------------------------------------------------
 
 class LangueIn(BaseModel):
