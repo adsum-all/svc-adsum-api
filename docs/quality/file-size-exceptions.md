@@ -18,6 +18,10 @@ deployment-unblock constraint.
   endpoints, admin endpoints, and the static catalogue.
 - app/inscription.py (560 lines): account provisioning and onboarding. To be
   split by extracting the credential-delivery helpers into a submodule.
+- app/participation.py (603 lines): participation domain (window formula, member
+  declaration, per-event statistics, global trends, per-member analytics). To be
+  split into member endpoints and admin statistics, keeping FENETRE_FIN_SQL as
+  the single shared window formula.
 
 ## Rule
 

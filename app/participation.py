@@ -421,29 +421,54 @@ def participation_global(user: Annotated[UserMe, Depends(require_staff)]) -> dic
     ) or {}
     nb_evenements = db.fetch_one("SELECT count(*) AS n FROM evenement", (), role=role)
     total_ev = int(nb_evenements["n"]) if nb_evenements else 0
-    # Attendance per member (assiduity): present count / number of events.
-    assidus = db.fetch_all(
-        f"""
-        SELECT trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre, m.matricule,
-               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present') AS presents
-        FROM membre m LEFT JOIN participation p ON p.membre_id = m.id
-        WHERE m.statut = 'actif'
-        GROUP BY m.id, m.prenoms, m.nom, m.matricule
-        ORDER BY presents DESC
-        LIMIT 10
-        """,
+    # Anonymous attendance cohorts over the rolling window (admin parameter
+    # fenetre_assiduite_jours, default 90 days): how many active members sit in
+    # each presence-rate band. No nominative ranking: individual figures are
+    # only shown inside a member's own file, never as a public podium or a
+    # name-and-shame list.
+    fenetre_jours = db.fetch_one(
+        "SELECT coalesce((SELECT (valeur #>> '{}')::int FROM parametre WHERE cle = 'fenetre_assiduite_jours'), 90) AS j",
         (),
         role=role,
     )
-    a_relancer = db.fetch_all(
+    jours = int((fenetre_jours or {}).get("j") or 90)
+    distribution = db.fetch_all(
         f"""
-        SELECT trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre, m.matricule,
-               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present') AS presents
-        FROM membre m LEFT JOIN participation p ON p.membre_id = m.id
-        WHERE m.statut = 'actif'
-        GROUP BY m.id, m.prenoms, m.nom, m.matricule
-        ORDER BY presents ASC, membre ASC
-        LIMIT 10
+        WITH fen AS (
+            SELECT id FROM evenement
+            WHERE debut >= now() - make_interval(days => %s) AND debut <= now()
+        ), taux AS (
+            SELECT m.id,
+                   CASE WHEN (SELECT count(*) FROM fen) = 0 THEN NULL
+                        ELSE 100.0 * count(p.*) FILTER (WHERE {_COMPTE} AND p.statut IN ('present', 'partiel'))
+                             / (SELECT count(*) FROM fen)
+                   END AS t
+            FROM membre m
+            LEFT JOIN participation p ON p.membre_id = m.id AND p.evenement_id IN (SELECT id FROM fen)
+            WHERE m.statut = 'actif'
+            GROUP BY m.id
+        )
+        SELECT CASE WHEN t IS NULL THEN 'sans_donnee'
+                    WHEN t >= 75 THEN '75_100'
+                    WHEN t >= 50 THEN '50_74'
+                    WHEN t >= 25 THEN '25_49'
+                    ELSE '0_24' END AS tranche,
+               count(*) AS membres
+        FROM taux GROUP BY 1
+        """,
+        (jours,),
+        role=role,
+    )
+    # Monthly counted participation over the last 6 months (trend line).
+    evolution = db.fetch_all(
+        f"""
+        SELECT to_char(date_trunc('month', mois), 'YYYY-MM') AS mois,
+               count(p.*) FILTER (WHERE {_COMPTE} AND p.statut IN ('present', 'partiel')) AS participations
+        FROM generate_series(date_trunc('month', current_date) - interval '5 months',
+                             date_trunc('month', current_date), interval '1 month') AS mois
+        LEFT JOIN evenement e ON date_trunc('month', e.debut) = date_trunc('month', mois)
+        LEFT JOIN participation p ON p.evenement_id = e.id
+        GROUP BY mois ORDER BY mois ASC
         """,
         (),
         role=role,
@@ -464,6 +489,115 @@ def participation_global(user: Annotated[UserMe, Depends(require_staff)]) -> dic
              "presents": int(r["presents"]), "partiels": int(r["partiels"]), "absents": int(r["absents"])}
             for r in serie
         ],
-        "top_assidus": [{"membre": r["membre"], "matricule": r["matricule"], "presents": int(r["presents"])} for r in assidus],
-        "a_relancer": [{"membre": r["membre"], "matricule": r["matricule"], "presents": int(r["presents"])} for r in a_relancer],
+        # Ethics: no nominative podium nor name-and-shame list. Attendance is
+        # exposed as anonymous cohorts here; individual figures live only in
+        # the member's own file (accompaniment, not exposure).
+        "fenetre_assiduite_jours": jours,
+        "distribution_assiduite": [
+            {"tranche": r["tranche"], "membres": int(r["membres"])} for r in distribution
+        ],
+        "evolution_mensuelle": [
+            {"mois": r["mois"], "participations": int(r["participations"])} for r in evolution
+        ],
+        "definitions": {
+            "distribution_assiduite": (
+                "Cohortes anonymes de membres actifs par taux de participation (présent ou partiel, comptés) "
+                f"aux événements des {jours} derniers jours. 'sans_donnee' = aucun événement sur la fenêtre. "
+                "Interprétation prudente si peu d'événements."
+            ),
+            "evolution_mensuelle": "Participations comptées (présent ou partiel, scan ou déclaration validée) par mois, 6 derniers mois.",
+        },
+    }
+
+
+# --- Admin: per-member analytics (inside the member file only) ---------------
+
+@router.get("/admin/membres/{membre_id}/participation-analytique")
+def participation_membre(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object]:
+    """Individual participation view for one member's file.
+
+    Meant for understanding and accompaniment, never for ranking: it is only
+    reachable from the member's own file. Figures are computed on the rolling
+    attendance window (admin parameter, default 90 days) with the same counting
+    rules as every other statistic (scan or validated declaration).
+    """
+    role = user.role
+    fen = db.fetch_one(
+        "SELECT coalesce((SELECT (valeur #>> '{}')::int FROM parametre WHERE cle = 'fenetre_assiduite_jours'), 90) AS j",
+        (),
+        role=role,
+    )
+    jours = int((fen or {}).get("j") or 90)
+    agg = db.fetch_one(
+        f"""
+        WITH fen AS (
+            SELECT id, debut FROM evenement
+            WHERE debut >= now() - make_interval(days => %s) AND debut <= now()
+        )
+        SELECT (SELECT count(*) FROM fen) AS evenements,
+               (SELECT count(*) FROM fen WHERE debut >= now() - make_interval(days => %s)) AS evenements_recents,
+               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present') AS presents,
+               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present' AND p.source = 'scan') AS presents_prouves,
+               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present' AND p.modalite = 'en_ligne') AS presents_en_ligne,
+               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'partiel') AS partiels,
+               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'absent') AS absents,
+               count(*) FILTER (WHERE {_COMPTE} AND p.statut IN ('present', 'partiel')
+                                AND (SELECT debut FROM fen f WHERE f.id = p.evenement_id) >= now() - make_interval(days => %s)) AS participations_recentes
+        FROM participation p
+        WHERE p.membre_id = %s AND p.evenement_id IN (SELECT id FROM fen)
+        """,
+        (jours, jours // 2, jours // 2, membre_id),
+        role=role,
+    ) or {}
+    historique = db.fetch_all(
+        """
+        SELECT e.titre, e.debut, p.statut, p.modalite, p.source,
+               (p.source = 'scan' OR p.valide) AS compte
+        FROM evenement e
+        LEFT JOIN participation p ON p.evenement_id = e.id AND p.membre_id = %s
+        WHERE e.debut <= now()
+        ORDER BY e.debut DESC LIMIT 8
+        """,
+        (membre_id,),
+        role=role,
+    )
+    evenements = int(agg.get("evenements") or 0)
+    ev_recents = int(agg.get("evenements_recents") or 0)
+    presents = int(agg.get("presents") or 0)
+    partiels = int(agg.get("partiels") or 0)
+    participations = presents + partiels
+    part_recentes = int(agg.get("participations_recentes") or 0)
+    taux = round(100.0 * participations / evenements, 1) if evenements else None
+    taux_recent = round(100.0 * part_recentes / ev_recents, 1) if ev_recents else None
+    taux_anterieur = (
+        round(100.0 * (participations - part_recentes) / (evenements - ev_recents), 1)
+        if evenements - ev_recents > 0
+        else None
+    )
+    return {
+        "fenetre_jours": jours,
+        "evenements_fenetre": evenements,
+        "presents": presents,
+        "presents_prouves": int(agg.get("presents_prouves") or 0),
+        "presents_en_ligne": int(agg.get("presents_en_ligne") or 0),
+        "partiels": partiels,
+        "absents": int(agg.get("absents") or 0),
+        "sans_reponse": max(0, evenements - participations - int(agg.get("absents") or 0)),
+        "taux_participation": taux,
+        "taux_recent": taux_recent,
+        "taux_anterieur": taux_anterieur,
+        "historique": [
+            {
+                "titre": r["titre"],
+                "debut": r["debut"].isoformat() if r["debut"] else None,
+                "statut": (r["statut"] if r.get("compte") else None),
+                "modalite": r.get("modalite"),
+                "prouve": r.get("source") == "scan",
+            }
+            for r in historique
+        ],
+        "avertissement": (
+            f"Lecture sur {evenements} événement(s) en {jours} jours : interprétation prudente si l'effectif "
+            "d'événements est faible. Vue destinée à l'accompagnement du membre, pas au classement."
+        ),
     }
