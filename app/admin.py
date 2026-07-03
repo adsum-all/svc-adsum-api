@@ -239,14 +239,15 @@ def create_evenement(
         liens = [primary, *liens]
     created = db.execute(
         """
-        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, visibilite)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, visibilite, fenetre_reponse_heures, cree_par)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
         RETURNING id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
                   lien_session, liens, type_diffusion, visibilite
         """,
         (
             payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
             payload.mode, primary, json.dumps(liens), payload.type_diffusion, payload.visibilite,
+            payload.fenetre_reponse_heures, user.id,
         ),
         role=user.role,
     )
