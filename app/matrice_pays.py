@@ -67,12 +67,32 @@ def ouvrir_attestation_si_besoin(membre_id: str, role: str | None) -> bool:
     )
     if existing:
         return True
-    db.execute(
-        "INSERT INTO attestation_manuelle (membre_id, statut, echeance) VALUES (%s, 'awaiting', now() + (%s || ' days')::interval)",
+    att = db.execute(
+        "INSERT INTO attestation_manuelle (membre_id, statut, echeance) VALUES (%s, 'awaiting', now() + (%s || ' days')::interval) RETURNING id",
         (membre_id, str(DELAI_JOURS)),
         role=role,
     )
     db.execute("UPDATE membre SET attestation_statut = 'awaiting' WHERE id = %s", (membre_id,), role=role)
+    # The attestation to return is a tracked request: it shows in Mes demandes
+    # (member) and in the member file (back office) with its own timeline.
+    ticket = db.execute(
+        "INSERT INTO demande (membre_id, type, sujet, categorie, sous_categorie, statut) "
+        "VALUES (%s, 'document', 'Attestation signée à retourner', 'documents', 'attestation_retour', 'attente_membre') RETURNING id",
+        (membre_id,),
+        role=role,
+    )
+    if att and ticket:
+        from .demandes import _system_message
+
+        db.execute(
+            "UPDATE attestation_manuelle SET demande_id = %s WHERE id = %s",
+            (str(ticket["id"]), str(att["id"])),
+            role=role,
+        )
+        _system_message(
+            str(ticket["id"]), role,
+            "Votre pays exige une attestation signée à la main. Imprimez le document depuis Ma carte, signez-le, puis renvoyez la version scannée.",
+        )
     from .notifications import notifier
 
     prenom = (str(m.get("prenoms") or "").split(" ")[0]) or "cher membre"
@@ -182,13 +202,31 @@ def deposer_attestation(payload: AttestationUploadIn, ctx: Annotated[tuple[str, 
     membre_id, role = ctx
     row = db.execute(
         "UPDATE attestation_manuelle SET document_id = %s, statut = 'under_review', soumise_le = now(), motif_rejet = NULL "
-        "WHERE membre_id = %s AND statut IN ('awaiting', 'reminded', 'overdue', 'rejected') RETURNING id",
+        "WHERE membre_id = %s AND statut IN ('awaiting', 'reminded', 'overdue', 'rejected') RETURNING id, demande_id",
         (payload.document_id, membre_id),
         role=role,
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no attestation to return")
     db.execute("UPDATE membre SET attestation_statut = 'under_review' WHERE id = %s", (membre_id,), role=role)
+    # Feed the linked tracking ticket: the transmitted scan appears in the
+    # timeline (with the piece) and the request moves to validation.
+    if row.get("demande_id"):
+        from .demandes import _system_message
+
+        did = str(row["demande_id"])
+        db.execute(
+            "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id) "
+            "SELECT %s, 'membre', trim(coalesce(prenoms,'')||' '||coalesce(nom,'')), 'Attestation signée transmise.', %s FROM membre WHERE id = %s",
+            (did, payload.document_id, membre_id),
+            role=role,
+        )
+        db.execute(
+            "UPDATE demande SET statut = 'en_validation', maj_le = now() WHERE id = %s AND statut NOT IN ('resolue', 'refusee')",
+            (did,),
+            role=role,
+        )
+        _system_message(did, role, "Document signé transmis. En cours de vérification par l'administration.")
     return {"ok": True, "statut": "under_review"}
 
 
@@ -220,13 +258,39 @@ def valider_attestation(attestation_id: str, payload: ValiderAttestationIn, user
     row = db.execute(
         "UPDATE attestation_manuelle SET statut = %s, valide_le = now(), valide_par = %s, "
         "motif_rejet = CASE WHEN %s = 'rejected' THEN %s ELSE NULL END "
-        "WHERE id = %s RETURNING membre_id",
+        "WHERE id = %s RETURNING membre_id, demande_id",
         (payload.decision, user.id, payload.decision, motif, attestation_id),
         role=user.role,
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown attestation")
     db.execute("UPDATE membre SET attestation_statut = %s WHERE id = %s", (payload.decision, row["membre_id"]), role=user.role)
+    # Close or bounce the linked tracking ticket, with the decision on record.
+    if row.get("demande_id"):
+        from .demandes import _notify_ticket, _system_message
+
+        did = str(row["demande_id"])
+        if payload.decision == "accepted":
+            db.execute(
+                "UPDATE demande SET statut = 'resolue', motif_cloture = 'Attestation validée', clos_le = now(), maj_le = now() WHERE id = %s",
+                (did,),
+                role=user.role,
+            )
+            _system_message(did, user.role, "Attestation validée par l'administration. Demande résolue.")
+            _notify_ticket(did, user.role, "Attestation validée",
+                           "Votre attestation signée a été vérifiée et validée par l'administration. Merci.")
+        else:
+            db.execute(
+                "UPDATE demande SET statut = 'attente_membre', maj_le = now() WHERE id = %s",
+                (did,),
+                role=user.role,
+            )
+            _system_message(did, user.role,
+                            "Attestation refusée." + (f" Motif : {motif}." if motif else "") + " Merci de renvoyer le document signé.")
+            _notify_ticket(did, user.role, "Attestation à renvoyer",
+                           ("Votre attestation signée n'a pas pu être validée."
+                            + (f" Motif : {motif}." if motif else "")
+                            + " Ouvrez Ma carte pour renvoyer une version corrigée."))
     audit.log(user.id, user.role, "validation_attestation", "attestation_manuelle", attestation_id,
               {"decision": payload.decision, "motif": motif})
     return {"ok": True, "statut": payload.decision}
