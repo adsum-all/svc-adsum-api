@@ -273,7 +273,25 @@ def my_engagements(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> 
 def mark_notifications_read(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> None:
     """Mark all of the member's notifications as read."""
     membre_id, role = ctx
-    db.execute("UPDATE notification SET lu = true WHERE membre_id = %s AND NOT lu", (membre_id,), role=role)
+    db.execute(
+        "UPDATE notification SET lu = true, lu_le = coalesce(lu_le, now()) WHERE membre_id = %s AND NOT lu",
+        (membre_id,),
+        role=role,
+    )
+
+
+# Registered after the literal /lire route on purpose: the literal path must
+# win over the parameterized one.
+@router.post("/me/notifications/{notification_id}/lire", status_code=status.HTTP_204_NO_CONTENT)
+def mark_notification_read(notification_id: str, ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> None:
+    """Mark ONE notification as read: persistent, timestamped and idempotent
+    (repeated clicks never move the recorded reading time)."""
+    membre_id, role = ctx
+    db.execute(
+        "UPDATE notification SET lu = true, lu_le = coalesce(lu_le, now()) WHERE id = %s AND membre_id = %s",
+        (notification_id, membre_id),
+        role=role,
+    )
 
 
 @router.get("/me/recensement", response_model=RecensementOut | None)

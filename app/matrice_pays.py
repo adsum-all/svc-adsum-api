@@ -16,7 +16,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import audit, db
+from . import audit, db, identifiants
 from .auth import current_user
 from .deps import require_roles
 from .schemas import UserMe
@@ -76,9 +76,9 @@ def ouvrir_attestation_si_besoin(membre_id: str, role: str | None) -> bool:
     # The attestation to return is a tracked request: it shows in Mes demandes
     # (member) and in the member file (back office) with its own timeline.
     ticket = db.execute(
-        "INSERT INTO demande (membre_id, type, sujet, categorie, sous_categorie, statut) "
-        "VALUES (%s, 'document', 'Attestation signée à retourner', 'documents', 'attestation_retour', 'attente_membre') RETURNING id",
-        (membre_id,),
+        "INSERT INTO demande (membre_id, type, sujet, categorie, sous_categorie, statut, reference) "
+        "VALUES (%s, 'document', 'Attestation signée à retourner', 'documents', 'attestation_retour', 'attente_membre', %s) RETURNING id",
+        (membre_id, identifiants.next_reference(role)),
         role=role,
     )
     if att and ticket:

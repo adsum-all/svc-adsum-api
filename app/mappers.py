@@ -8,6 +8,7 @@ from .schemas import MembreProfile
 # Columns a member SELECT must expose for membre_row_to_profile, in order.
 MEMBRE_PROFILE_SELECT = (
     "m.id, m.matricule, m.email, m.nom, m.prenoms, m.telephone, m.indicatif_telephone, m.groupe, m.photo_url, "
+    "m.photo_pending_url, "
     "m.statut, m.verifie, m.genre, m.date_naissance, m.naissance_annee_visible, m.pays, m.region, m.ville, "
     "m.adresse, m.adresse_complement, m.date_entree, "
     "m.cheminement_pastoral, m.statut_administratif, m.intendance_id, m.berger_referent_id, "
@@ -69,6 +70,7 @@ def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
         indicatif_telephone=row.get("indicatif_telephone"),
         groupe=row["groupe"],
         photo_url=row["photo_url"],
+        photo_pending=bool(row.get("photo_pending_url")),
         statut=row["statut"],
         verifie=row["verifie"],
         genre=row.get("genre"),

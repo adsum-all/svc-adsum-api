@@ -317,6 +317,53 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     purge = channels.purge_old_telegram(role)
     result["telegram_purges"] = purge.get("supprimes", 0)
 
+    # 6b) Unlock windows: a request left in 'attente_membre' beyond its response
+    # deadline is closed automatically as 'sans suite', with a visible trace and
+    # the unlocked elements re-locked. The window itself is admin-configurable
+    # (deblocage_delai_jours; 14-vs-30-day arbitration pending, never hardcoded).
+    from .demandes import _notify_ticket, _system_message
+
+    result["cloture_sans_suite"] = 0
+    en_retard = db.fetch_all(
+        "SELECT id, membre_id FROM demande WHERE statut = 'attente_membre' "
+        "AND echeance_reponse IS NOT NULL AND echeance_reponse < now()",
+        (),
+        role=role,
+    )
+    for d in en_retard:
+        db.execute(
+            "UPDATE demande SET statut = 'refusee', "
+            "motif_cloture = 'Clôturée automatiquement : aucun retour dans le délai imparti.', "
+            "clos_le = now(), maj_le = now(), echeance_reponse = NULL WHERE id = %s",
+            (str(d["id"]),),
+            role=role,
+        )
+        db.execute("UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s", (str(d["membre_id"]),), role=role)
+        _system_message(str(d["id"]), role,
+                        "Demande clôturée automatiquement : aucun retour du membre avant la date limite. "
+                        "Les éléments débloqués ont été reverrouillés.")
+        _notify_ticket(str(d["id"]), role, "Demande clôturée sans suite",
+                       "Votre demande a été clôturée automatiquement car aucun retour n'a été reçu dans le délai. "
+                       "Vous pouvez ouvrir une nouvelle demande si nécessaire.")
+        result["cloture_sans_suite"] += 1
+
+    # 6c) Interface notifications past the retention window are purged. This
+    # NEVER touches conversation messages, requests, their history or the audit
+    # journal: those live in their own tables with their own retention.
+    retention = db.fetch_one(
+        "SELECT coalesce((SELECT (valeur #>> '{}')::int FROM parametre WHERE cle = 'notification_retention_mois'), 6) AS m",
+        (),
+        role=role,
+    )
+    mois = max(1, int((retention or {}).get("m") or 6))
+    purged = db.fetch_one(
+        "WITH del AS (DELETE FROM notification WHERE cree_le < now() - make_interval(months => %s) RETURNING 1) "
+        "SELECT count(*) AS n FROM del",
+        (mois,),
+        role=role,
+    )
+    result["notifications_purgees"] = int((purged or {}).get("n") or 0)
+
     # 7) Data-retention renewal: yearly consent notice + automatic window renewal.
     from .retention import scan_renouvellement
 

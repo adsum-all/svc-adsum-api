@@ -20,7 +20,9 @@ class StorageError(RuntimeError):
     pass
 
 
-def _request(method: str, path: str, body: dict[str, object] | None = None) -> dict[str, object]:
+def _request(
+    method: str, path: str, body: dict[str, object] | None = None, headers: dict[str, str] | None = None
+) -> dict[str, object]:
     if not settings.supabase_url or not settings.supabase_service_key:
         raise StorageError("storage is not configured")
     url = f"{settings.supabase_url.rstrip('/')}/storage/v1{path}"
@@ -28,6 +30,8 @@ def _request(method: str, path: str, body: dict[str, object] | None = None) -> d
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {settings.supabase_service_key}")
     req.add_header("apikey", settings.supabase_service_key)
+    for cle, valeur in (headers or {}).items():
+        req.add_header(cle, valeur)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -38,9 +42,15 @@ def _request(method: str, path: str, body: dict[str, object] | None = None) -> d
         raise StorageError(f"storage {method} {path} failed: {exc.code}") from exc
 
 
-def signed_upload_url(bucket: str, path: str) -> dict[str, str]:
-    """Return a one-time signed URL the client uses to PUT the file directly."""
-    res = _request("POST", f"/object/upload/sign/{bucket}/{path}")
+def signed_upload_url(bucket: str, path: str, upsert: bool = False) -> dict[str, str]:
+    """Return a one-time signed URL the client uses to PUT the file directly.
+
+    With ``upsert`` the signature allows overwriting an existing object (needed
+    when replacing an identity photo at its stable path); without it, Supabase
+    refuses to sign an upload towards an object that already exists.
+    """
+    headers = {"x-upsert": "true"} if upsert else None
+    res = _request("POST", f"/object/upload/sign/{bucket}/{path}", headers=headers)
     token = str(res.get("url", ""))
     return {
         "bucket": bucket,

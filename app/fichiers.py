@@ -61,25 +61,76 @@ def _safe_ext(ext: str, allowed: set[str]) -> str:
 
 @router.post("/photo/upload-url")
 def photo_upload_url(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, str]:
-    membre_id, _ = ctx
-    path = f"{membre_id}/photo.jpg"
+    """Signed upload URL for the identity photo.
+
+    The unlock rule is enforced HERE, before any signature is issued: replacing
+    an existing photo requires the administration to have unlocked
+    'photo_identite'. A replacement is STAGED to a separate pending path so the
+    live photo is never overwritten before the administration validates it; the
+    signature allows overwrite (upsert) because that pending path is stable. The
+    very first photo (onboarding, no live photo yet) is written straight to the
+    live path so the member card shows immediately."""
+    membre_id, role = ctx
+    etat = db.fetch_one(
+        "SELECT photo_url, coalesce(champs_deverrouilles, '{}') AS deverrouilles FROM membre WHERE id = %s",
+        (membre_id,),
+        role=role,
+    )
+    deja = bool((etat or {}).get("photo_url"))
+    deverrouille = "photo_identite" in ((etat or {}).get("deverrouilles") or [])
+    if deja and not deverrouille:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Le remplacement de la photo d'identité doit être débloqué par l'administration : ouvrez une demande « Changer ma photo d'identité ».",
+        )
+    path = f"{membre_id}/photo_pending.jpg" if deja else f"{membre_id}/photo.jpg"
     try:
-        return storage.signed_upload_url(settings.storage_bucket_photos, path)
+        return storage.signed_upload_url(settings.storage_bucket_photos, path, upsert=deja)
     except storage.StorageError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="storage unavailable") from exc
 
 
 @router.post("/photo/confirm", status_code=status.HTTP_204_NO_CONTENT)
 def photo_confirm(payload: PhotoConfirm, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> None:
+    """Record the uploaded identity photo.
+
+    First upload (onboarding, no live photo): the photo becomes the live photo
+    immediately so the member card shows. Replacement (requires an administration
+    unlock of 'photo_identite'): the photo is STAGED as photo_pending, it does
+    NOT overwrite the live photo, does NOT consume the unlock and does NOT submit
+    anything. The staged photo travels with the single modification submission and
+    is only promoted to the live photo when the administration validates it."""
     membre_id, role = ctx
     if not payload.path.startswith(f"{membre_id}/"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
-    phash = _clean_phash(payload.phash)
-    db.execute(
-        "UPDATE membre SET photo_url = %s, photo_phash = %s WHERE id = %s",
-        (payload.path, phash, membre_id),
+    etat = db.fetch_one(
+        "SELECT photo_url, coalesce(champs_deverrouilles, '{}') AS deverrouilles FROM membre WHERE id = %s",
+        (membre_id,),
         role=role,
     )
+    deja = bool((etat or {}).get("photo_url"))
+    deverrouille = "photo_identite" in ((etat or {}).get("deverrouilles") or [])
+    if deja and not deverrouille:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Le remplacement de la photo d'identité doit être débloqué par l'administration : ouvrez une demande « Changer ma photo d'identité ».",
+        )
+    phash = _clean_phash(payload.phash)
+    if deja:
+        # Replacement: stage only. The single modification submission and the
+        # admin validation are what actually put the new photo live.
+        db.execute(
+            "UPDATE membre SET photo_pending_url = %s, photo_pending_phash = %s WHERE id = %s",
+            (payload.path, phash, membre_id),
+            role=role,
+        )
+    else:
+        # Onboarding first photo: goes live immediately.
+        db.execute(
+            "UPDATE membre SET photo_url = %s, photo_phash = %s WHERE id = %s",
+            (payload.path, phash, membre_id),
+            role=role,
+        )
 
 
 def _clean_phash(value: str | None) -> str | None:
@@ -97,6 +148,21 @@ def photo_get(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, st
     membre_id, role = ctx
     row = db.fetch_one("SELECT photo_url FROM membre WHERE id = %s", (membre_id,), role=role)
     path = row.get("photo_url") if row else None
+    if not path:
+        return {"url": None}
+    try:
+        return {"url": storage.signed_download_url(settings.storage_bucket_photos, str(path))}
+    except storage.StorageError:
+        return {"url": None}
+
+
+@router.get("/photo/pending")
+def photo_pending_get(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, str | None]:
+    """Preview of a replacement photo staged but not yet validated. The member
+    keeps seeing the live photo everywhere; this is the 'new photo pending' view."""
+    membre_id, role = ctx
+    row = db.fetch_one("SELECT photo_pending_url FROM membre WHERE id = %s", (membre_id,), role=role)
+    path = row.get("photo_pending_url") if row else None
     if not path:
         return {"url": None}
     try:

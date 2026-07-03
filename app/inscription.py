@@ -19,7 +19,7 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
-from . import audit, db
+from . import audit, db, identifiants
 from .auth import current_user
 from .deps import require_roles
 from .email_gateway import send_email
@@ -38,17 +38,6 @@ def _membre_ctx(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, st
     if not user.membre_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is not linked to a member")
     return user.membre_id, user.role
-
-
-def _next_matricule(role: str) -> str:
-    row = db.fetch_one(
-        "SELECT COALESCE(MAX(CAST(SUBSTRING(matricule FROM 5) AS integer)), 0) AS last "
-        "FROM membre WHERE matricule ~ '^ADS-[0-9]{6}$'",
-        (),
-        role=role,
-    )
-    last = row["last"] if row else 0
-    return f"ADS-{last + 1:06d}"
 
 
 def _temp_password() -> str:
@@ -124,7 +113,7 @@ class CompteMembreIn(BaseModel):
 
 @router.post("/admin/inscriptions/membre", status_code=status.HTTP_201_CREATED)
 def creer_compte_membre(payload: CompteMembreIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
-    matricule = _next_matricule(user.role)
+    matricule = identifiants.next_matricule(user.role)
     try:
         created = db.execute(
             "INSERT INTO membre (matricule, email, prenoms, nom, statut, verifie, statut_inscription) "
@@ -466,34 +455,120 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
                         role=role,
                     )
         return {"ok": True, "updated": list(fields)}
-    # Verified member: only admin-unlocked fields, and never a direct write.
-    unlocked = set(row["champs_deverrouilles"] or [])
-    forbidden = [k for k in fields if k not in unlocked]
-    if forbidden:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"locked_fields": forbidden})
-    return _propose_modification(membre_id, role, fields)
+    # Verified member: the edit belongs to the single admin-opened submission
+    # cycle. Route it through the unified, idempotent submission so even a direct
+    # PATCH cannot bypass the one-submission-per-unlock rule.
+    return _soumettre_cycle(membre_id, role, fields, inclure_photo=False)
 
 
-def _propose_modification(membre_id: str, role: str, fields: dict[str, object]) -> dict[str, object]:
-    """Store the member's edits as a pending modification awaiting admin validation."""
-    columns = ", ".join(fields)
-    before = db.fetch_one(f"SELECT {columns} FROM membre WHERE id = %s", (membre_id,), role=role) or {}
-    demande = db.fetch_one(
-        "SELECT id FROM demande WHERE membre_id = %s AND type = 'modification_info' "
-        "AND statut NOT IN ('resolue', 'refusee') ORDER BY maj_le DESC LIMIT 1",
+class SoumettreModif(BaseModel):
+    """Payload of the single member submission: the edited text fields, and a
+    hint that a replacement photo was staged (correctness never depends on the
+    hint, only the confirmation wording does)."""
+
+    champs: dict[str, str] = {}
+    inclure_photo: bool = False
+
+
+@router.post("/membres/me/modifications/soumettre")
+def soumettre_modifications(
+    payload: SoumettreModif, ctx: Annotated[tuple[str, str], Depends(_membre_ctx)]
+) -> dict[str, object]:
+    """One and only business submission for an admin-opened modification cycle.
+
+    Gathers the edited text fields AND any staged replacement photo into a single
+    proposal, consumes the whole unlock and moves the request to 'en_validation'.
+    Idempotent: a refresh, a double click, a second tab or a direct API retry all
+    find the cycle already submitted and get a clean 409."""
+    membre_id, role = ctx
+    return _soumettre_cycle(membre_id, role, dict(payload.champs), payload.inclure_photo)
+
+
+def _soumettre_cycle(
+    membre_id: str, role: str, fields: dict[str, object], inclure_photo: bool
+) -> dict[str, object]:
+    """Single, idempotent submission of an admin-opened modification cycle.
+
+    The open cycle is the member's request in 'attente_membre' together with the
+    unlocked fields. The status flip to 'en_validation' is the atomic lock: only
+    the first caller flips it, so any replay hits a request that is no longer
+    'attente_membre' and is rejected. The whole unlock is then consumed, so
+    nothing stays editable until the administration opens a new cycle. The
+    ``inclure_photo`` hint only shapes the confirmation wording; a staged photo is
+    part of the cycle whenever one exists and 'photo_identite' was unlocked."""
+    etat = db.fetch_one(
+        "SELECT coalesce(champs_deverrouilles, '{}') AS deverrouilles, photo_pending_url "
+        "FROM membre WHERE id = %s",
         (membre_id,),
         role=role,
     )
-    demande_id = str(demande["id"]) if demande else None
-    db.execute(
-        "INSERT INTO modification_membre (membre_id, demande_id, valeurs, valeurs_avant) "
-        "VALUES (%s, %s, %s::jsonb, %s::jsonb)",
-        (membre_id, demande_id, json.dumps(fields, default=str), json.dumps(dict(before), default=str)),
+    if not etat:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    unlocked = set(etat.get("deverrouilles") or [])
+    photo_incluse = bool(etat.get("photo_pending_url")) and "photo_identite" in unlocked
+    cycle = db.fetch_one(
+        "SELECT id FROM demande WHERE membre_id = %s AND statut = 'attente_membre' "
+        "ORDER BY maj_le DESC LIMIT 1",
+        (membre_id,),
         role=role,
     )
-    if demande_id:
-        db.execute("UPDATE demande SET statut = 'en_validation', maj_le = now() WHERE id = %s", (demande_id,), role=role)
-    return {"ok": True, "pending_validation": True, "champs": list(fields)}
+    if not unlocked or not cycle:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Aucun cycle de modification ouvert. L'administration doit débloquer les éléments à corriger.",
+        )
+    demande_id = str(cycle["id"])
+    fields = {k: v for k, v in fields.items() if k in _EDITABLE_FIELDS}
+    forbidden = [k for k in fields if k not in unlocked]
+    if forbidden:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"locked_fields": forbidden})
+    if not fields and not photo_incluse:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Aucune modification à soumettre.")
+    # ATOMIC LOCK: flip the cycle. A single statement, its own transaction: only
+    # the first caller gets a row back, every replay gets none and is refused.
+    locked = db.execute(
+        "UPDATE demande SET statut = 'en_validation', echeance_reponse = NULL, maj_le = now() "
+        "WHERE id = %s AND statut = 'attente_membre' RETURNING id",
+        (demande_id,),
+        role=role,
+    )
+    if not locked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cette demande a déjà été soumise. Une seule soumission est possible par déblocage.",
+        )
+    if fields:
+        before = db.fetch_one(f"SELECT {', '.join(fields)} FROM membre WHERE id = %s", (membre_id,), role=role) or {}
+        try:
+            db.execute(
+                "INSERT INTO modification_membre (membre_id, demande_id, valeurs, valeurs_avant) "
+                "VALUES (%s, %s, %s::jsonb, %s::jsonb)",
+                (membre_id, demande_id, json.dumps(fields, default=str), json.dumps(dict(before), default=str)),
+                role=role,
+            )
+        except psycopg.errors.UniqueViolation as exc:  # pragma: no cover - guarded by the atomic flip above
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="Cette demande a déjà été soumise."
+            ) from exc
+    # Consume the whole unlock: no field stays editable until a new admin cycle.
+    db.execute("UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s", (membre_id,), role=role)
+    from .demandes import _notify_ticket, _system_message
+
+    quoi = []
+    if fields:
+        quoi.append("informations")
+    if photo_incluse:
+        quoi.append("photo d'identité")
+    detail = " et ".join(quoi) if quoi else "modifications"
+    _system_message(
+        demande_id, role,
+        f"Le membre a soumis ses {detail} pour validation. En attente de validation finale par l'administration.",
+    )
+    _notify_ticket(
+        demande_id, role, "Modification soumise",
+        f"Vos {detail} ont été transmises. Elles seront enregistrées après validation par l'administration.",
+    )
+    return {"ok": True, "pending_validation": True, "champs": list(fields), "photo": photo_incluse}
 
 
 @router.get("/membres/me/inscription")
