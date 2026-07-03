@@ -1,0 +1,255 @@
+"""Back-office administration endpoints, served from the real PostgreSQL.
+
+Every query runs under the caller role, which activates the per-role RLS
+policies (ADR-0002). Write access is additionally guarded by ``require_roles``
+so the API rejects unauthorized callers before touching the database.
+"""
+# ruff: noqa: E501
+from __future__ import annotations
+
+import json
+from typing import Annotated
+
+import psycopg
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from . import audit, db
+from .deps import require_roles
+from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
+from .schemas import (
+    CommissionOut,
+    CreateCommission,
+    CreateEvenement,
+    CreateMembre,
+    EvenementOut,
+    MembreProfile,
+    UpdateMembre,
+    UserMe,
+)
+
+router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+
+STAFF = ("super_admin", "admin", "gestionnaire", "controleur", "direction")
+MEMBRE_WRITERS = ("super_admin", "admin")
+EVENT_WRITERS = ("super_admin", "admin", "gestionnaire")
+
+require_staff = require_roles(*STAFF)
+require_membre_writer = require_roles(*MEMBRE_WRITERS)
+require_event_writer = require_roles(*EVENT_WRITERS)
+
+
+def _next_matricule(role: str) -> str:
+    """Return the next ADS-NNNNNN matricule, one above the current maximum."""
+    row = db.fetch_one(
+        """
+        SELECT COALESCE(MAX(CAST(SUBSTRING(matricule FROM 5) AS integer)), 0) AS last
+        FROM membre
+        WHERE matricule ~ '^ADS-[0-9]{6}$'
+        """,
+        (),
+        role=role,
+    )
+    last = row["last"] if row else 0
+    return f"ADS-{last + 1:06d}"
+
+
+def _read_membre(membre_id: str, role: str) -> MembreProfile:
+    row = db.fetch_one(
+        f"SELECT {MEMBRE_PROFILE_SELECT} {MEMBRE_PROFILE_FROM} WHERE m.id = %s",
+        (membre_id,),
+        role=role,
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    return membre_row_to_profile(row)
+
+
+@router.post("/membres", response_model=MembreProfile, status_code=status.HTTP_201_CREATED)
+def create_membre(
+    payload: CreateMembre,
+    user: Annotated[UserMe, Depends(require_membre_writer)],
+) -> MembreProfile:
+    matricule = payload.matricule or _next_matricule(user.role)
+    data = payload.model_dump(exclude_unset=True, exclude={"matricule"})
+    data["matricule"] = matricule
+    data.setdefault("statut", "actif")
+    data.setdefault("verifie", False)
+    columns = ", ".join(data)
+    placeholders = ", ".join(["%s"] * len(data))
+    try:
+        created = db.execute(
+            f"INSERT INTO membre ({columns}) VALUES ({placeholders}) RETURNING id",
+            tuple(data.values()),
+            role=user.role,
+        )
+    except psycopg.errors.UniqueViolation as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="email or matricule already in use",
+        ) from exc
+    if not created:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
+    membre_id = str(created["id"])
+    audit.log(user.id, user.role, "creation_membre", "membre", membre_id, {"matricule": matricule})
+    return _read_membre(membre_id, user.role)
+
+
+@router.get("/membres", response_model=list[MembreProfile])
+def list_membres(
+    user: Annotated[UserMe, Depends(require_staff)],
+    q: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[MembreProfile]:
+    params: list[object] = []
+    where = ""
+    if q:
+        where = (
+            "WHERE m.nom ILIKE %s OR m.prenoms ILIKE %s "
+            "OR m.matricule ILIKE %s OR m.email ILIKE %s"
+        )
+        like = f"%{q}%"
+        params.extend([like, like, like, like])
+    params.extend([limit, offset])
+    rows = db.fetch_all(
+        f"""
+        SELECT {MEMBRE_PROFILE_SELECT}
+        {MEMBRE_PROFILE_FROM}
+        {where}
+        ORDER BY m.matricule ASC
+        LIMIT %s OFFSET %s
+        """,
+        tuple(params),
+        role=user.role,
+    )
+    return [membre_row_to_profile(r) for r in rows]
+
+
+@router.get("/membres/{membre_id}", response_model=MembreProfile)
+def get_membre(
+    membre_id: str,
+    user: Annotated[UserMe, Depends(require_staff)],
+) -> MembreProfile:
+    return _read_membre(membre_id, user.role)
+
+
+@router.patch("/membres/{membre_id}", response_model=MembreProfile)
+def update_membre(
+    membre_id: str,
+    payload: UpdateMembre,
+    user: Annotated[UserMe, Depends(require_membre_writer)],
+) -> MembreProfile:
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        return _read_membre(membre_id, user.role)
+    columns = ", ".join(f"{name} = %s" for name in fields)
+    params = [*fields.values(), membre_id]
+    try:
+        updated = db.execute(
+            f"UPDATE membre SET {columns} WHERE id = %s RETURNING id",
+            tuple(params),
+            role=user.role,
+        )
+    except psycopg.errors.UniqueViolation as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="email or matricule already in use",
+        ) from exc
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    action = "validation_identite" if fields.get("verifie") is True else "modification_membre"
+    audit.log(user.id, user.role, action, "membre", membre_id, {"champs": list(fields)})
+    return _read_membre(membre_id, user.role)
+
+
+@router.get("/commissions", response_model=list[CommissionOut])
+def list_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> list[CommissionOut]:
+    rows = db.fetch_all(
+        "SELECT id, nom, description, publie FROM commission ORDER BY nom ASC",
+        (),
+        role=user.role,
+    )
+    return [
+        CommissionOut(id=str(r["id"]), nom=r["nom"], description=r["description"], publie=bool(r["publie"]))
+        for r in rows
+    ]
+
+
+@router.post("/commissions", response_model=CommissionOut, status_code=status.HTTP_201_CREATED)
+def create_commission(
+    payload: CreateCommission,
+    user: Annotated[UserMe, Depends(require_membre_writer)],
+) -> CommissionOut:
+    created = db.execute(
+        "INSERT INTO commission (nom, description) VALUES (%s, %s) RETURNING id, nom, description",
+        (payload.nom, payload.description),
+        role=user.role,
+    )
+    if not created:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
+    return CommissionOut(
+        id=str(created["id"]),
+        nom=created["nom"],
+        description=created["description"],
+    )
+
+
+@router.get("/evenements", response_model=list[EvenementOut])
+def list_evenements(user: Annotated[UserMe, Depends(require_staff)]) -> list[EvenementOut]:
+    rows = db.fetch_all(
+        """
+        SELECT id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
+               lien_session, liens, type_diffusion, visibilite
+        FROM evenement
+        ORDER BY debut DESC
+        LIMIT 200
+        """,
+        (),
+        role=user.role,
+    )
+    return [_evenement_out(r) for r in rows]
+
+
+def _evenement_out(r: dict[str, object]) -> EvenementOut:
+    return EvenementOut(
+        id=str(r["id"]),
+        titre=r["titre"],
+        type=r["type"],
+        volet=r["volet"],
+        debut=r["debut"],
+        fin=r["fin"],
+        lieu=r["lieu"],
+        mode=r.get("mode"),
+        session_ouverte=r["session_ouverte"],
+        lien_session=r["lien_session"],
+        liens=[str(x) for x in (r.get("liens") or []) if x],
+        type_diffusion=r.get("type_diffusion") or "aucun",
+        visibilite=r.get("visibilite") or "membres",
+    )
+
+
+@router.post("/evenements", response_model=EvenementOut, status_code=status.HTTP_201_CREATED)
+def create_evenement(
+    payload: CreateEvenement,
+    user: Annotated[UserMe, Depends(require_event_writer)],
+) -> EvenementOut:
+    liens = [x.strip() for x in payload.liens if x and x.strip()]
+    primary = payload.lien_session or (liens[0] if liens else None)
+    if primary and primary not in liens:
+        liens = [primary, *liens]
+    created = db.execute(
+        """
+        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, visibilite)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+        RETURNING id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
+                  lien_session, liens, type_diffusion, visibilite
+        """,
+        (
+            payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
+            payload.mode, primary, json.dumps(liens), payload.type_diffusion, payload.visibilite,
+        ),
+        role=user.role,
+    )
+    if not created:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
+    return _evenement_out(created)

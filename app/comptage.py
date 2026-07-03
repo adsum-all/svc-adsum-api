@@ -1,0 +1,128 @@
+"""Volet B counting: members scanned plus non-members, with a public self-service.
+
+For large public events (volet B), members are scanned (presence) and non-members
+are counted manually or self-declare through a public anonymous QR. The total is
+members + non-members. The public endpoint requires no authentication.
+"""
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from . import audit, db
+from .deps import require_roles
+from .schemas import (
+    ComptageLigne,
+    ComptageResume,
+    CreateComptage,
+    PublicEvent,
+    UserMe,
+)
+
+router = APIRouter(prefix="/api/v1/admin/comptage", tags=["comptage"])
+comptage_public_router = APIRouter(prefix="/api/v1/public", tags=["public"])
+
+require_counter = require_roles("super_admin", "admin", "gestionnaire", "controleur")
+require_staff = require_roles("super_admin", "admin", "gestionnaire", "direction")
+
+
+def _resume(evenement_id: str, role: str | None) -> ComptageResume:
+    event = db.fetch_one("SELECT titre FROM evenement WHERE id = %s", (evenement_id,), role=role)
+    membres = db.fetch_one(
+        "SELECT count(*) AS n FROM presence WHERE evenement_id = %s",
+        (evenement_id,),
+        role=role,
+    )
+    rows = db.fetch_all(
+        """
+        SELECT id, segment, total_membres, total_anonyme, horodatage
+        FROM comptage_volet_b
+        WHERE evenement_id = %s
+        ORDER BY horodatage ASC
+        """,
+        (evenement_id,),
+        role=role,
+    )
+    non_membres = sum(int(r["total_anonyme"]) for r in rows)
+    membres_scannes = int(membres["n"]) if membres else 0
+    return ComptageResume(
+        evenement_id=evenement_id,
+        titre=event["titre"] if event else None,
+        membres_scannes=membres_scannes,
+        non_membres=non_membres,
+        total_participants=membres_scannes + non_membres,
+        lignes=[
+            ComptageLigne(
+                id=str(r["id"]),
+                segment=r["segment"] if isinstance(r["segment"], str) else None,
+                total_membres=int(r["total_membres"]),
+                total_anonyme=int(r["total_anonyme"]),
+                horodatage=r["horodatage"],
+            )
+            for r in rows
+        ],
+    )
+
+
+@router.get("/{evenement_id}", response_model=ComptageResume)
+def get_comptage(
+    evenement_id: str,
+    user: Annotated[UserMe, Depends(require_staff)],
+) -> ComptageResume:
+    return _resume(evenement_id, user.role)
+
+
+@router.post("", response_model=ComptageResume, status_code=status.HTTP_201_CREATED)
+def add_comptage(
+    payload: CreateComptage,
+    user: Annotated[UserMe, Depends(require_counter)],
+) -> ComptageResume:
+    db.execute(
+        """
+        INSERT INTO comptage_volet_b (evenement_id, segment, total_membres, total_anonyme, saisi_par)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (payload.evenement_id, payload.segment, payload.total_membres, payload.total_anonyme, user.id),
+        role=user.role,
+    )
+    audit.log(user.id, user.role, "comptage_volet_b", "evenement", payload.evenement_id,
+              {"segment": payload.segment, "anonyme": payload.total_anonyme})
+    return _resume(payload.evenement_id, user.role)
+
+
+@comptage_public_router.get("/evenement/{evenement_id}", response_model=PublicEvent)
+def public_event(evenement_id: str) -> PublicEvent:
+    row = db.fetch_one(
+        "SELECT id, titre, volet, visibilite, session_ouverte, lien_session, type_diffusion "
+        "FROM evenement WHERE id = %s",
+        (evenement_id,),
+    )
+    if not row or (row["volet"] != "B" and row["visibilite"] != "public"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="public event not found")
+    ouvert = bool(row["session_ouverte"])
+    # A public broadcast link is only served while the session is open.
+    public_live = row["visibilite"] == "public" and ouvert
+    return PublicEvent(
+        id=str(row["id"]),
+        titre=str(row["titre"]),
+        ouvert=ouvert,
+        lien_session=row["lien_session"] if public_live else None,
+        type_diffusion=(row["type_diffusion"] or "aucun") if public_live else "aucun",
+    )
+
+
+@comptage_public_router.post("/presence/{evenement_id}", status_code=status.HTTP_201_CREATED)
+def public_presence(evenement_id: str) -> dict[str, object]:
+    """Anonymous self-service presence for a volet B event ('Je suis present')."""
+    row = db.fetch_one("SELECT id, volet FROM evenement WHERE id = %s", (evenement_id,))
+    if not row or row["volet"] != "B":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="public event not found")
+    db.execute(
+        """
+        INSERT INTO comptage_volet_b (evenement_id, segment, total_anonyme)
+        VALUES (%s, 'self-service', 1)
+        """,
+        (evenement_id,),
+    )
+    return {"ok": True, "evenement_id": evenement_id}

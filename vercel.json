@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["cdg1"],
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
+  "crons": [{ "path": "/api/v1/cron/quotidien", "schedule": "30 6 * * *" }]
+}
