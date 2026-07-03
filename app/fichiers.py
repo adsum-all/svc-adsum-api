@@ -71,15 +71,55 @@ def photo_upload_url(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[
 
 @router.post("/photo/confirm", status_code=status.HTTP_204_NO_CONTENT)
 def photo_confirm(payload: PhotoConfirm, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> None:
+    """Set the identity photo. The first upload is free (onboarding); replacing
+    an existing photo is identity-grade and requires the administration to have
+    unlocked 'photo_identite' (via a request). A successful replacement consumes
+    the unlock, puts the linked request back in the staff's court and leaves a
+    visible trace in its conversation."""
     membre_id, role = ctx
     if not payload.path.startswith(f"{membre_id}/"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
+    etat = db.fetch_one(
+        "SELECT photo_url, coalesce(champs_deverrouilles, '{}') AS deverrouilles FROM membre WHERE id = %s",
+        (membre_id,),
+        role=role,
+    )
+    deja = bool((etat or {}).get("photo_url"))
+    deverrouille = "photo_identite" in ((etat or {}).get("deverrouilles") or [])
+    if deja and not deverrouille:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Le remplacement de la photo d'identité doit être débloqué par l'administration : ouvrez une demande « Changer ma photo d'identité ».",
+        )
     phash = _clean_phash(payload.phash)
     db.execute(
         "UPDATE membre SET photo_url = %s, photo_phash = %s WHERE id = %s",
         (payload.path, phash, membre_id),
         role=role,
     )
+    if deja and deverrouille:
+        # Consume the unlock (single use) and feed the tracking request.
+        db.execute(
+            "UPDATE membre SET champs_deverrouilles = array_remove(champs_deverrouilles, 'photo_identite') WHERE id = %s",
+            (membre_id,),
+            role=role,
+        )
+        ticket = db.fetch_one(
+            "SELECT id FROM demande WHERE membre_id = %s AND statut = 'attente_membre' "
+            "ORDER BY maj_le DESC LIMIT 1",
+            (membre_id,),
+            role=role,
+        )
+        if ticket:
+            from .demandes import _system_message
+
+            did = str(ticket["id"])
+            db.execute(
+                "UPDATE demande SET statut = 'en_validation', echeance_reponse = NULL, maj_le = now() WHERE id = %s",
+                (did,),
+                role=role,
+            )
+            _system_message(did, role, "Photo d'identité remplacée par le membre. En attente de revalidation par l'administration.")
 
 
 def _clean_phash(value: str | None) -> str | None:

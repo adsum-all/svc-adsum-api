@@ -10,10 +10,11 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db
 from .auth import current_user
+from .demandes_catalogue import _TRANSITIONS, CATALOGUE, STATUTS_LISIBLES
 from .deps import require_roles
 from .schemas import UserMe
 
@@ -52,6 +53,9 @@ class DemandePatch(BaseModel):
     statut: str | None = None
     champs_deverrouilles: list[str] | None = None
     motif: str | None = None
+    # Response window (days) granted with an unlock; falls back to the central
+    # admin parameter deblocage_delai_jours when omitted.
+    delai_jours: int | None = Field(default=None, ge=1, le=90)
 
 
 class PieceRequeteIn(BaseModel):
@@ -65,6 +69,9 @@ class MessageOut(BaseModel):
     corps: str
     cree_le: datetime | None = None
     document_id: str | None = None
+    # Read receipts: both parties can see when the other side read a message.
+    lu_par_membre_le: datetime | None = None
+    lu_par_staff_le: datetime | None = None
 
 
 class DemandeOut(BaseModel):
@@ -83,6 +90,8 @@ class DemandeOut(BaseModel):
     # Step tracking: when the staff took the request over, and when it closed.
     pris_en_charge_le: datetime | None = None
     clos_le: datetime | None = None
+    # Deadline for the member's action after an unlock (auto-close when over).
+    echeance_reponse: datetime | None = None
 
 
 class DemandeDetail(DemandeOut):
@@ -95,27 +104,6 @@ class DemandeDetailAdmin(DemandeDetail):
     pris_en_charge_par_email: str | None = None
 
 
-# Controlled state machine of a ticket. Keys are current states, values the
-# reachable states. Any other jump is rejected with a clear error.
-STATUTS_LISIBLES = {
-    "ouverte": "Ouverte",
-    "en_cours": "En cours de traitement",
-    "pieces_demandees": "Pièces demandées",
-    "attente_membre": "En attente de votre réponse",
-    "en_validation": "En validation",
-    "resolue": "Résolue",
-    "refusee": "Refusée",
-}
-_TRANSITIONS: dict[str, set[str]] = {
-    "ouverte": {"en_cours", "pieces_demandees", "attente_membre", "resolue", "refusee"},
-    "en_cours": {"pieces_demandees", "attente_membre", "en_validation", "resolue", "refusee"},
-    "pieces_demandees": {"en_cours", "en_validation", "resolue", "refusee"},
-    "attente_membre": {"en_cours", "resolue", "refusee"},
-    "en_validation": {"en_cours", "resolue", "refusee"},
-    # Reopening a closed ticket is an explicit admin decision.
-    "resolue": {"en_cours"},
-    "refusee": {"en_cours"},
-}
 
 
 def _numero(r: dict[str, object]) -> str:
@@ -139,6 +127,7 @@ def _demande_row(r: dict[str, object]) -> DemandeOut:
         nb_messages=int(r.get("nb_messages") or 0),
         pris_en_charge_le=r.get("pris_en_charge_le"),  # type: ignore[arg-type]
         clos_le=r.get("clos_le"),  # type: ignore[arg-type]
+        echeance_reponse=r.get("echeance_reponse"),  # type: ignore[arg-type]
     )
 
 
@@ -191,6 +180,22 @@ def _prise_en_charge(demande_id: str, user: UserMe) -> bool:
     return bool(row)
 
 
+def _delai_deblocage_defaut(role: str | None) -> int:
+    """Central response window (days) after an unlock. The business source
+    mentions both 14 and 30 days; until that arbitration lands the value lives
+    in the admin parameter deblocage_delai_jours (seeded at 30, the least
+    destructive default) and is never hardcoded."""
+    row = db.fetch_one(
+        "SELECT (valeur #>> '{}')::int AS j FROM parametre WHERE cle = 'deblocage_delai_jours'",
+        (),
+        role=role,
+    )
+    try:
+        return max(1, min(90, int((row or {}).get("j") or 30)))
+    except (TypeError, ValueError):
+        return 30
+
+
 def _system_message(demande_id: str, role: str | None, corps: str) -> None:
     """Timeline entry inside the thread for every workflow event."""
     db.execute(
@@ -220,7 +225,7 @@ def _notify_ticket(demande_id: str, role: str | None, titre: str, corps: str) ->
 
 def _messages(demande_id: str, role: str) -> list[MessageOut]:
     rows = db.fetch_all(
-        "SELECT id, auteur_type, auteur_nom, corps, cree_le, document_id FROM demande_message "
+        "SELECT id, auteur_type, auteur_nom, corps, cree_le, document_id, lu_par_membre_le, lu_par_staff_le FROM demande_message "
         "WHERE demande_id = %s ORDER BY cree_le ASC",
         (demande_id,),
         role=role,
@@ -238,76 +243,6 @@ def _messages(demande_id: str, role: str) -> list[MessageOut]:
     ]
 
 
-# --- Structured request catalog ---------------------------------------------
-# Grounded in the real member-facing features (profile, identity documents,
-# attachment to commissions/tribes, card and QR, activities and presence,
-# notifications and language, account and security). Every category keeps an
-# "autre" entry so no need is ever blocked. Messages are prewritten so members
-# never have to compose from scratch; identity is attached server-side.
-CATALOGUE: list[dict[str, object]] = [
-    {"categorie": "profil", "libelle": "Mon profil et mon identité", "sous": [
-        {"cle": "correction_nom", "libelle": "Corriger mon nom ou mes prénoms", "sujet": "Correction de mon nom ou de mes prénoms",
-         "message": "Bonjour, je souhaite faire corriger mon nom ou mes prénoms sur mon profil. Voici la correction attendue : ", "piece": "recommandée"},
-        {"cle": "correction_naissance", "libelle": "Corriger ma date de naissance", "sujet": "Correction de ma date de naissance",
-         "message": "Bonjour, ma date de naissance est incorrecte sur mon profil. La date exacte est : ", "piece": "recommandée"},
-        {"cle": "photo", "libelle": "Changer ma photo d'identité", "sujet": "Changement de ma photo d'identité",
-         "message": "Bonjour, je souhaite mettre à jour ma photo d'identité. Merci de m'indiquer la marche à suivre ou de débloquer le remplacement.", "piece": "facultative"},
-        {"cle": "autre", "libelle": "Autre demande sur mon profil", "sujet": "Demande concernant mon profil",
-         "message": "Bonjour, j'ai une demande concernant mon profil : ", "piece": "facultative"},
-    ]},
-    {"categorie": "coordonnees", "libelle": "Mes coordonnées", "sous": [
-        {"cle": "telephone", "libelle": "Mettre à jour mon téléphone", "sujet": "Mise à jour de mon numéro de téléphone",
-         "message": "Bonjour, mon numéro de téléphone a changé. Le nouveau numéro est : ", "piece": "facultative"},
-        {"cle": "adresse", "libelle": "Mettre à jour ma ville ou mon adresse", "sujet": "Mise à jour de ma localisation",
-         "message": "Bonjour, ma localisation a changé. Ma nouvelle ville (et mon quartier, si utile) est : ", "piece": "facultative"},
-        {"cle": "email", "libelle": "Changer mon adresse e-mail", "sujet": "Changement de mon adresse e-mail",
-         "message": "Bonjour, je souhaite changer l'adresse e-mail de mon compte. La nouvelle adresse est : ", "piece": "facultative"},
-        {"cle": "autre", "libelle": "Autre demande sur mes coordonnées", "sujet": "Demande concernant mes coordonnées",
-         "message": "Bonjour, j'ai une demande concernant mes coordonnées : ", "piece": "facultative"},
-    ]},
-    {"categorie": "rattachement", "libelle": "Commission, tribu, intendance", "sous": [
-        {"cle": "commission", "libelle": "Changer de commission", "sujet": "Demande de changement de commission",
-         "message": "Bonjour, je souhaite changer de commission. Commission souhaitée et raison : ", "piece": "facultative"},
-        {"cle": "tribu", "libelle": "Corriger ma tribu", "sujet": "Correction de ma tribu",
-         "message": "Bonjour, ma tribu n'est pas correcte sur mon profil. Ma tribu est : ", "piece": "facultative"},
-        {"cle": "intendance", "libelle": "Changer d'intendance ou de groupe", "sujet": "Changement d'intendance ou de groupe",
-         "message": "Bonjour, je souhaite être rattaché(e) à une autre intendance ou un autre groupe : ", "piece": "facultative"},
-        {"cle": "autre", "libelle": "Autre demande de rattachement", "sujet": "Demande concernant mon rattachement",
-         "message": "Bonjour, j'ai une demande concernant mon rattachement : ", "piece": "facultative"},
-    ]},
-    {"categorie": "documents", "libelle": "Documents et pièces", "sous": [
-        {"cle": "remplacer_piece", "libelle": "Remplacer ma pièce d'identité", "sujet": "Remplacement de ma pièce d'identité",
-         "message": "Bonjour, je souhaite remplacer la pièce d'identité fournie lors de mon inscription (nouvelle pièce, renouvellement ou meilleure qualité).", "piece": "recommandée"},
-        {"cle": "attestation", "libelle": "Question sur mon attestation signée", "sujet": "Question sur mon attestation d'engagement",
-         "message": "Bonjour, j'ai une question concernant mon attestation d'engagement signée : ", "piece": "facultative"},
-        {"cle": "autre", "libelle": "Autre demande sur mes documents", "sujet": "Demande concernant mes documents",
-         "message": "Bonjour, j'ai une demande concernant mes documents : ", "piece": "facultative"},
-    ]},
-    {"categorie": "carte", "libelle": "Ma carte et mon QR", "sous": [
-        {"cle": "qr", "libelle": "Problème avec mon QR ou ma carte", "sujet": "Problème avec ma carte ou mon QR",
-         "message": "Bonjour, je rencontre un problème avec ma carte de membre ou mon QR (affichage, scan refusé...). Voici ce qui se passe : ", "piece": "facultative"},
-        {"cle": "autre", "libelle": "Autre demande sur ma carte", "sujet": "Demande concernant ma carte",
-         "message": "Bonjour, j'ai une demande concernant ma carte de membre : ", "piece": "facultative"},
-    ]},
-    {"categorie": "activites", "libelle": "Activités et présences", "sous": [
-        {"cle": "presence", "libelle": "Corriger une présence manquante", "sujet": "Correction d'une présence",
-         "message": "Bonjour, j'ai participé à une activité mais ma présence n'apparaît pas dans mon historique. Activité et date : ", "piece": "facultative"},
-        {"cle": "autre", "libelle": "Autre demande sur les activités", "sujet": "Demande concernant les activités",
-         "message": "Bonjour, j'ai une demande concernant les activités : ", "piece": "facultative"},
-    ]},
-    {"categorie": "compte", "libelle": "Compte, sécurité et notifications", "sous": [
-        {"cle": "connexion", "libelle": "Problème de connexion", "sujet": "Problème de connexion à mon compte",
-         "message": "Bonjour, je rencontre un problème pour me connecter à mon compte. Voici ce qui se passe : ", "piece": "facultative"},
-        {"cle": "notifications", "libelle": "Notifications ou langue", "sujet": "Demande sur mes notifications ou ma langue",
-         "message": "Bonjour, j'ai une demande concernant mes notifications (canaux, fréquence) ou la langue de mon compte : ", "piece": "facultative"},
-        {"cle": "autre", "libelle": "Autre demande sur mon compte", "sujet": "Demande concernant mon compte",
-         "message": "Bonjour, j'ai une demande concernant mon compte : ", "piece": "facultative"},
-    ]},
-    {"categorie": "autre", "libelle": "Autre demande", "sous": [
-        {"cle": "autre", "libelle": "Demande libre", "sujet": "Demande à l'administration",
-         "message": "Bonjour, je souhaite contacter l'administration au sujet suivant : ", "piece": "facultative"},
-    ]},
-]
 
 
 @router.get("/membres/me/demandes/catalogue")
@@ -324,7 +259,7 @@ def my_demandes(ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) 
     membre_id, role, _ = ctx
     rows = db.fetch_all(
         """
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le,
+        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
                (SELECT count(*) FROM demande_message m WHERE m.demande_id = d.id) AS nb_messages
         FROM demande d WHERE d.membre_id = %s ORDER BY d.maj_le DESC
         """,
@@ -344,7 +279,7 @@ def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depe
     )
     auteur = (nom_row["nom"] if nom_row and nom_row.get("nom") else "Membre") or "Membre"
     created = db.execute(
-        "INSERT INTO demande (membre_id, type, sujet, champ_concerne, categorie, sous_categorie) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le",
+        "INSERT INTO demande (membre_id, type, sujet, champ_concerne, categorie, sous_categorie) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse",
         (membre_id, payload.type, payload.sujet, payload.champ_concerne, payload.categorie or payload.type, payload.sous_categorie),
         role=role,
     )
@@ -367,12 +302,20 @@ def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depe
 def my_demande(demande_id: str, ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) -> DemandeDetail:
     membre_id, role, _ = ctx
     row = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le FROM demande WHERE id = %s AND membre_id = %s",
+        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s AND membre_id = %s",
         (demande_id, membre_id),
         role=role,
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
+    # Read receipt: opening the conversation is the read event for everything
+    # the administration (or the system) wrote. Idempotent by construction.
+    db.execute(
+        "UPDATE demande_message SET lu_par_membre_le = now() "
+        "WHERE demande_id = %s AND auteur_type IN ('staff', 'systeme') AND lu_par_membre_le IS NULL",
+        (demande_id,),
+        role=role,
+    )
     return DemandeDetail(**_demande_row(row).model_dump(), messages=_messages(demande_id, role))
 
 
@@ -398,7 +341,7 @@ def my_demande_reply(
     # A member answer to a documents/clarification request puts the ticket back
     # in the admin court, and the timeline says so.
     if str(owns.get("statut")) in ("pieces_demandees", "attente_membre"):
-        db.execute("UPDATE demande SET statut = 'en_cours' WHERE id = %s", (demande_id,), role=role)
+        db.execute("UPDATE demande SET statut = 'en_cours', echeance_reponse = NULL WHERE id = %s", (demande_id,), role=role)
         _system_message(demande_id, role, "Réponse du membre reçue. La demande repasse en cours de traitement.")
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="message not sent")
@@ -434,7 +377,7 @@ def admin_demandes(
         params.extend([f"%{q}%", f"%{q}%"])
     rows = db.fetch_all(
         f"""
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le,
+        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
                trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre_nom,
                (SELECT count(*) FROM demande_message dm WHERE dm.demande_id = d.id) AS nb_messages
         FROM demande d JOIN membre m ON m.id = d.membre_id
@@ -451,7 +394,7 @@ def admin_demandes(
 def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> DemandeDetailAdmin:
     row = db.fetch_one(
         """
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le,
+        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
                trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre_nom,
                u.email AS agent_email
         FROM demande d JOIN membre m ON m.id = d.membre_id
@@ -463,6 +406,12 @@ def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lectu
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
+    db.execute(
+        "UPDATE demande_message SET lu_par_staff_le = now() "
+        "WHERE demande_id = %s AND auteur_type = 'membre' AND lu_par_staff_le IS NULL",
+        (demande_id,),
+        role=user.role,
+    )
     return DemandeDetailAdmin(
         **_demande_row(row).model_dump(),
         messages=_messages(demande_id, user.role),
@@ -512,7 +461,7 @@ def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(req
                        "Votre demande a été prise en charge par l'administration. Elle est maintenant en cours de traitement.")
         audit.log(user.id, user.role, "demande_prise_en_charge", "demande", demande_id, {})
     fresh = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le FROM demande WHERE id = %s",
+        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s",
         (demande_id,), role=user.role,
     )
     if not fresh:
@@ -548,7 +497,7 @@ def admin_demander_piece(
                    "Ouvrez la demande dans l'application, répondez-y et joignez le document demandé.")
     audit.log(user.id, user.role, "demande_piece_requise", "demande", demande_id, {"description": payload.description})
     fresh = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le FROM demande WHERE id = %s",
+        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s",
         (demande_id,), role=user.role,
     )
     return _demande_row(fresh or row)
@@ -599,20 +548,70 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
         audit.log(user.id, user.role, "demande_statut", "demande", demande_id,
                   {"de": str(current["statut"]), "vers": payload.statut, "motif": payload.motif})
     if payload.champs_deverrouilles is not None:
-        owner = db.fetch_one("SELECT membre_id FROM demande WHERE id = %s", (demande_id,), role=user.role)
-        if owner:
-            db.execute(
-                "UPDATE membre SET champs_deverrouilles = %s WHERE id = %s",
-                (payload.champs_deverrouilles, str(owner["membre_id"])),
+        from .deblocage import ELEMENTS, libelles
+
+        inconnus = [c for c in payload.champs_deverrouilles if c not in ELEMENTS]
+        if inconnus:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"éléments inconnus du catalogue de déblocage : {', '.join(inconnus)}")
+        owner = db.fetch_one("SELECT membre_id, statut FROM demande WHERE id = %s", (demande_id,), role=user.role)
+        if not owner:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
+        if str(owner["statut"]) in ("resolue", "refusee"):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="request is closed")
+        db.execute(
+            "UPDATE membre SET champs_deverrouilles = %s WHERE id = %s",
+            (payload.champs_deverrouilles, str(owner["membre_id"])),
+            role=user.role,
+        )
+        if payload.champs_deverrouilles:
+            # Grant a response window (per-request override, else the central
+            # admin parameter; the 14-vs-30-day business arbitration is pending,
+            # so the value is configurable, never hardcoded).
+            delai = payload.delai_jours or _delai_deblocage_defaut(user.role)
+            echeance = db.fetch_one(
+                "UPDATE demande SET statut = 'attente_membre', echeance_reponse = now() + make_interval(days => %s), maj_le = now() "
+                "WHERE id = %s RETURNING to_char(echeance_reponse, 'DD/MM/YYYY') AS d",
+                (delai, demande_id),
                 role=user.role,
             )
-        _notify_member(demande_id, user.role, "Modification autorisée", "L'administration a débloqué la modification demandée.")
+            date_limite = (echeance or {}).get("d") or ""
+            noms = ", ".join(libelles(payload.champs_deverrouilles))
+            if _prise_en_charge(demande_id, user):
+                _system_message(demande_id, user.role, "Demande prise en charge par l'administration.")
+            _system_message(
+                demande_id, user.role,
+                f"Éléments débloqués pour correction : {noms}. Faites la mise à jour demandée puis répondez dans cette "
+                f"demande avant le {date_limite}. Sans retour de votre part à cette date, la demande sera clôturée "
+                "automatiquement sans suite.",
+            )
+            _notify_ticket(demande_id, user.role, "Correction attendue",
+                           f"L'administration a débloqué : {noms}. Faites la mise à jour puis répondez dans la demande "
+                           f"avant le {date_limite}.")
+            audit.log(user.id, user.role, "deblocage_elements", "demande", demande_id,
+                      {"elements": payload.champs_deverrouilles, "delai_jours": delai})
+        else:
+            # Explicit re-lock (empty list): the window closes with it.
+            db.execute("UPDATE demande SET echeance_reponse = NULL, maj_le = now() WHERE id = %s", (demande_id,), role=user.role)
+            _system_message(demande_id, user.role, "Les éléments débloqués ont été reverrouillés par l'administration.")
+            audit.log(user.id, user.role, "reverrouillage_elements", "demande", demande_id, {})
     row = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le FROM demande WHERE id = %s", (demande_id,), role=user.role
+        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s", (demande_id,), role=user.role
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
     return _demande_row(row)
+
+
+@router.get("/admin/deblocage/elements")
+def catalogue_deblocage(user: Annotated[UserMe, Depends(require_lecture)]) -> list[dict[str, str]]:
+    """Extensible catalog of unlockable elements (fields, photo, documents)."""
+    from .deblocage import ELEMENTS
+
+    return [
+        {"cle": cle, "libelle": meta["libelle"], "type": meta["type"], "sensibilite": meta["sensibilite"]}
+        for cle, meta in ELEMENTS.items()
+    ]
 
 
 # --- Final validation of member data modifications -------------------------
