@@ -37,6 +37,7 @@ class MembreProfile(BaseModel):
     indicatif_telephone: str | None = None
     groupe: str | None = None
     photo_url: str | None = None
+    photo_pending: bool = False
     statut: str
     verifie: bool
     genre: str | None = None

@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from . import audit, db
+from . import audit, db, identifiants
 from .auth import current_user
 from .schemas import UserMe
 
@@ -69,8 +69,8 @@ def demander_suppression(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> d
     if existing:
         return {"ok": True, "deja_demandee": True}
     created = db.execute(
-        "INSERT INTO demande (membre_id, type, sujet, statut) VALUES (%s, 'autre', %s, 'ouverte') RETURNING id",
-        (membre_id, "Demande de suppression de compte (RGPD)"),
+        "INSERT INTO demande (membre_id, type, sujet, statut, reference) VALUES (%s, 'autre', %s, 'ouverte', %s) RETURNING id",
+        (membre_id, "Demande de suppression de compte (RGPD)", identifiants.next_reference(role)),
         role=role,
     )
     if not created:

@@ -12,7 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, identifiants
 from .auth import current_user
 from .demandes_catalogue import _TRANSITIONS, CATALOGUE, STATUTS_LISIBLES
 from .deps import require_roles
@@ -107,6 +107,11 @@ class DemandeDetailAdmin(DemandeDetail):
 
 
 def _numero(r: dict[str, object]) -> str:
+    """Human reference of a request. Prefers the durable DEM-YYYY-NNNNNN
+    reference; falls back to the legacy DEM-NNNNNN for rows not yet backfilled."""
+    ref = r.get("reference")
+    if ref:
+        return str(ref)
     n = r.get("numero")
     return f"DEM-{int(n):06d}" if n is not None else ""
 
@@ -211,10 +216,10 @@ def _notify_ticket(demande_id: str, role: str | None, titre: str, corps: str) ->
     try:
         from . import channels
 
-        owner = db.fetch_one("SELECT membre_id, numero FROM demande WHERE id = %s", (demande_id,), role=None)
+        owner = db.fetch_one("SELECT membre_id, numero, reference FROM demande WHERE id = %s", (demande_id,), role=None)
         if not owner:
             return
-        num = f"DEM-{int(owner['numero']):06d}" if owner.get("numero") is not None else ""
+        num = _numero(owner)
         channels.dispatch(
             str(owner["membre_id"]), role,
             channels.Message(titre=f"{titre} ({num})" if num else titre, corps_text=corps, type_notif="demande"),
@@ -261,7 +266,7 @@ def my_demandes(ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) 
     membre_id, role, _ = ctx
     rows = db.fetch_all(
         """
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
+        SELECT d.id, d.numero, d.reference, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
                (SELECT count(*) FROM demande_message m WHERE m.demande_id = d.id) AS nb_messages
         FROM demande d WHERE d.membre_id = %s ORDER BY d.maj_le DESC
         """,
@@ -280,9 +285,10 @@ def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depe
         role=role,
     )
     auteur = (nom_row["nom"] if nom_row and nom_row.get("nom") else "Membre") or "Membre"
+    reference = identifiants.next_reference(role)
     created = db.execute(
-        "INSERT INTO demande (membre_id, type, sujet, champ_concerne, categorie, sous_categorie) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse",
-        (membre_id, payload.type, payload.sujet, payload.champ_concerne, payload.categorie or payload.type, payload.sous_categorie),
+        "INSERT INTO demande (membre_id, type, sujet, champ_concerne, categorie, sous_categorie, reference) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id, numero, reference, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse",
+        (membre_id, payload.type, payload.sujet, payload.champ_concerne, payload.categorie or payload.type, payload.sous_categorie, reference),
         role=role,
     )
     if not created:
@@ -304,7 +310,7 @@ def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depe
 def my_demande(demande_id: str, ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) -> DemandeDetail:
     membre_id, role, _ = ctx
     row = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s AND membre_id = %s",
+        "SELECT id, numero, reference, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s AND membre_id = %s",
         (demande_id, membre_id),
         role=role,
     )
@@ -379,7 +385,7 @@ def admin_demandes(
         params.extend([f"%{q}%", f"%{q}%"])
     rows = db.fetch_all(
         f"""
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
+        SELECT d.id, d.numero, d.reference, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
                trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre_nom,
                (SELECT count(*) FROM demande_message dm WHERE dm.demande_id = d.id) AS nb_messages
         FROM demande d JOIN membre m ON m.id = d.membre_id
@@ -396,7 +402,7 @@ def admin_demandes(
 def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> DemandeDetailAdmin:
     row = db.fetch_one(
         """
-        SELECT d.id, d.numero, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
+        SELECT d.id, d.numero, d.reference, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
                trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre_nom,
                u.email AS agent_email
         FROM demande d JOIN membre m ON m.id = d.membre_id
@@ -463,7 +469,7 @@ def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(req
                        "Votre demande a été prise en charge par l'administration. Elle est maintenant en cours de traitement.")
         audit.log(user.id, user.role, "demande_prise_en_charge", "demande", demande_id, {})
     fresh = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s",
+        "SELECT id, numero, reference, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s",
         (demande_id,), role=user.role,
     )
     if not fresh:
@@ -499,7 +505,7 @@ def admin_demander_piece(
                    "Ouvrez la demande dans l'application, répondez-y et joignez le document demandé.")
     audit.log(user.id, user.role, "demande_piece_requise", "demande", demande_id, {"description": payload.description})
     fresh = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s",
+        "SELECT id, numero, reference, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s",
         (demande_id,), role=user.role,
     )
     return _demande_row(fresh or row)
@@ -567,6 +573,15 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
             role=user.role,
         )
         if payload.champs_deverrouilles:
+            # A new cycle opens: drop any proposal left pending from a previous
+            # cycle so the single-pending-per-request invariant (and its unique
+            # index) always holds for the fresh submission.
+            db.execute(
+                "UPDATE modification_membre SET statut = 'rejetee', decide_le = now() "
+                "WHERE demande_id = %s AND statut = 'en_attente'",
+                (demande_id,),
+                role=user.role,
+            )
             # Grant a response window (per-request override, else the central
             # admin parameter; the 14-vs-30-day business arbitration is pending,
             # so the value is configurable, never hardcoded).
@@ -598,7 +613,7 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
             _system_message(demande_id, user.role, "Les éléments débloqués ont été reverrouillés par l'administration.")
             audit.log(user.id, user.role, "reverrouillage_elements", "demande", demande_id, {})
     row = db.fetch_one(
-        "SELECT id, numero, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s", (demande_id,), role=user.role
+        "SELECT id, numero, reference, type, sujet, champ_concerne, statut, categorie, sous_categorie, motif_cloture, cree_le, pris_en_charge_le, clos_le, echeance_reponse FROM demande WHERE id = %s", (demande_id,), role=user.role
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
@@ -660,50 +675,118 @@ def admin_demande_modifications(demande_id: str, user: Annotated[UserMe, Depends
     return out
 
 
+@router.get("/admin/demandes/{demande_id}/photo-pending")
+def admin_photo_pending(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> dict[str, str | None]:
+    """Signed preview of a replacement photo the member staged on this request,
+    so the administration reviews the actual new photo before validating."""
+    from . import storage
+    from .config import settings
+
+    owner = db.fetch_one(
+        "SELECT m.photo_pending_url AS p FROM demande d JOIN membre m ON m.id = d.membre_id WHERE d.id = %s",
+        (demande_id,),
+        role=user.role,
+    )
+    path = (owner or {}).get("p")
+    if not path:
+        return {"url": None}
+    try:
+        return {"url": storage.signed_download_url(settings.storage_bucket_photos, str(path))}
+    except storage.StorageError:
+        return {"url": None}
+
+
 @router.post("/admin/demandes/{demande_id}/modifications/decision")
 def admin_decide_modification(
     demande_id: str, payload: ModifDecision, user: Annotated[UserMe, Depends(require_staff)]
 ) -> dict[str, object]:
-    """Give the final validation on a pending member modification.
+    """Final validation of the member's single modification submission.
 
-    On 'valider' the proposed values are committed to the member record, the
-    unlocked fields are re-locked and the request is resolved. On 'rejeter'
-    nothing is committed. The member is notified either way.
+    A submission bundles the edited text fields (if any) AND a staged replacement
+    photo (if any); this decides on the whole bundle at once, and also handles a
+    photo-only submission (no modification_membre row). On 'valider' the fields
+    are committed and the staged photo is promoted to the live photo (copied onto
+    the stable live path, the staging object is removed). On 'rejeter' nothing is
+    committed and the staged photo is discarded. Either way the unlock is cleared
+    and the member is notified.
     """
     if payload.decision not in ("valider", "rejeter"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="decision must be valider or rejeter")
+    dem = db.fetch_one("SELECT membre_id FROM demande WHERE id = %s", (demande_id,), role=user.role)
+    if not dem:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="request not found")
+    membre_id = str(dem["membre_id"])
     mod = db.fetch_one(
-        "SELECT id, membre_id, valeurs FROM modification_membre "
+        "SELECT id, valeurs FROM modification_membre "
         "WHERE demande_id = %s AND statut = 'en_attente' ORDER BY propose_le DESC LIMIT 1",
         (demande_id,),
         role=user.role,
     )
-    if not mod:
+    membre = db.fetch_one("SELECT photo_pending_url FROM membre WHERE id = %s", (membre_id,), role=user.role)
+    photo_pending = (membre or {}).get("photo_pending_url")
+    if not mod and not photo_pending:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no pending modification")
-    membre_id = str(mod["membre_id"])
     if payload.decision == "valider":
-        applied = {k: v for k, v in (mod["valeurs"] or {}).items() if k in _COMMITTABLE_FIELDS}
-        if applied:
-            sets = ", ".join(f"{k} = %s" for k in applied)
-            db.execute(f"UPDATE membre SET {sets} WHERE id = %s", (*applied.values(), membre_id), role=user.role)
-        db.execute(
-            "UPDATE modification_membre SET statut = 'validee', decide_le = now(), decide_par = %s WHERE id = %s",
-            (user.id, str(mod["id"])),
-            role=user.role,
-        )
+        applied: dict[str, object] = {}
+        if mod:
+            applied = {k: v for k, v in (mod["valeurs"] or {}).items() if k in _COMMITTABLE_FIELDS}
+            if applied:
+                sets = ", ".join(f"{k} = %s" for k in applied)
+                db.execute(f"UPDATE membre SET {sets} WHERE id = %s", (*applied.values(), membre_id), role=user.role)
+            db.execute(
+                "UPDATE modification_membre SET statut = 'validee', decide_le = now(), decide_par = %s WHERE id = %s",
+                (user.id, str(mod["id"])),
+                role=user.role,
+            )
+        photo_promue = _promouvoir_photo_pending(membre_id, str(photo_pending), user.role) if photo_pending else False
         db.execute("UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s", (membre_id,), role=user.role)
         db.execute("UPDATE demande SET statut = 'resolue', maj_le = now() WHERE id = %s", (demande_id,), role=user.role)
         _notify_member(demande_id, user.role, "Modification validée", "Votre modification a été validée et enregistrée.")
-        return {"ok": True, "statut": "validee", "champs": list(applied)}
-    db.execute(
-        "UPDATE modification_membre SET statut = 'rejetee', decide_le = now(), decide_par = %s WHERE id = %s",
-        (user.id, str(mod["id"])),
-        role=user.role,
-    )
+        return {"ok": True, "statut": "validee", "champs": list(applied), "photo": photo_promue}
+    if mod:
+        db.execute(
+            "UPDATE modification_membre SET statut = 'rejetee', decide_le = now(), decide_par = %s WHERE id = %s",
+            (user.id, str(mod["id"])),
+            role=user.role,
+        )
+    if photo_pending:
+        from . import storage
+        from .config import settings
+
+        db.execute(
+            "UPDATE membre SET photo_pending_url = NULL, photo_pending_phash = NULL WHERE id = %s",
+            (membre_id,),
+            role=user.role,
+        )
+        storage.delete_object(settings.storage_bucket_photos, str(photo_pending))
     db.execute("UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s", (membre_id,), role=user.role)
     db.execute("UPDATE demande SET statut = 'refusee', maj_le = now() WHERE id = %s", (demande_id,), role=user.role)
     _notify_member(demande_id, user.role, "Modification refusée", "Votre modification n'a pas été validée. Contactez l'administration.")
     return {"ok": True, "statut": "rejetee"}
+
+
+def _promouvoir_photo_pending(membre_id: str, pending_path: str, role: str) -> bool:
+    """Promote a staged replacement photo to the live photo. The live photo lives
+    at a stable path ({membre}/photo.jpg); the staged bytes are copied onto it and
+    the staging object removed, so the stable path invariant holds for the next
+    replacement. Returns True on success, False if the staged object is gone."""
+    from . import storage
+    from .config import settings
+
+    live_path = f"{membre_id}/photo.jpg"
+    try:
+        data = storage.download_bytes(settings.storage_bucket_photos, pending_path)
+        storage.upload_bytes(settings.storage_bucket_photos, live_path, data, "image/jpeg")
+    except storage.StorageError:
+        return False
+    storage.delete_object(settings.storage_bucket_photos, pending_path)
+    db.execute(
+        "UPDATE membre SET photo_url = %s, photo_phash = photo_pending_phash, "
+        "photo_pending_url = NULL, photo_pending_phash = NULL WHERE id = %s",
+        (live_path, membre_id),
+        role=role,
+    )
+    return True
 
 
 def _notify_member(demande_id: str, role: str, titre: str, corps: str) -> None:

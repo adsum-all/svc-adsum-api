@@ -13,7 +13,7 @@ from typing import Annotated
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from . import audit, db
+from . import audit, db, identifiants
 from .deps import require_roles
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .schemas import (
@@ -38,21 +38,6 @@ require_membre_writer = require_roles(*MEMBRE_WRITERS)
 require_event_writer = require_roles(*EVENT_WRITERS)
 
 
-def _next_matricule(role: str) -> str:
-    """Return the next ADS-NNNNNN matricule, one above the current maximum."""
-    row = db.fetch_one(
-        """
-        SELECT COALESCE(MAX(CAST(SUBSTRING(matricule FROM 5) AS integer)), 0) AS last
-        FROM membre
-        WHERE matricule ~ '^ADS-[0-9]{6}$'
-        """,
-        (),
-        role=role,
-    )
-    last = row["last"] if row else 0
-    return f"ADS-{last + 1:06d}"
-
-
 def _read_membre(membre_id: str, role: str) -> MembreProfile:
     row = db.fetch_one(
         f"SELECT {MEMBRE_PROFILE_SELECT} {MEMBRE_PROFILE_FROM} WHERE m.id = %s",
@@ -69,7 +54,7 @@ def create_membre(
     payload: CreateMembre,
     user: Annotated[UserMe, Depends(require_membre_writer)],
 ) -> MembreProfile:
-    matricule = payload.matricule or _next_matricule(user.role)
+    matricule = payload.matricule or identifiants.next_matricule(user.role)
     data = payload.model_dump(exclude_unset=True, exclude={"matricule"})
     data["matricule"] = matricule
     data.setdefault("statut", "actif")
