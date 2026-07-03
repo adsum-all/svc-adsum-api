@@ -61,10 +61,29 @@ def _safe_ext(ext: str, allowed: set[str]) -> str:
 
 @router.post("/photo/upload-url")
 def photo_upload_url(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, str]:
-    membre_id, _ = ctx
+    """Signed upload URL for the identity photo.
+
+    The unlock rule is enforced HERE, before any signature is issued: replacing
+    an existing photo requires the administration to have unlocked
+    'photo_identite'. The signature then allows overwrite (upsert), because the
+    photo lives at a stable path; without upsert Supabase refuses to sign
+    towards an existing object, which surfaced as 'Upload indisponible'."""
+    membre_id, role = ctx
+    etat = db.fetch_one(
+        "SELECT photo_url, coalesce(champs_deverrouilles, '{}') AS deverrouilles FROM membre WHERE id = %s",
+        (membre_id,),
+        role=role,
+    )
+    deja = bool((etat or {}).get("photo_url"))
+    deverrouille = "photo_identite" in ((etat or {}).get("deverrouilles") or [])
+    if deja and not deverrouille:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Le remplacement de la photo d'identité doit être débloqué par l'administration : ouvrez une demande « Changer ma photo d'identité ».",
+        )
     path = f"{membre_id}/photo.jpg"
     try:
-        return storage.signed_upload_url(settings.storage_bucket_photos, path)
+        return storage.signed_upload_url(settings.storage_bucket_photos, path, upsert=deja)
     except storage.StorageError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="storage unavailable") from exc
 
