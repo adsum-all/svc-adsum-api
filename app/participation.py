@@ -402,14 +402,18 @@ def participation_global(user: Annotated[UserMe, Depends(require_staff)]) -> dic
         (),
         role=role,
     )
-    # Global split.
+    # Global split, with the same population definitions as the per-event
+    # statistics: a scan is proven on-site presence; online is a declared
+    # modality, never inferred from the submission channel.
     split = db.fetch_one(
         f"""
         SELECT count(*) FILTER (WHERE {_COMPTE} AND statut = 'present') AS presents,
                count(*) FILTER (WHERE {_COMPTE} AND statut = 'partiel') AS partiels,
                count(*) FILTER (WHERE {_COMPTE} AND statut = 'absent') AS absents,
                count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source = 'scan') AS presentiel,
-               count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source = 'declaration') AS en_ligne
+               count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite = 'presentiel') AS presentiel_declare,
+               count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND modalite = 'en_ligne') AS en_ligne,
+               count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite IS NULL) AS modalite_inconnue
         FROM participation
         """,
         (),
@@ -451,7 +455,9 @@ def participation_global(user: Annotated[UserMe, Depends(require_staff)]) -> dic
             "partiels": int(split.get("partiels") or 0),
             "absents": int(split.get("absents") or 0),
             "presentiel": int(split.get("presentiel") or 0),
+            "presentiel_declare": int(split.get("presentiel_declare") or 0),
             "en_ligne": int(split.get("en_ligne") or 0),
+            "modalite_inconnue": int(split.get("modalite_inconnue") or 0),
         },
         "serie_evenements": [
             {"id": str(r["id"]), "titre": r["titre"], "debut": r["debut"].isoformat() if r["debut"] else None, "volet": r["volet"],
