@@ -238,6 +238,8 @@ def _messages(demande_id: str, role: str) -> list[MessageOut]:
             corps=str(m["corps"]),
             cree_le=m["cree_le"],
             document_id=str(m["document_id"]) if m.get("document_id") else None,
+            lu_par_membre_le=m.get("lu_par_membre_le"),
+            lu_par_staff_le=m.get("lu_par_staff_le"),
         )
         for m in rows
     ]
