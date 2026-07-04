@@ -32,23 +32,23 @@ def test_normaliser_prenoms(raw: str, expected: str) -> None:
 @pytest.mark.parametrize(
     ("nom", "prenoms", "expected"),
     [
-        ("label", "shema emmanuel", "LABEL Shema Emmanuel"),
-        ("label", "shema emmanuel jean paul", "LABEL Shema Emmanuel"),  # capped at 2 given names
-        ("MARCHAND", "Sophie", "MARCHAND Sophie"),
+        ("label", "shema emmanuel", "Shema Emmanuel LABEL"),
+        ("label", "shema emmanuel jean paul", "Shema Emmanuel LABEL"),  # given names capped at 2
+        ("MARCHAND", "Sophie", "Sophie MARCHAND"),
         (None, "Sophie", "Sophie"),
         ("DUPONT", None, "DUPONT"),
         (None, None, ""),
     ],
 )
-def test_nom_affichage_never_endless_and_family_first(nom: str | None, prenoms: str | None, expected: str) -> None:
+def test_nom_affichage_never_endless_given_names_first(nom: str | None, prenoms: str | None, expected: str) -> None:
     assert identite.nom_affichage(nom, prenoms) == expected
 
 
 def test_nom_affichage_never_contains_a_function() -> None:
-    # The civil name is built only from family + given names; a function label
+    # The civil name is built only from given + family names; a function label
     # passed by mistake would only appear if concatenated elsewhere, never here.
     out = identite.nom_affichage("KONE", "Awa")
-    assert "Responsable" not in out and "Berger" not in out and out == "KONE Awa"
+    assert "Responsable" not in out and "Berger" not in out and out == "Awa KONE"
 
 
 @pytest.mark.parametrize(

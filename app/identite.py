@@ -75,15 +75,17 @@ def nom_affichage(
     prenoms: str | None,
     max_prenoms: int = MAX_PRENOMS_AFFICHES,
 ) -> str:
-    """Civil display name: ``NOM Prenom1 [Prenom2]`` (family name first, capped).
+    """Civil display name: ``Prenom1 [Prenom2] NOM`` (given names first, then the
+    family name in uppercase), capped so a member with many given names never
+    produces an endless title.
 
     Never includes any function, role or pastoral name. Returns whatever parts
-    exist (family name alone, or given names alone) rather than an empty string
+    exist (given names alone, or family name alone) rather than an empty string
     when possible.
     """
     fam = normaliser_nom(nom)
     prenoms_ok = liste_prenoms(prenoms)[: max(0, max_prenoms)]
-    return " ".join(part for part in [fam, *prenoms_ok] if part).strip()
+    return " ".join(part for part in [*prenoms_ok, fam] if part).strip()
 
 
 def nom_pastoral_affichage(genre: str | None, nom_pastoral: str | None) -> str | None:
