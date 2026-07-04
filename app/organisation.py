@@ -4,13 +4,14 @@ Gives the administration the freedom to build the community structure. Reads are
 open to staff; writes are reserved to super_admin and admin, under the per-role
 RLS policies (ADR-0002).
 """
+# ruff: noqa: E501
 from __future__ import annotations
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from . import db
+from . import audit, db
 from .deps import require_roles
 from .schemas import (
     BergerOut,
@@ -19,6 +20,7 @@ from .schemas import (
     CreateIntendance,
     CreateSousCommission,
     IntendanceOut,
+    SetPatriarche,
     SousCommissionOut,
     TribuOut,
     UserMe,
@@ -189,8 +191,56 @@ def create_sous_commission(
 
 @router.get("/tribus", response_model=list[TribuOut])
 def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOut]:
-    rows = db.fetch_all("SELECT id, nom, patriarche FROM tribu ORDER BY nom ASC", (), role=user.role)
-    return [TribuOut(id=str(r["id"]), nom=r["nom"], patriarche=r["patriarche"]) for r in rows]
+    rows = db.fetch_all(
+        "SELECT t.id, t.nom, t.patriarche, t.patriarche_membre_id, "
+        "COALESCE(NULLIF(pm.nom_affichage, ''), TRIM(COALESCE(pm.prenoms, '') || ' ' || COALESCE(pm.nom, ''))) AS patriarche_nom "
+        "FROM tribu t LEFT JOIN membre pm ON pm.id = t.patriarche_membre_id ORDER BY t.nom ASC",
+        (),
+        role=user.role,
+    )
+    return [
+        TribuOut(
+            id=str(r["id"]), nom=r["nom"], patriarche=r["patriarche"],
+            patriarche_membre_id=str(r["patriarche_membre_id"]) if r.get("patriarche_membre_id") else None,
+            patriarche_nom=(r.get("patriarche_nom") or None),
+        )
+        for r in rows
+    ]
+
+
+@router.put("/tribus/{tribu_id}/patriarche")
+def set_patriarche(
+    tribu_id: str, payload: SetPatriarche, user: Annotated[UserMe, Depends(require_writer)]
+) -> dict[str, object]:
+    """Assign or revoke the human patriarche of a tribe.
+
+    A tribe has at most one active patriarche (a single column), and the person
+    must belong to that tribe. Every appointment and revocation is written to the
+    history table and audited. Assigning a new titulaire closes the previous one.
+    """
+    tribu = db.fetch_one("SELECT id FROM tribu WHERE id = %s", (tribu_id,), role=user.role)
+    if not tribu:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tribe not found")
+    membre_id = payload.membre_id
+    if membre_id is not None:
+        membre = db.fetch_one("SELECT tribu_id FROM membre WHERE id = %s", (membre_id,), role=user.role)
+        if not membre:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+        if str(membre.get("tribu_id") or "") != str(tribu_id):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="le patriarche doit appartenir a cette tribu")
+    # Close the currently open history line for this tribe, then set the new
+    # titulaire (or clear it) and open a new history line when appointing.
+    db.execute("UPDATE tribu_patriarche_historique SET fin = now() WHERE tribu_id = %s AND fin IS NULL", (tribu_id,), role=user.role)
+    db.execute("UPDATE tribu SET patriarche_membre_id = %s WHERE id = %s", (membre_id, tribu_id), role=user.role)
+    if membre_id is not None:
+        db.execute(
+            "INSERT INTO tribu_patriarche_historique (tribu_id, membre_id, attribue_par, motif) VALUES (%s, %s, %s, %s)",
+            (tribu_id, membre_id, user.id, payload.motif),
+            role=user.role,
+        )
+    audit.log(user.id, user.role, "attribution_patriarche" if membre_id else "revocation_patriarche",
+              "tribu", tribu_id, {"membre_id": membre_id, "motif": payload.motif})
+    return {"ok": True}
 
 
 @router.get("/bergers", response_model=list[BergerOut])
