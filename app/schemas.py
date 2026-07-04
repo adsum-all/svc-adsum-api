@@ -287,21 +287,25 @@ class UpdateMembre(MembreFields):
 
 
 class CoordinationOut(BaseModel):
-    """A coordination row (top of the organizational hierarchy)."""
+    """A coordination row. Independent by default; parent is optional."""
 
     id: str
     nom: str
     description: str | None = None
     publie: bool = True
+    parent_id: str | None = None
+    parent: str | None = None
 
 
 class CreateCoordination(BaseModel):
     nom: str = Field(min_length=1)
     description: str | None = None
+    parent_id: str | None = None
 
 
 class IntendanceOut(BaseModel):
-    """An intendance row (geographic structure), with its coordination name."""
+    """An intendance row (geographic structure). Coordination and parent are
+    both optional: an intendance is an independent structure by default."""
 
     id: str
     nom: str
@@ -310,6 +314,8 @@ class IntendanceOut(BaseModel):
     coordination_id: str | None = None
     coordination: str | None = None
     publie: bool = True
+    parent_id: str | None = None
+    parent: str | None = None
 
 
 class CreateIntendance(BaseModel):
@@ -317,6 +323,7 @@ class CreateIntendance(BaseModel):
     pays: str | None = None
     ville: str | None = None
     coordination_id: str | None = None
+    parent_id: str | None = None
 
 
 class SousCommissionOut(BaseModel):
@@ -495,6 +502,7 @@ class StatistiquesOut(BaseModel):
     evenements_total: int
     presences_total: int
     commissions_total: int
+    missions_total: int = 0
     intendances_total: int
     par_commission: list[dict[str, object]]
     par_cheminement: list[dict[str, object]]
@@ -503,19 +511,24 @@ class StatistiquesOut(BaseModel):
 
 
 class CommissionOut(BaseModel):
-    """A commission row."""
+    """A structural unit under "Commission & mission" (a commission, a mission,
+    or any other kind), carrying its type so the interface can prefix the name."""
 
     id: str
     nom: str
     description: str | None = None
     publie: bool = True
+    type_organisation: str = "commission"
 
 
 class CreateCommission(BaseModel):
-    """Payload to create a commission."""
+    """Payload to create a unit. ``type_organisation`` is a lowercase slug
+    ('commission', 'mission', or a custom kind); the interface prefixes the name
+    with its capitalised label."""
 
     nom: str = Field(min_length=1)
     description: str | None = None
+    type_organisation: str = Field(default="commission", pattern="^[a-z][a-z_]{1,29}$")
 
 
 _UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"

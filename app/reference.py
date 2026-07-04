@@ -31,7 +31,17 @@ def tribus(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, str
 
 @router.get("/commissions")
 def commissions(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, str]]:
-    return _list("SELECT id, nom FROM commission WHERE publie ORDER BY nom ASC", user.role)
+    # Includes the unit type so the member registration dropdown can prefix
+    # "Commission" or "Mission", exactly as the back office does.
+    rows = db.fetch_all(
+        "SELECT id, nom, type_organisation FROM commission WHERE publie ORDER BY type_organisation, nom ASC",
+        (),
+        role=user.role,
+    )
+    return [
+        {"id": str(r["id"]), "nom": r["nom"], "type_organisation": r.get("type_organisation") or "commission"}
+        for r in rows
+    ]
 
 
 @router.get("/intendances")

@@ -190,12 +190,15 @@ def membre_gouvernance(
 @router.get("/commissions", response_model=list[CommissionOut])
 def list_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> list[CommissionOut]:
     rows = db.fetch_all(
-        "SELECT id, nom, description, publie FROM commission ORDER BY nom ASC",
+        "SELECT id, nom, description, publie, type_organisation FROM commission ORDER BY type_organisation, nom ASC",
         (),
         role=user.role,
     )
     return [
-        CommissionOut(id=str(r["id"]), nom=r["nom"], description=r["description"], publie=bool(r["publie"]))
+        CommissionOut(
+            id=str(r["id"]), nom=r["nom"], description=r["description"], publie=bool(r["publie"]),
+            type_organisation=r.get("type_organisation") or "commission",
+        )
         for r in rows
     ]
 
@@ -206,8 +209,9 @@ def create_commission(
     user: Annotated[UserMe, Depends(require_membre_writer)],
 ) -> CommissionOut:
     created = db.execute(
-        "INSERT INTO commission (nom, description) VALUES (%s, %s) RETURNING id, nom, description",
-        (payload.nom, payload.description),
+        "INSERT INTO commission (nom, description, type_organisation) VALUES (%s, %s, %s) "
+        "RETURNING id, nom, description, type_organisation",
+        (payload.nom, payload.description, payload.type_organisation),
         role=user.role,
     )
     if not created:
@@ -216,6 +220,7 @@ def create_commission(
         id=str(created["id"]),
         nom=created["nom"],
         description=created["description"],
+        type_organisation=created.get("type_organisation") or "commission",
     )
 
 
