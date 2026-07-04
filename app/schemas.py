@@ -38,6 +38,8 @@ class MembreProfile(BaseModel):
     groupe: str | None = None
     photo_url: str | None = None
     photo_pending: bool = False
+    photo_focus_x: int | None = None
+    photo_focus_y: int | None = None
     statut: str
     verifie: bool
     genre: str | None = None

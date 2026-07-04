@@ -36,6 +36,20 @@ def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
 class PhotoConfirm(BaseModel):
     path: str
     phash: str | None = None  # 16-hex-char dHash computed on the client
+    focus_x: int | None = None  # face focal point, 0-100 (CSS object-position X)
+    focus_y: int | None = None  # face focal point, 0-100 (CSS object-position Y)
+
+
+class PhotoFocus(BaseModel):
+    x: int  # 0-100
+    y: int  # 0-100
+
+
+def _clamp_focus(value: int | None) -> int | None:
+    """Keep a focal-point percentage inside 0-100, or drop it if absent."""
+    if value is None:
+        return None
+    return max(0, min(100, int(value)))
 
 
 class UploadUrlIn(BaseModel):
@@ -116,21 +130,40 @@ def photo_confirm(payload: PhotoConfirm, ctx: Annotated[tuple[str, str], Depends
             detail="Le remplacement de la photo d'identité doit être débloqué par l'administration : ouvrez une demande « Changer ma photo d'identité ».",
         )
     phash = _clean_phash(payload.phash)
+    fx, fy = _clamp_focus(payload.focus_x), _clamp_focus(payload.focus_y)
     if deja:
-        # Replacement: stage only. The single modification submission and the
-        # admin validation are what actually put the new photo live.
+        # Replacement: stage only (photo and its focal point). The single
+        # modification submission and the admin validation put the new photo live.
         db.execute(
-            "UPDATE membre SET photo_pending_url = %s, photo_pending_phash = %s WHERE id = %s",
-            (payload.path, phash, membre_id),
+            "UPDATE membre SET photo_pending_url = %s, photo_pending_phash = %s, "
+            "photo_pending_focus_x = %s, photo_pending_focus_y = %s WHERE id = %s",
+            (payload.path, phash, fx, fy, membre_id),
             role=role,
         )
     else:
-        # Onboarding first photo: goes live immediately.
+        # Onboarding first photo: goes live immediately, with its focal point.
         db.execute(
-            "UPDATE membre SET photo_url = %s, photo_phash = %s WHERE id = %s",
-            (payload.path, phash, membre_id),
+            "UPDATE membre SET photo_url = %s, photo_phash = %s, "
+            "photo_focus_x = %s, photo_focus_y = %s WHERE id = %s",
+            (payload.path, phash, fx, fy, membre_id),
             role=role,
         )
+
+
+@router.patch("/photo/focus", status_code=status.HTTP_204_NO_CONTENT)
+def photo_focus(payload: PhotoFocus, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> None:
+    """Adjust the framing (focal point) of the member's current photo.
+
+    This is display-only metadata (CSS object-position): it never changes the
+    photo itself, so a member can re-centre the face of an already-validated
+    photo at any time without a new administration validation."""
+    membre_id, role = ctx
+    fx, fy = _clamp_focus(payload.x), _clamp_focus(payload.y)
+    db.execute(
+        "UPDATE membre SET photo_focus_x = %s, photo_focus_y = %s WHERE id = %s",
+        (fx, fy, membre_id),
+        role=role,
+    )
 
 
 def _clean_phash(value: str | None) -> str | None:
