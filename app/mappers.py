@@ -20,7 +20,7 @@ MEMBRE_PROFILE_SELECT = (
     "m.commission_id, m.fonction_cle, m.fonction_confirmee, "
     "fh.libelle_h AS fonction_h, fh.libelle_f AS fonction_f, fh.libelle_n AS fonction_n, fh.est_vip AS fonction_vip, "
     "c.nom AS commission, i.nom AS intendance, bm.nom AS berger_nom, bm.prenoms AS berger_prenoms, "
-    "t.nom AS tribu, t.patriarche AS patriarche_biblique, "
+    "t.nom AS tribu, "
     "pm.nom_affiche AS patr_aff, pm.prenoms AS patr_prenoms, pm.nom AS patr_nom, "
     "co.nom AS coordination, "
     "cm.nom AS coord_nom, cm.prenoms AS coord_prenoms"
@@ -135,13 +135,12 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
         berger_referent_id=str(row["berger_referent_id"]) if row.get("berger_referent_id") else None,
         tribu=row.get("tribu"),
         tribu_id=str(row["tribu_id"]) if row.get("tribu_id") else None,
-        # "patriarche" is now the current human titulaire of the tribe (resolved),
-        # never the fixed biblical text; None means no patriarche is appointed.
+        # "patriarche" is the current human titulaire of the tribe (resolved),
+        # never a fixed text; None means no patriarche is appointed (shown blank).
         patriarche=(
             str(row["patr_aff"]) if row.get("patr_aff")
             else _join_name(row.get("patr_prenoms"), row.get("patr_nom"))
         ),
-        patriarche_biblique=row.get("patriarche_biblique"),
         coordination=row.get("coordination"),
         coordinateur=_join_name(row.get("coord_prenoms"), row.get("coord_nom")),
         champs_deverrouilles=list(row.get("champs_deverrouilles") or []),

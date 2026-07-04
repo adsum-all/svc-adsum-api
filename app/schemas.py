@@ -91,8 +91,7 @@ class MembreProfile(BaseModel):
     berger_referent_id: str | None = None
     tribu: str | None = None
     tribu_id: str | None = None
-    patriarche: str | None = None  # current human patriarche of the tribe, resolved
-    patriarche_biblique: str | None = None  # the tribe's biblical foundation (reference only)
+    patriarche: str | None = None  # current human patriarche of the tribe, resolved (blank if none)
     coordination: str | None = None
     coordinateur: str | None = None
     champs_deverrouilles: list[str] = []
