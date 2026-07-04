@@ -21,7 +21,7 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import db
+from . import db, identite
 from .auth import current_user
 from .demandes import _notify_ticket, _system_message, require_lecture, require_staff
 from .schemas import UserMe
@@ -257,6 +257,12 @@ def admin_decide_modification(
         applied: dict[str, object] = {}
         if mod:
             applied = {k: v for k, v in (mod["valeurs"] or {}).items() if k in _COMMITTABLE_FIELDS}
+            # Normalise the civil identity on commit: family name uppercase, given
+            # names title case (single source of truth in app/identite.py).
+            if applied.get("nom") is not None:
+                applied["nom"] = identite.normaliser_nom(str(applied["nom"]))
+            if applied.get("prenoms") is not None:
+                applied["prenoms"] = identite.normaliser_prenoms(str(applied["prenoms"]))
             if applied:
                 sets = ", ".join(f"{k} = %s" for k in applied)
                 db.execute(f"UPDATE membre SET {sets} WHERE id = %s", (*applied.values(), membre_id), role=user.role)

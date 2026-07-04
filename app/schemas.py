@@ -33,6 +33,16 @@ class MembreProfile(BaseModel):
     email: EmailStr
     nom: str | None = None
     prenoms: str | None = None
+    # Civil identity (single source of truth for the displayed name), kept
+    # strictly separate from function and pastoral appellations.
+    nom_affichage: str = ""
+    nom_naissance: str | None = None
+    nom_marital: str | None = None
+    nom_affiche: str | None = None
+    est_berger: bool = False
+    nom_pastoral: str | None = None
+    nom_pastoral_affiche: str | None = None
+    fonction_perimetre: str | None = None
     telephone: str | None = None
     indicatif_telephone: str | None = None
     groupe: str | None = None
@@ -250,6 +260,13 @@ class UpdateMembre(MembreFields):
 
     statut: str | None = Field(default=None, pattern="^(actif|inactif|suspendu)$")
     verifie: bool | None = None
+    # Civil identity refinements (managed by the administration).
+    nom_naissance: str | None = None
+    nom_marital: str | None = None
+    nom_affiche: str | None = Field(default=None, pattern="^(nom|naissance|marital)$")
+    est_berger: bool | None = None
+    nom_pastoral: str | None = None
+    fonction_perimetre: str | None = None
 
 
 class CoordinationOut(BaseModel):
@@ -515,6 +532,9 @@ class VerifyResult(BaseModel):
     matricule: str | None = None
     nom: str | None = None
     prenoms: str | None = None
+    nom_affichage: str = ""
+    est_berger: bool = False
+    nom_pastoral_affiche: str | None = None
     photo_url: str | None = None
     titre: str | None = None
 
@@ -533,6 +553,9 @@ class CheckinMembre(BaseModel):
     matricule: str
     nom: str | None = None
     prenoms: str | None = None
+    nom_affichage: str = ""
+    est_berger: bool = False
+    nom_pastoral_affiche: str | None = None
     photo_url: str | None = None
     titre: str | None = None
 
@@ -566,6 +589,9 @@ class ControlMembre(BaseModel):
     matricule: str
     nom: str | None = None
     prenoms: str | None = None
+    nom_affichage: str = ""
+    est_berger: bool = False
+    nom_pastoral_affiche: str | None = None
     commission: str | None = None
     statut: str
     titre: str | None = None

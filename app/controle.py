@@ -10,7 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from . import db
+from . import db, identite
 from .deps import require_roles
 from .mappers import titre_prefixe
 from .qr import verify_token
@@ -29,6 +29,26 @@ from .schemas import (
 
 router = APIRouter(prefix="/api/v1/controle", tags=["controle"])
 
+_IDENTITE_COLS = "m.est_berger, m.nom_pastoral, m.nom_naissance, m.nom_marital, m.nom_affiche"
+
+
+def _civil(row: dict[str, object]) -> str:
+    """Civil display name for a scan/control row (family name arbitration honoured)."""
+    choix = row.get("nom_affiche")
+    fam = row.get("nom")
+    if choix == "naissance" and row.get("nom_naissance"):
+        fam = row.get("nom_naissance")
+    elif choix == "marital" and row.get("nom_marital"):
+        fam = row.get("nom_marital")
+    return identite.nom_affichage(fam, row.get("prenoms"))  # type: ignore[arg-type]
+
+
+def _pastoral(row: dict[str, object]) -> str | None:
+    """Gendered pastoral appellation for a scan/control row, when the member is Berger."""
+    if not row.get("est_berger"):
+        return None
+    return identite.nom_pastoral_affichage(row.get("genre"), row.get("nom_pastoral"))  # type: ignore[arg-type]
+
 CONTROL_ROLES = ("super_admin", "admin", "gestionnaire", "controleur")
 require_control = require_roles(*CONTROL_ROLES)
 
@@ -39,6 +59,7 @@ def _lookup_membre(membre_id: str, role: str) -> dict[str, object] | None:
     member properly. An unconfirmed function yields no title."""
     row = db.fetch_one(
         "SELECT m.id, m.matricule, m.nom, m.prenoms, m.photo_url, m.genre, m.fonction_confirmee, "
+        f"{_IDENTITE_COLS}, "
         "fh.libelle_h AS fh, fh.libelle_f AS ff, fh.libelle_n AS fn "
         "FROM membre m LEFT JOIN fonction_honorifique fh ON fh.cle = m.fonction_cle AND fh.actif "
         "WHERE m.id = %s",
@@ -115,7 +136,7 @@ def directory(
     rows = db.fetch_all(
         f"""
         SELECT m.id, m.matricule, m.nom, m.prenoms, m.statut, c.nom AS commission,
-               m.genre, m.fonction_confirmee,
+               m.genre, m.fonction_confirmee, {_IDENTITE_COLS},
                fh.libelle_h AS fh, fh.libelle_f AS ff, fh.libelle_n AS fn
         FROM membre m
         LEFT JOIN commission c ON c.id = m.commission_id
@@ -133,6 +154,9 @@ def directory(
             matricule=str(r["matricule"]),
             nom=r["nom"] if isinstance(r["nom"], str) else None,
             prenoms=r["prenoms"] if isinstance(r["prenoms"], str) else None,
+            nom_affichage=_civil(r),
+            est_berger=bool(r.get("est_berger")),
+            nom_pastoral_affiche=_pastoral(r),
             commission=r["commission"] if isinstance(r["commission"], str) else None,
             statut=str(r["statut"]),
             titre=titre_prefixe(r.get("genre"), r.get("fonction_confirmee"), r.get("fh"), r.get("ff"), r.get("fn")),
@@ -197,6 +221,9 @@ def checkin_manuel(
             matricule=str(membre["matricule"]),
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
+            nom_affichage=_civil(membre),
+            est_berger=bool(membre.get("est_berger")),
+            nom_pastoral_affiche=_pastoral(membre),
             photo_url=_signed_photo(membre.get("photo_url")),
             titre=membre.get("titre") if isinstance(membre.get("titre"), str) else None,
         ),
@@ -249,6 +276,9 @@ def checkout(
             matricule=str(membre["matricule"]),
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
+            nom_affichage=_civil(membre),
+            est_berger=bool(membre.get("est_berger")),
+            nom_pastoral_affiche=_pastoral(membre),
             photo_url=_signed_photo(membre.get("photo_url")),
             titre=membre.get("titre") if isinstance(membre.get("titre"), str) else None,
         ),
@@ -266,12 +296,18 @@ def verify(
     result = verify_token(payload.token)
     membre_id = result.get("membre_id")
     matricule = nom = prenoms = photo_url = titre = None
+    nom_affichage = ""
+    est_berger = False
+    nom_pastoral_affiche = None
     if isinstance(membre_id, str):
         row = _lookup_membre(membre_id, user.role)
         if row:
             matricule = row["matricule"]
             nom = row["nom"]
             prenoms = row["prenoms"]
+            nom_affichage = _civil(row)
+            est_berger = bool(row.get("est_berger"))
+            nom_pastoral_affiche = _pastoral(row)
             photo_url = _signed_photo(row.get("photo_url"))
             titre = row.get("titre") if isinstance(row.get("titre"), str) else None
     return VerifyResult(
@@ -284,6 +320,9 @@ def verify(
         matricule=matricule,
         nom=nom,
         prenoms=prenoms,
+        nom_affichage=nom_affichage,
+        est_berger=est_berger,
+        nom_pastoral_affiche=nom_pastoral_affiche,
         photo_url=photo_url,
         titre=titre,
     )
@@ -338,6 +377,9 @@ def checkin(
             matricule=str(membre["matricule"]),
             nom=membre["nom"] if isinstance(membre["nom"], str) else None,
             prenoms=membre["prenoms"] if isinstance(membre["prenoms"], str) else None,
+            nom_affichage=_civil(membre),
+            est_berger=bool(membre.get("est_berger")),
+            nom_pastoral_affiche=_pastoral(membre),
             photo_url=_signed_photo(membre.get("photo_url")),
             titre=membre.get("titre") if isinstance(membre.get("titre"), str) else None,
         ),
