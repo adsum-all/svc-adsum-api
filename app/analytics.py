@@ -38,7 +38,8 @@ def statistiques(user: Annotated[UserMe, Depends(require_staff)]) -> Statistique
         """
         SELECT (SELECT count(*) FROM evenement) AS evenements,
                (SELECT count(*) FROM presence) AS presences,
-               (SELECT count(*) FROM commission) AS commissions,
+               (SELECT count(*) FROM commission WHERE type_organisation = 'commission') AS commissions,
+               (SELECT count(*) FROM commission WHERE type_organisation = 'mission') AS missions,
                (SELECT count(*) FROM intendance) AS intendances
         """,
         (),
@@ -104,6 +105,7 @@ def statistiques(user: Annotated[UserMe, Depends(require_staff)]) -> Statistique
         evenements_total=int(s.get("evenements", 0)),
         presences_total=int(s.get("presences", 0)),
         commissions_total=int(s.get("commissions", 0)),
+        missions_total=int(s.get("missions", 0)),
         intendances_total=int(s.get("intendances", 0)),
         par_commission=[{"commission": r["commission"], "total": int(r["total"])} for r in par_commission],
         par_cheminement=[

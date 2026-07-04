@@ -502,6 +502,7 @@ class StatistiquesOut(BaseModel):
     evenements_total: int
     presences_total: int
     commissions_total: int
+    missions_total: int = 0
     intendances_total: int
     par_commission: list[dict[str, object]]
     par_cheminement: list[dict[str, object]]
