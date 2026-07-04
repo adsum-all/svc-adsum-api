@@ -5,6 +5,10 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+# Canonical UUID pattern, reused by several payloads to reject a malformed id
+# with a clean 422 instead of a database error.
+_UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -87,7 +91,8 @@ class MembreProfile(BaseModel):
     berger_referent_id: str | None = None
     tribu: str | None = None
     tribu_id: str | None = None
-    patriarche: str | None = None
+    patriarche: str | None = None  # current human patriarche of the tribe, resolved
+    patriarche_biblique: str | None = None  # the tribe's biblical foundation (reference only)
     coordination: str | None = None
     coordinateur: str | None = None
     champs_deverrouilles: list[str] = []
@@ -350,11 +355,21 @@ class BergerOut(BaseModel):
 
 
 class TribuOut(BaseModel):
-    """One of the twelve tribes, with its patriarch."""
+    """One of the twelve tribes: its biblical reference and its current human
+    patriarche (resolved), at most one active per tribe."""
 
     id: str
     nom: str
-    patriarche: str | None = None
+    patriarche: str | None = None  # biblical reference (kept for context)
+    patriarche_membre_id: str | None = None
+    patriarche_nom: str | None = None  # current human titulaire, resolved
+
+
+class SetPatriarche(BaseModel):
+    """Assign (membre_id set) or revoke (membre_id null) the patriarche of a tribe."""
+
+    membre_id: str | None = Field(default=None, pattern=_UUID_RE)
+    motif: str | None = Field(default=None, max_length=300)
 
 
 _ROLE = "^(super_admin|admin|gestionnaire|controleur|direction)$"
@@ -529,9 +544,6 @@ class CreateCommission(BaseModel):
     nom: str = Field(min_length=1)
     description: str | None = None
     type_organisation: str = Field(default="commission", pattern="^[a-z][a-z_]{1,29}$")
-
-
-_UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 
 
 class CreateEvenement(BaseModel):
