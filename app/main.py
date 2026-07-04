@@ -29,6 +29,7 @@ from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
 from .middleware import SecurityHeadersMiddleware
 from .modifications import router as modifications_router
+from .niveaux import router as niveaux_router
 from .notifications import router as notifications_router
 from .organisation import router as organisation_router
 from .organisation_admin import router as organisation_admin_router
@@ -83,6 +84,7 @@ app.include_router(anniversaires_annuaire_router)
 app.include_router(notifications_router)
 app.include_router(integrations_router)
 app.include_router(fonctions_router)
+app.include_router(niveaux_router)
 app.include_router(gestion_router)
 
 

@@ -232,7 +232,10 @@ class QrToken(BaseModel):
 
 
 _CHEMINEMENT = "^(nouveau|en_accompagnement|membre_actif|responsable|a_relancer|en_pause|ancien_membre)$"
-_TYPE_MEMBRE = "^(membre_simple|membre_actif|nouveau_engage|aspirant|engage|inspirant|berger|responsable)$"
+# Engagement level: a lowercase slug governed by the admin-managed niveau_engagement
+# catalogue (migration 0064), no longer a fixed enum. Rejects garbage/injection
+# while accepting any level the administration creates.
+_TYPE_MEMBRE = "^[a-z][a-z0-9_]{1,39}$"
 _SITUATION = "^(celibataire|en_couple|fiance|marie|veuf|divorce)$"
 _MARIAGE = "^(dot|religieux|dot_et_religieux|civil)$"
 
