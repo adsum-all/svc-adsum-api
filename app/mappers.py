@@ -70,8 +70,13 @@ def _nom_civil_source(row: dict[str, Any]) -> str | None:
     return row.get("nom")
 
 
-def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
-    """Map a full member row (with all joins) to its profile."""
+def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] | None = None) -> MembreProfile:
+    """Map a full member row (with all joins) to its profile.
+
+    ``fonctions`` (the member's active, confirmed functions) is passed only for
+    single-member reads (profile, member file); list endpoints leave it empty to
+    avoid an N+1 query, and rely on the compact primary function instead.
+    """
     return MembreProfile(
         id=str(row["id"]),
         matricule=row["matricule"],
@@ -90,6 +95,7 @@ def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
             else None
         ),
         fonction_perimetre=row.get("fonction_perimetre"),
+        fonctions=[{"libelle": str(fn.get("libelle")), "perimetre": fn.get("perimetre")} for fn in (fonctions or [])],  # type: ignore[misc]
         telephone=row["telephone"],
         indicatif_telephone=row.get("indicatif_telephone"),
         groupe=row["groupe"],

@@ -22,7 +22,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import db
+from . import db, visibilite
 from .auth import current_user
 from .deps import require_roles
 from .schemas import UserMe
@@ -69,6 +69,8 @@ class ParticipationIn(BaseModel):
 @router.get("/membres/me/evenements/{evenement_id}/participation")
 def ma_participation(evenement_id: str, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     membre_id, role = ctx
+    if not visibilite.evenement_visible_membre(evenement_id, membre_id, role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     ev = db.fetch_one(
         f"SELECT e.debut, (e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
         f"(e.debut IS NOT NULL AND now() > {FENETRE_FIN_SQL}) AS cloture, "
@@ -122,6 +124,8 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     row exists per member and event, so no double counting is possible.
     """
     membre_id, role = ctx
+    if not visibilite.evenement_visible_membre(evenement_id, membre_id, role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     if payload.note is not None and not 1 <= payload.note <= 5:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="note must be between 1 and 5")
     if payload.modalite is not None and payload.modalite not in _MODALITES:
