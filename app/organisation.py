@@ -192,9 +192,14 @@ def create_sous_commission(
 @router.get("/tribus", response_model=list[TribuOut])
 def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOut]:
     rows = db.fetch_all(
-        "SELECT t.id, t.nom, t.patriarche, t.patriarche_membre_id, "
-        "COALESCE(NULLIF(pm.nom_affiche, ''), TRIM(COALESCE(pm.prenoms, '') || ' ' || COALESCE(pm.nom, ''))) AS patriarche_nom "
-        "FROM tribu t LEFT JOIN membre pm ON pm.id = t.patriarche_membre_id ORDER BY t.nom ASC",
+        "SELECT t.id, t.nom, t.patriarche, patr.membre_id AS patriarche_membre_id, "
+        "TRIM(COALESCE(patr.prenoms, '') || ' ' || COALESCE(patr.nom, '')) AS patriarche_nom "
+        "FROM tribu t LEFT JOIN LATERAL ("
+        "  SELECT pm2.id AS membre_id, pm2.prenoms, pm2.nom FROM membre pm2 "
+        "  WHERE pm2.tribu_id = t.id AND (pm2.fonction_cle = 'patriarche' "
+        "    OR EXISTS (SELECT 1 FROM membre_fonction mf WHERE mf.membre_id = pm2.id AND lower(mf.fonction_cle) = 'patriarche' AND mf.actif)) "
+        "  ORDER BY pm2.nom LIMIT 1"
+        ") patr ON true ORDER BY t.nom ASC",
         (),
         role=user.role,
     )
@@ -202,7 +207,7 @@ def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOu
         TribuOut(
             id=str(r["id"]), nom=r["nom"], patriarche=r["patriarche"],
             patriarche_membre_id=str(r["patriarche_membre_id"]) if r.get("patriarche_membre_id") else None,
-            patriarche_nom=(r.get("patriarche_nom") or None),
+            patriarche_nom=((r.get("patriarche_nom") or "").strip() or None),
         )
         for r in rows
     ]
