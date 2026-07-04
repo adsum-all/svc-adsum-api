@@ -266,7 +266,11 @@ class UpdateMembre(MembreFields):
     nom_affiche: str | None = Field(default=None, pattern="^(nom|naissance|marital)$")
     est_berger: bool | None = None
     nom_pastoral: str | None = None
+    berger_depuis: str | None = None
     fonction_perimetre: str | None = None
+    # Governance (admin only, never returned to the member).
+    appartenance: str | None = Field(default=None, pattern="^(actif|parti|retire|suspendu|archive)$")
+    note_confidentielle: str | None = None
 
 
 class CoordinationOut(BaseModel):
