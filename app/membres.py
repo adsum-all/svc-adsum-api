@@ -1,8 +1,10 @@
 """Member-facing endpoints, served from the real PostgreSQL.
 
-Every query runs under the caller role, which activates the per-role RLS
-policies (ADR-0002). Results are additionally scoped to the authenticated
-member by ``membre_id`` so a member only ever reads their own records.
+Every query sets the caller role for the per-role RLS policies (ADR-0002), which
+act as defense in depth: the backend connects as the table owner, which bypasses
+RLS. What actually scopes a member to their own records is the explicit
+``membre_id`` filter on every query, not RLS. For events, the shared targeting
+predicate in ``visibilite`` gates both the agenda and the action endpoints.
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from . import db
+from . import db, visibilite
 from .auth import current_user
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .qr import QrSigningUnavailable, issue_token
@@ -106,6 +108,14 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
         """
         SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode,
                e.session_ouverte, e.lien_session, e.liens, e.type_diffusion, e.visibilite,
+               e.cible_type, e.cible_id,
+               CASE e.cible_type
+                 WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
+                 WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
+                 WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
+                 WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
+                 ELSE NULL
+               END AS cible_libelle,
                EXISTS (SELECT 1 FROM participation p WHERE p.evenement_id = e.id AND p.membre_id = %s) AS inscrit,
                CASE
                  WHEN now() < e.debut - interval '15 minutes' THEN 'a_venir'
@@ -117,11 +127,14 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                (now() >= e.debut - interval '15 minutes'
                 AND now() <= COALESCE(e.fin, e.debut + interval '6 hours')) AS in_window
         FROM evenement e
+        JOIN membre m ON m.id = %s
+        LEFT JOIN intendance mi ON mi.id = m.intendance_id
         WHERE e.debut >= now() - interval '30 days'
+          AND """ + visibilite.CIBLE_PREDICATE + """
         ORDER BY e.debut ASC
         LIMIT 100
         """,
-        (membre_id,),
+        (membre_id, membre_id),
         role=role,
     )
     out: list[EvenementOut] = []
@@ -142,6 +155,9 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                 liens=liens,
                 type_diffusion=r["type_diffusion"] or "aucun",
                 visibilite=r["visibilite"] or "membres",
+                cible_type=r.get("cible_type") or "general",
+                cible_id=str(r["cible_id"]) if r.get("cible_id") else None,
+                cible_libelle=r.get("cible_libelle"),
                 phase=str(r["phase"]),
                 joignable=bool(liens),
                 formulaire_ouvert=bool(r["formulaire_ouvert"]),
@@ -442,6 +458,8 @@ def participer_session(
 ) -> dict[str, object]:
     """Validate an online session participation, captured as an attendance record."""
     membre_id, role = ctx
+    if not visibilite.evenement_visible_membre(payload.evenement_id, membre_id, role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     db.execute(
         """
         INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode)

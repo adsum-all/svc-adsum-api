@@ -16,7 +16,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import audit, db
+from . import audit, db, visibilite
 from .auth import current_user
 from .deps import require_roles
 from .schemas import UserMe
@@ -210,6 +210,8 @@ def get_questionnaire_membre(evenement_id: str, ctx: Annotated[tuple[str, str], 
     """The questionnaire for an event, with its availability window and whether
     the member has already answered."""
     membre_id, role = ctx
+    if not visibilite.evenement_visible_membre(evenement_id, membre_id, role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     ev = db.fetch_one("SELECT fin, session_ouverte FROM evenement WHERE id = %s", (evenement_id,), role=role)
     if not ev:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
@@ -243,6 +245,8 @@ class ReponseIn(BaseModel):
 def repondre_questionnaire(evenement_id: str, payload: ReponseIn, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     """Submit answers, only while the questionnaire window is open and once."""
     membre_id, role = ctx
+    if not visibilite.evenement_visible_membre(evenement_id, membre_id, role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     q = db.fetch_one("SELECT id FROM questionnaire WHERE evenement_id = %s AND actif", (evenement_id,), role=role)
     if not q:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no questionnaire")

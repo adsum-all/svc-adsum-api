@@ -1,8 +1,10 @@
 """Back-office administration endpoints, served from the real PostgreSQL.
 
-Every query runs under the caller role, which activates the per-role RLS
-policies (ADR-0002). Write access is additionally guarded by ``require_roles``
-so the API rejects unauthorized callers before touching the database.
+Every query sets the caller role for the per-role RLS policies (ADR-0002), which
+act as defense in depth: the backend connects as the table owner, which bypasses
+RLS, so access is enforced first by ``require_roles`` (which rejects unauthorized
+callers before touching the database) and by the explicit ``WHERE`` scoping of
+each query, not by RLS alone.
 """
 # ruff: noqa: E501
 from __future__ import annotations
@@ -221,10 +223,17 @@ def create_commission(
 def list_evenements(user: Annotated[UserMe, Depends(require_staff)]) -> list[EvenementOut]:
     rows = db.fetch_all(
         """
-        SELECT id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
-               lien_session, liens, type_diffusion, visibilite
-        FROM evenement
-        ORDER BY debut DESC
+        SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode, e.session_ouverte,
+               e.lien_session, e.liens, e.type_diffusion, e.visibilite, e.cible_type, e.cible_id,
+               CASE e.cible_type
+                 WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
+                 WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
+                 WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
+                 WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
+                 ELSE NULL
+               END AS cible_libelle
+        FROM evenement e
+        ORDER BY e.debut DESC
         LIMIT 200
         """,
         (),
@@ -248,6 +257,9 @@ def _evenement_out(r: dict[str, object]) -> EvenementOut:
         liens=[str(x) for x in (r.get("liens") or []) if x],
         type_diffusion=r.get("type_diffusion") or "aucun",
         visibilite=r.get("visibilite") or "membres",
+        cible_type=r.get("cible_type") or "general",
+        cible_id=str(r["cible_id"]) if r.get("cible_id") else None,
+        cible_libelle=r.get("cible_libelle"),
     )
 
 
@@ -260,17 +272,28 @@ def create_evenement(
     primary = payload.lien_session or (liens[0] if liens else None)
     if primary and primary not in liens:
         liens = [primary, *liens]
+    # Targeting: a general event carries no unit; a targeted one must name an
+    # existing unit of the chosen kind, so an event can never point at nothing.
+    cible_id: str | None = None
+    if payload.cible_type != "general":
+        if not payload.cible_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cible_id required for a targeted event")
+        table = {"coordination": "coordination", "commission": "commission", "intendance": "intendance", "tribu": "tribu"}[payload.cible_type]
+        unit = db.fetch_one(f"SELECT id FROM {table} WHERE id = %s", (payload.cible_id,), role=user.role)
+        if not unit:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown target unit")
+        cible_id = payload.cible_id
     created = db.execute(
         """
-        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, visibilite, fenetre_reponse_heures, cree_par)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, visibilite, cible_type, cible_id, fenetre_reponse_heures, cree_par)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
         RETURNING id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
-                  lien_session, liens, type_diffusion, visibilite
+                  lien_session, liens, type_diffusion, visibilite, cible_type, cible_id
         """,
         (
             payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
             payload.mode, primary, json.dumps(liens), payload.type_diffusion, payload.visibilite,
-            payload.fenetre_reponse_heures, user.id,
+            payload.cible_type, cible_id, payload.fenetre_reponse_heures, user.id,
         ),
         role=user.role,
     )

@@ -115,6 +115,11 @@ class EvenementOut(BaseModel):
     liens: list[str] = []  # all broadcast links (one per platform), time-gated
     type_diffusion: str = "aucun"
     visibilite: str = "membres"
+    # Targeting: 'general' (everyone) or a single organisational unit. cible_libelle
+    # is the human-readable name of the aimed unit, for display only.
+    cible_type: str = "general"
+    cible_id: str | None = None
+    cible_libelle: str | None = None
     # Server-computed lifecycle (source of truth for time-gated UI actions).
     phase: str = "a_venir"  # a_venir | bientot | en_cours | termine
     joignable: bool = False  # the join button may show (in window and a link is available)
@@ -513,6 +518,9 @@ class CreateCommission(BaseModel):
     description: str | None = None
 
 
+_UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
+
 class CreateEvenement(BaseModel):
     """Payload to create an event."""
 
@@ -522,11 +530,15 @@ class CreateEvenement(BaseModel):
     debut: datetime
     fin: datetime | None = None
     lieu: str | None = None
-    mode: str | None = None
+    mode: str | None = Field(default=None, pattern="^(presentiel|en_ligne|hybride)$")
     lien_session: str | None = None
     liens: list[str] = []
     type_diffusion: str = Field(default="aucun", pattern="^(embed|externe|aucun)$")
     visibilite: str = Field(default="membres", pattern="^(public|membres|prive)$")
+    # Targeting: 'general' reaches everyone; any other value must be paired with
+    # cible_id (the id of the aimed coordination/commission/intendance/tribu).
+    cible_type: str = Field(default="general", pattern="^(general|coordination|commission|intendance|tribu)$")
+    cible_id: str | None = Field(default=None, pattern=_UUID_RE)
     # Response-window override in hours after the session end; when empty the
     # global admin parameter applies (questionnaire_fenetre_heures, default 6h).
     fenetre_reponse_heures: int | None = Field(default=None, ge=1, le=336)
