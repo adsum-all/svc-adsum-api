@@ -200,24 +200,27 @@ def admin_demande_modifications(
 
 
 @router.get("/admin/demandes/{demande_id}/photo-pending")
-def admin_photo_pending(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> dict[str, str | None]:
+def admin_photo_pending(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> dict[str, object]:
     """Signed preview of a replacement photo the member staged on this request,
-    so the administration reviews the actual new photo before validating."""
+    with its focal point, so the administration reviews the actual new photo,
+    framed the way it will be shown, before validating."""
     from . import storage
     from .config import settings
 
     owner = db.fetch_one(
-        "SELECT m.photo_pending_url AS p FROM demande d JOIN membre m ON m.id = d.membre_id WHERE d.id = %s",
+        "SELECT m.photo_pending_url AS p, m.photo_pending_focus_x AS fx, m.photo_pending_focus_y AS fy "
+        "FROM demande d JOIN membre m ON m.id = d.membre_id WHERE d.id = %s",
         (demande_id,),
         role=user.role,
     )
     path = (owner or {}).get("p")
     if not path:
-        return {"url": None}
+        return {"url": None, "focus_x": None, "focus_y": None}
     try:
-        return {"url": storage.signed_download_url(settings.storage_bucket_photos, str(path))}
+        url: str | None = storage.signed_download_url(settings.storage_bucket_photos, str(path))
     except storage.StorageError:
-        return {"url": None}
+        url = None
+    return {"url": url, "focus_x": (owner or {}).get("fx"), "focus_y": (owner or {}).get("fy")}
 
 
 @router.post("/admin/demandes/{demande_id}/modifications/decision")
@@ -281,7 +284,8 @@ def admin_decide_modification(
         from .config import settings
 
         db.execute(
-            "UPDATE membre SET photo_pending_url = NULL, photo_pending_phash = NULL WHERE id = %s",
+            "UPDATE membre SET photo_pending_url = NULL, photo_pending_phash = NULL, "
+            "photo_pending_focus_x = NULL, photo_pending_focus_y = NULL WHERE id = %s",
             (membre_id,),
             role=user.role,
         )
@@ -312,7 +316,9 @@ def _promouvoir_photo_pending(membre_id: str, pending_path: str, role: str) -> b
     storage.delete_object(settings.storage_bucket_photos, pending_path)
     db.execute(
         "UPDATE membre SET photo_url = %s, photo_phash = photo_pending_phash, "
-        "photo_pending_url = NULL, photo_pending_phash = NULL WHERE id = %s",
+        "photo_focus_x = photo_pending_focus_x, photo_focus_y = photo_pending_focus_y, "
+        "photo_pending_url = NULL, photo_pending_phash = NULL, "
+        "photo_pending_focus_x = NULL, photo_pending_focus_y = NULL WHERE id = %s",
         (live_path, membre_id),
         role=role,
     )
