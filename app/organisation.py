@@ -32,11 +32,30 @@ require_staff = require_roles(*STAFF)
 require_writer = require_roles(*WRITERS)
 
 
+def _parent_id(table: str, parent_id: str | None, role: str) -> str | None:
+    """Validate an optional parent of the same kind. Returns the id or None; a
+    parent is never required, so ``None`` is always valid."""
+    if not parent_id:
+        return None
+    row = db.fetch_one(f"SELECT id FROM {table} WHERE id = %s", (parent_id,), role=role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown parent structure")
+    return parent_id
+
+
 @router.get("/coordinations", response_model=list[CoordinationOut])
 def list_coordinations(user: Annotated[UserMe, Depends(require_staff)]) -> list[CoordinationOut]:
-    rows = db.fetch_all("SELECT id, nom, description, publie FROM coordination ORDER BY nom ASC", (), role=user.role)
+    rows = db.fetch_all(
+        "SELECT c.id, c.nom, c.description, c.publie, c.parent_id, p.nom AS parent "
+        "FROM coordination c LEFT JOIN coordination p ON p.id = c.parent_id ORDER BY c.nom ASC",
+        (),
+        role=user.role,
+    )
     return [
-        CoordinationOut(id=str(r["id"]), nom=r["nom"], description=r["description"], publie=bool(r["publie"]))
+        CoordinationOut(
+            id=str(r["id"]), nom=r["nom"], description=r["description"], publie=bool(r["publie"]),
+            parent_id=str(r["parent_id"]) if r.get("parent_id") else None, parent=r.get("parent"),
+        )
         for r in rows
     ]
 
@@ -46,23 +65,30 @@ def create_coordination(
     payload: CreateCoordination,
     user: Annotated[UserMe, Depends(require_writer)],
 ) -> CoordinationOut:
+    parent = _parent_id("coordination", payload.parent_id, user.role)
     created = db.execute(
-        "INSERT INTO coordination (nom, description) VALUES (%s, %s) RETURNING id, nom, description",
-        (payload.nom, payload.description),
+        "INSERT INTO coordination (nom, description, parent_id) VALUES (%s, %s, %s) "
+        "RETURNING id, nom, description, parent_id",
+        (payload.nom, payload.description, parent),
         role=user.role,
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
-    return CoordinationOut(id=str(created["id"]), nom=created["nom"], description=created["description"])
+    return CoordinationOut(
+        id=str(created["id"]), nom=created["nom"], description=created["description"],
+        parent_id=str(created["parent_id"]) if created.get("parent_id") else None,
+    )
 
 
 @router.get("/intendances", response_model=list[IntendanceOut])
 def list_intendances(user: Annotated[UserMe, Depends(require_staff)]) -> list[IntendanceOut]:
     rows = db.fetch_all(
         """
-        SELECT i.id, i.nom, i.pays, i.ville, i.coordination_id, i.publie, co.nom AS coordination
+        SELECT i.id, i.nom, i.pays, i.ville, i.coordination_id, i.publie, i.parent_id,
+               co.nom AS coordination, p.nom AS parent
         FROM intendance i
         LEFT JOIN coordination co ON co.id = i.coordination_id
+        LEFT JOIN intendance p ON p.id = i.parent_id
         ORDER BY i.nom ASC
         """,
         (),
@@ -77,6 +103,8 @@ def list_intendances(user: Annotated[UserMe, Depends(require_staff)]) -> list[In
             coordination_id=str(r["coordination_id"]) if r["coordination_id"] else None,
             coordination=r["coordination"],
             publie=bool(r["publie"]),
+            parent_id=str(r["parent_id"]) if r.get("parent_id") else None,
+            parent=r.get("parent"),
         )
         for r in rows
     ]
@@ -87,12 +115,16 @@ def create_intendance(
     payload: CreateIntendance,
     user: Annotated[UserMe, Depends(require_writer)],
 ) -> IntendanceOut:
+    # Coordination and parent intendance are both optional and independent: an
+    # intendance never requires either to exist.
+    coordination_id = _parent_id("coordination", payload.coordination_id, user.role)
+    parent = _parent_id("intendance", payload.parent_id, user.role)
     created = db.execute(
         """
-        INSERT INTO intendance (nom, pays, ville, coordination_id)
-        VALUES (%s, %s, %s, %s) RETURNING id, nom, pays, ville, coordination_id
+        INSERT INTO intendance (nom, pays, ville, coordination_id, parent_id)
+        VALUES (%s, %s, %s, %s, %s) RETURNING id, nom, pays, ville, coordination_id, parent_id
         """,
-        (payload.nom, payload.pays, payload.ville, payload.coordination_id),
+        (payload.nom, payload.pays, payload.ville, coordination_id, parent),
         role=user.role,
     )
     if not created:
@@ -104,6 +136,7 @@ def create_intendance(
         ville=created["ville"],
         coordination_id=str(created["coordination_id"]) if created["coordination_id"] else None,
         coordination=None,
+        parent_id=str(created["parent_id"]) if created.get("parent_id") else None,
     )
 
 
