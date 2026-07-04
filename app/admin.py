@@ -46,7 +46,10 @@ def _read_membre(membre_id: str, role: str) -> MembreProfile:
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
-    return membre_row_to_profile(row)
+    from . import fonctions_membre
+
+    fonctions = fonctions_membre.fonctions_publiques(membre_id, row.get("genre"), role)
+    return membre_row_to_profile(row, fonctions)
 
 
 @router.post("/membres", response_model=MembreProfile, status_code=status.HTTP_201_CREATED)

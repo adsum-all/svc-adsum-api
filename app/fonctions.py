@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import audit, db
+from . import audit, db, fonctions_membre
 from .auth import current_user
 from .deps import require_roles
 from .schemas import UserMe
@@ -130,6 +130,9 @@ def valider_fonction_membre(
 ) -> dict[str, object]:
     """Assign and/or confirm a member's honorific function (admin validation)."""
     if payload.fonction_cle is not None:
+        if payload.fonction_cle.strip().lower() in fonctions_membre.TITRES_INTERDITS:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Berger/Bergère est un titre de consécration, pas une fonction : gérez-le dans le titre de consécration.")
         known = db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (payload.fonction_cle,), role=user.role)
         if not known:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown function")
@@ -143,3 +146,111 @@ def valider_fonction_membre(
     audit.log(user.id, user.role, "validation_fonction_membre", "membre", membre_id,
               {"fonction_cle": payload.fonction_cle, "confirmee": payload.confirmee})
     return {"ok": True}
+
+
+# --- Multiple functions per member -----------------------------------------
+
+class MembreFonctionCreate(BaseModel):
+    fonction_cle: str = Field(min_length=2, max_length=40, pattern="^[a-z0-9_]+$")
+    perimetre: str | None = Field(default=None, max_length=120)
+    confirmee: bool = True
+    principale: bool = False
+    ordre: int = Field(default=100, ge=0, le=9999)
+
+
+class MembreFonctionUpdate(BaseModel):
+    perimetre: str | None = Field(default=None, max_length=120)
+    confirmee: bool | None = None
+    actif: bool | None = None
+    principale: bool | None = None
+    ordre: int | None = Field(default=None, ge=0, le=9999)
+
+
+def _genre(membre_id: str, role: str) -> object:
+    row = db.fetch_one("SELECT genre FROM membre WHERE id = %s", (membre_id,), role=role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    return row.get("genre")
+
+
+@router.get("/admin/membres/{membre_id}/fonctions")
+def list_membre_fonctions(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+    """All functions held by a member (active or ended, confirmed or not)."""
+    genre = _genre(membre_id, user.role)
+    return fonctions_membre.fonctions_admin(membre_id, genre, user.role)
+
+
+@router.post("/admin/membres/{membre_id}/fonctions", status_code=status.HTTP_201_CREATED)
+def add_membre_fonction(
+    membre_id: str, payload: MembreFonctionCreate, user: Annotated[UserMe, Depends(require_writer)]
+) -> dict[str, object]:
+    """Add a function to a member (a member may hold several). Berger/Bergere is a
+    consecration title and is refused here."""
+    cle = payload.fonction_cle.strip()
+    if cle.lower() in fonctions_membre.TITRES_INTERDITS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Berger/Bergère est un titre de consécration, pas une fonction : gérez-le dans le titre de consécration.")
+    known = db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (cle,), role=user.role)
+    if not known:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown function")
+    _genre(membre_id, user.role)  # ensures the member exists
+    if payload.principale:
+        db.execute("UPDATE membre_fonction SET principale = false WHERE membre_id = %s", (membre_id,), role=user.role)
+    db.execute(
+        "INSERT INTO membre_fonction (membre_id, fonction_cle, perimetre, confirmee, principale, ordre) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (membre_id, cle, payload.perimetre, payload.confirmee, payload.principale, payload.ordre),
+        role=user.role,
+    )
+    fonctions_membre.sync_principale(membre_id, user.role)
+    audit.log(user.id, user.role, "ajout_fonction_membre", "membre", membre_id, {"fonction_cle": cle, "perimetre": payload.perimetre})
+    return {"ok": True}
+
+
+@router.patch("/admin/membres/{membre_id}/fonctions/{fonction_id}")
+def update_membre_fonction(
+    membre_id: str, fonction_id: str, payload: MembreFonctionUpdate,
+    user: Annotated[UserMe, Depends(require_writer)],
+) -> dict[str, object]:
+    """Change a member's function (scope, confirmation, active state, primary, order)."""
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        return {"ok": True}
+    # Confirm the (function, member) pair exists before touching the shared
+    # ``principale`` flag, so a mismatched id never wipes every primary marker.
+    exists = db.fetch_one(
+        "SELECT id FROM membre_fonction WHERE id = %s AND membre_id = %s",
+        (fonction_id, membre_id),
+        role=user.role,
+    )
+    if not exists:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="function not found")
+    if fields.get("principale") is True:
+        db.execute("UPDATE membre_fonction SET principale = false WHERE membre_id = %s", (membre_id,), role=user.role)
+    sets = ", ".join(f"{k} = %s" for k in fields)
+    row = db.execute(
+        f"UPDATE membre_fonction SET {sets}, maj_le = now() WHERE id = %s AND membre_id = %s RETURNING id",
+        (*fields.values(), fonction_id, membre_id),
+        role=user.role,
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="function not found")
+    fonctions_membre.sync_principale(membre_id, user.role)
+    audit.log(user.id, user.role, "modification_fonction_membre", "membre", membre_id, {"champs": list(fields)})
+    return {"ok": True}
+
+
+@router.delete("/admin/membres/{membre_id}/fonctions/{fonction_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_membre_fonction(
+    membre_id: str, fonction_id: str, user: Annotated[UserMe, Depends(require_writer)]
+) -> None:
+    """Remove a function from a member."""
+    row = db.execute(
+        "DELETE FROM membre_fonction WHERE id = %s AND membre_id = %s RETURNING id",
+        (fonction_id, membre_id),
+        role=user.role,
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="function not found")
+    fonctions_membre.sync_principale(membre_id, user.role)
+    audit.log(user.id, user.role, "retrait_fonction_membre", "membre", membre_id, {"fonction_id": fonction_id})

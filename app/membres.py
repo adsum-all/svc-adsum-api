@@ -90,7 +90,10 @@ def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> Memb
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
-    return membre_row_to_profile(row)
+    from . import fonctions_membre
+
+    fonctions = fonctions_membre.fonctions_publiques(membre_id, row.get("genre"), role)
+    return membre_row_to_profile(row, fonctions)
 
 
 @router.get("/me/evenements", response_model=list[EvenementOut])

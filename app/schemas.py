@@ -25,6 +25,13 @@ class UserMe(BaseModel):
     membre_id: str | None = None
 
 
+class FonctionPublique(BaseModel):
+    """One function held by a member, shown in the dedicated function zone."""
+
+    libelle: str
+    perimetre: str | None = None
+
+
 class MembreProfile(BaseModel):
     """Public profile of the authenticated member."""
 
@@ -43,6 +50,7 @@ class MembreProfile(BaseModel):
     nom_pastoral: str | None = None
     nom_pastoral_affiche: str | None = None
     fonction_perimetre: str | None = None
+    fonctions: list[FonctionPublique] = []
     telephone: str | None = None
     indicatif_telephone: str | None = None
     groupe: str | None = None
