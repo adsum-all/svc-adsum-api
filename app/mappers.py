@@ -1,4 +1,5 @@
 """Row to response model mappers shared across routers (avoids duplication)."""
+# ruff: noqa: E501 - long SQL SELECT/FROM constants
 from __future__ import annotations
 
 from typing import Any
@@ -20,8 +21,7 @@ MEMBRE_PROFILE_SELECT = (
     "m.commission_id, m.fonction_cle, m.fonction_confirmee, "
     "fh.libelle_h AS fonction_h, fh.libelle_f AS fonction_f, fh.libelle_n AS fonction_n, fh.est_vip AS fonction_vip, "
     "c.nom AS commission, i.nom AS intendance, bm.nom AS berger_nom, bm.prenoms AS berger_prenoms, "
-    "t.nom AS tribu, "
-    "pm.nom_affiche AS patr_aff, pm.prenoms AS patr_prenoms, pm.nom AS patr_nom, "
+    "t.nom AS tribu, patr.patr_prenoms, patr.patr_nom, "
     "co.nom AS coordination, "
     "cm.nom AS coord_nom, cm.prenoms AS coord_prenoms"
 )
@@ -35,7 +35,14 @@ MEMBRE_PROFILE_FROM = (
     "LEFT JOIN utilisateur bu ON bu.id = m.berger_referent_id "
     "LEFT JOIN membre bm ON bm.id = bu.membre_id "
     "LEFT JOIN tribu t ON t.id = m.tribu_id "
-    "LEFT JOIN membre pm ON pm.id = t.patriarche_membre_id "
+    # Patriarche of the member's tribe: the tribe member who holds the
+    # 'patriarche' function (primary mirror or an active membre_fonction).
+    "LEFT JOIN LATERAL ("
+    "  SELECT pm2.prenoms AS patr_prenoms, pm2.nom AS patr_nom FROM membre pm2 "
+    "  WHERE pm2.tribu_id = t.id AND (pm2.fonction_cle = 'patriarche' "
+    "    OR EXISTS (SELECT 1 FROM membre_fonction mf WHERE mf.membre_id = pm2.id AND lower(mf.fonction_cle) = 'patriarche' AND mf.actif)) "
+    "  ORDER BY pm2.nom LIMIT 1"
+    ") patr ON true "
     "LEFT JOIN coordination co ON co.id = i.coordination_id "
     "LEFT JOIN utilisateur cu ON cu.id = co.responsable_id "
     "LEFT JOIN membre cm ON cm.id = cu.membre_id"
@@ -135,11 +142,12 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
         berger_referent_id=str(row["berger_referent_id"]) if row.get("berger_referent_id") else None,
         tribu=row.get("tribu"),
         tribu_id=str(row["tribu_id"]) if row.get("tribu_id") else None,
-        # "patriarche" is the current human titulaire of the tribe (resolved),
-        # never a fixed text; None means no patriarche is appointed (shown blank).
+        # "patriarche" is the tribe member holding the 'patriarche' function,
+        # resolved and shown in civil form; None (blank) when no one holds it.
         patriarche=(
-            str(row["patr_aff"]) if row.get("patr_aff")
-            else _join_name(row.get("patr_prenoms"), row.get("patr_nom"))
+            identite.nom_affichage(row.get("patr_nom"), row.get("patr_prenoms")) or None
+            if (row.get("patr_prenoms") or row.get("patr_nom"))
+            else None
         ),
         coordination=row.get("coordination"),
         coordinateur=_join_name(row.get("coord_prenoms"), row.get("coord_nom")),
