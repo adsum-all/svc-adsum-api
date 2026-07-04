@@ -26,15 +26,17 @@ def hash_password(password: str) -> str:
     return _hasher.hash(password)
 
 
-def create_access_token(subject: str, role: str) -> str:
+def create_access_token(subject: str, role: str, sid: str | None = None) -> str:
     now = datetime.now(UTC)
-    payload = {
+    payload: dict[str, Any] = {
         "sub": subject,
         "role": role,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.access_token_minutes)).timestamp()),
         "iss": "adsum-api",
     }
+    if sid:
+        payload["sid"] = sid  # session id, so logout can close the exact session
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 

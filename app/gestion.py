@@ -90,7 +90,8 @@ def demander_document(membre_id: str, payload: DemandeDocIn, user: Annotated[Use
 def connexions(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
     """Recent login sessions for the member (security tracking)."""
     rows = db.fetch_all(
-        "SELECT s.ip::text AS ip, s.appareil, s.geo, s.cree_le, s.revoque "
+        "SELECT s.ip::text AS ip, s.appareil, s.pays, s.ville, s.region, s.cree_le, s.fin, s.revoque, "
+        "EXTRACT(EPOCH FROM (COALESCE(s.fin, now()) - s.cree_le))::bigint AS duree_s "
         "FROM session s JOIN utilisateur u ON u.id = s.utilisateur_id "
         "WHERE u.membre_id = %s ORDER BY s.cree_le DESC LIMIT 50",
         (membre_id,),
@@ -100,8 +101,12 @@ def connexions(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) 
         {
             "ip": r["ip"],
             "appareil": r["appareil"],
-            "geo": r["geo"],
+            "pays": r.get("pays"),
+            "ville": r.get("ville"),
+            "region": r.get("region"),
             "cree_le": r["cree_le"].isoformat() if r["cree_le"] else None,
+            "fin": r["fin"].isoformat() if r.get("fin") else None,
+            "duree_s": int(r["duree_s"]) if r.get("duree_s") is not None else None,
             "revoque": bool(r["revoque"]),
         }
         for r in rows

@@ -27,6 +27,7 @@ class UserMe(BaseModel):
     email: EmailStr
     role: str
     membre_id: str | None = None
+    session_id: str | None = None
 
 
 class FonctionPublique(BaseModel):

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
-from . import db, ratelimit
+from . import audit, db, ratelimit
 from .schemas import LoginRequest, TokenResponse, UserMe
 from .security import create_access_token, decode_access_token, hash_password, verify_password
 
@@ -62,9 +62,20 @@ def login(payload: LoginRequest, request: Request) -> TokenResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="temporary password expired, contact the administration",
         )
-    _record_session(str(user["id"]), user["role"], request)
-    token = create_access_token(subject=str(user["id"]), role=user["role"])
+    sid = _record_session(str(user["id"]), user["role"], request)
+    token = create_access_token(subject=str(user["id"]), role=user["role"], sid=sid)
     return TokenResponse(access_token=token, role=user["role"], doit_changer_mdp=bool(user.get("doit_changer_mdp")))
+
+
+def _geo(request: Request) -> tuple[str | None, str | None, str | None]:
+    """Coarse audit geolocation from the edge headers (country/city/region). No
+    external call, no misleading precision; missing headers simply stay null."""
+    h = request.headers
+    pays = h.get("x-vercel-ip-country") or h.get("cf-ipcountry")
+    ville = h.get("x-vercel-ip-city")
+    region = h.get("x-vercel-ip-country-region") or h.get("x-vercel-ip-region")
+    from urllib.parse import unquote
+    return (pays or None, unquote(ville) if ville else None, region or None)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -74,11 +85,13 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _record_session(user_id: str, role: str, request: Request) -> None:
-    """Log the connection (IP, device) for security tracking. Never breaks login."""
+def _record_session(user_id: str, role: str, request: Request) -> str | None:
+    """Log the connection (IP, device, coarse geolocation) for security tracking
+    and return the new session id so logout can close it. Never breaks login."""
     try:
         ip = _client_ip(request)
         ua = (request.headers.get("user-agent") or "")[:300]
+        pays, ville, region = _geo(request)
         # Detect a login from a device we have never seen for this account, but
         # only once the account already has a history (never on the first login).
         seen = db.fetch_one(
@@ -88,16 +101,18 @@ def _record_session(user_id: str, role: str, request: Request) -> None:
             role=role,
         ) or {"total": 0, "meme": 0}
         nouvel_appareil = int(seen.get("total") or 0) > 0 and int(seen.get("meme") or 0) == 0
-        db.execute(
-            "INSERT INTO session (utilisateur_id, ip, appareil, cree_le) VALUES (%s, %s::inet, %s, now())",
-            (user_id, ip, ua),
+        created = db.execute(
+            "INSERT INTO session (utilisateur_id, ip, appareil, pays, ville, region, cree_le) "
+            "VALUES (%s, %s::inet, %s, %s, %s, %s, now()) RETURNING id",
+            (user_id, ip, ua, pays, ville, region),
             role=role,
         )
         db.execute("UPDATE utilisateur SET dernier_login = now() WHERE id = %s", (user_id,), role=role)
         if nouvel_appareil:
             _alerter_connexion_inhabituelle(user_id, role)
+        return str(created["id"]) if created else None
     except Exception:  # noqa: BLE001 - tracking must never block authentication
-        pass
+        return None
 
 
 def _alerter_connexion_inhabituelle(user_id: str, role: str) -> None:
@@ -177,12 +192,27 @@ def current_user(creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)
         email=user["email"],
         role=user["role"],
         membre_id=str(user["membre_id"]) if user["membre_id"] else None,
+        session_id=str(claims["sid"]) if claims.get("sid") else None,
     )
 
 
 @router.get("/me", response_model=UserMe)
 def me(user: Annotated[UserMe, Depends(current_user)]) -> UserMe:
     return user
+
+
+@router.post("/logout")
+def logout(user: Annotated[UserMe, Depends(current_user)]) -> dict[str, object]:
+    """Close the current session: mark its end and revoke it, so the security log
+    holds a real connection/disconnection with a computable duration."""
+    if user.session_id:
+        db.execute(
+            "UPDATE session SET fin = now(), revoque = true WHERE id = %s AND fin IS NULL",
+            (user.session_id,),
+            role=user.role,
+        )
+        audit.log(user.id, user.role, "deconnexion", "session", user.session_id, {})
+    return {"ok": True}
 
 
 @router.post("/request-otp")
