@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import identite
 from .schemas import MembreProfile
 
 # Columns a member SELECT must expose for membre_row_to_profile, in order.
 MEMBRE_PROFILE_SELECT = (
     "m.id, m.matricule, m.email, m.nom, m.prenoms, m.telephone, m.indicatif_telephone, m.groupe, m.photo_url, "
     "m.photo_pending_url, m.photo_focus_x, m.photo_focus_y, "
+    "m.nom_naissance, m.nom_marital, m.nom_affiche, m.est_berger, m.nom_pastoral, m.fonction_perimetre, "
     "m.statut, m.verifie, m.genre, m.date_naissance, m.naissance_annee_visible, m.pays, m.region, m.ville, "
     "m.adresse, m.adresse_complement, m.date_entree, "
     "m.cheminement_pastoral, m.statut_administratif, m.intendance_id, m.berger_referent_id, "
@@ -58,6 +60,16 @@ def titre_prefixe(genre: object, confirmee: object, h: object, f: object, n: obj
     return str(n) if n else (str(h) if h else None)
 
 
+def _nom_civil_source(row: dict[str, Any]) -> str | None:
+    """The family name chosen for the civil display (married-woman arbitration)."""
+    choix = row.get("nom_affiche")
+    if choix == "naissance" and row.get("nom_naissance"):
+        return row.get("nom_naissance")
+    if choix == "marital" and row.get("nom_marital"):
+        return row.get("nom_marital")
+    return row.get("nom")
+
+
 def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
     """Map a full member row (with all joins) to its profile."""
     return MembreProfile(
@@ -66,6 +78,18 @@ def membre_row_to_profile(row: dict[str, Any]) -> MembreProfile:
         email=row["email"],
         nom=row["nom"],
         prenoms=row["prenoms"],
+        nom_affichage=identite.nom_affichage(_nom_civil_source(row), row.get("prenoms")),
+        nom_naissance=row.get("nom_naissance"),
+        nom_marital=row.get("nom_marital"),
+        nom_affiche=row.get("nom_affiche"),
+        est_berger=bool(row.get("est_berger")),
+        nom_pastoral=row.get("nom_pastoral"),
+        nom_pastoral_affiche=(
+            identite.nom_pastoral_affichage(row.get("genre"), row.get("nom_pastoral"))
+            if row.get("est_berger")
+            else None
+        ),
+        fonction_perimetre=row.get("fonction_perimetre"),
         telephone=row["telephone"],
         indicatif_telephone=row.get("indicatif_telephone"),
         groupe=row["groupe"],

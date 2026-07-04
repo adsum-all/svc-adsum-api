@@ -13,7 +13,7 @@ from typing import Annotated
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from . import audit, db, identifiants
+from . import audit, db, identifiants, identite
 from .deps import require_roles
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .schemas import (
@@ -59,6 +59,12 @@ def create_membre(
     data["matricule"] = matricule
     data.setdefault("statut", "actif")
     data.setdefault("verifie", False)
+    # Normalise the civil identity (family name uppercase, given names title case).
+    for champ, fonction in (("nom", identite.normaliser_nom), ("prenoms", identite.normaliser_prenoms),
+                            ("nom_naissance", identite.normaliser_nom), ("nom_marital", identite.normaliser_nom),
+                            ("nom_pastoral", identite.normaliser_prenoms)):
+        if data.get(champ) is not None:
+            data[champ] = fonction(str(data[champ]))
     columns = ", ".join(data)
     placeholders = ", ".join(["%s"] * len(data))
     try:
