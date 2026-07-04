@@ -154,8 +154,32 @@ def update_membre(
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
     action = "validation_identite" if fields.get("verifie") is True else "modification_membre"
+    # Trace field names only, never the confidential note's content.
     audit.log(user.id, user.role, action, "membre", membre_id, {"champs": list(fields)})
     return _read_membre(membre_id, user.role)
+
+
+@router.get("/membres/{membre_id}/gouvernance")
+def membre_gouvernance(
+    membre_id: str,
+    user: Annotated[UserMe, Depends(require_membre_writer)],
+) -> dict[str, object]:
+    """Admin-only governance block for a member: membership relationship state,
+    an optional confidential internal note (reason for a departure, a title
+    withdrawal...), and the consecration-title grant date. This is NEVER part of
+    the member-facing profile; only a member writer can read it here."""
+    row = db.fetch_one(
+        "SELECT appartenance, note_confidentielle, berger_depuis FROM membre WHERE id = %s",
+        (membre_id,),
+        role=user.role,
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    return {
+        "appartenance": row.get("appartenance") or "actif",
+        "note_confidentielle": row.get("note_confidentielle"),
+        "berger_depuis": row["berger_depuis"].isoformat() if row.get("berger_depuis") else None,
+    }
 
 
 @router.get("/commissions", response_model=list[CommissionOut])
