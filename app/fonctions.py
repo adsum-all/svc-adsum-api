@@ -128,21 +128,47 @@ def retire_fonction(cle: str, user: Annotated[UserMe, Depends(require_writer)]) 
 def valider_fonction_membre(
     membre_id: str, payload: MembreFonctionIn, user: Annotated[UserMe, Depends(require_writer)]
 ) -> dict[str, object]:
-    """Assign and/or confirm a member's honorific function (admin validation)."""
+    """Assign and/or confirm a member's primary function (admin validation).
+
+    Kept for backward compatibility, it now operates on the ``membre_fonction``
+    model (the single source of truth) and mirrors the result onto
+    ``membre.fonction_cle`` through ``sync_principale``, so it can no longer
+    diverge from the multi-function manager.
+    """
+    membre = db.fetch_one("SELECT id FROM membre WHERE id = %s", (membre_id,), role=user.role)
+    if not membre:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
     if payload.fonction_cle is not None:
-        if payload.fonction_cle.strip().lower() in fonctions_membre.TITRES_INTERDITS:
+        cle = payload.fonction_cle.strip()
+        if cle.lower() in fonctions_membre.TITRES_INTERDITS:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="Berger/Bergère est un titre de consécration, pas une fonction : gérez-le dans le titre de consécration.")
-        known = db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (payload.fonction_cle,), role=user.role)
+        known = db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (cle,), role=user.role)
         if not known:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown function")
-    row = db.execute(
-        "UPDATE membre SET fonction_cle = COALESCE(%s, fonction_cle), fonction_confirmee = %s WHERE id = %s RETURNING id",
-        (payload.fonction_cle, payload.confirmee, membre_id),
-        role=user.role,
-    )
-    if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+        # Promote this function to primary in membre_fonction: clear the other
+        # primary, then insert or promote the row for this cle.
+        db.execute("UPDATE membre_fonction SET principale = false WHERE membre_id = %s", (membre_id,), role=user.role)
+        existing = db.fetch_one(
+            "SELECT id FROM membre_fonction WHERE membre_id = %s AND fonction_cle = %s", (membre_id, cle), role=user.role
+        )
+        if existing:
+            db.execute(
+                "UPDATE membre_fonction SET principale = true, confirmee = %s, actif = true, maj_le = now() WHERE id = %s",
+                (payload.confirmee, existing["id"]), role=user.role,
+            )
+        else:
+            db.execute(
+                "INSERT INTO membre_fonction (membre_id, fonction_cle, confirmee, principale, ordre) VALUES (%s, %s, %s, true, 0)",
+                (membre_id, cle, payload.confirmee), role=user.role,
+            )
+    else:
+        # Only (re)confirm the current primary function.
+        db.execute(
+            "UPDATE membre_fonction SET confirmee = %s, maj_le = now() WHERE membre_id = %s AND principale = true",
+            (payload.confirmee, membre_id), role=user.role,
+        )
+    fonctions_membre.sync_principale(membre_id, user.role)
     audit.log(user.id, user.role, "validation_fonction_membre", "membre", membre_id,
               {"fonction_cle": payload.fonction_cle, "confirmee": payload.confirmee})
     return {"ok": True}

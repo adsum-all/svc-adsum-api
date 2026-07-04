@@ -93,10 +93,18 @@ def open_or_upcoming_events(
 ) -> list[EvenementOut]:
     rows = db.fetch_all(
         """
-        SELECT id, titre, type, volet, debut, fin, lieu, session_ouverte
-        FROM evenement
-        WHERE fin IS NULL OR fin >= now()
-        ORDER BY debut ASC
+        SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode, e.session_ouverte,
+               e.cible_type, e.cible_id,
+               CASE e.cible_type
+                 WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
+                 WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
+                 WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
+                 WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
+                 ELSE NULL
+               END AS cible_libelle
+        FROM evenement e
+        WHERE e.fin IS NULL OR e.fin >= now()
+        ORDER BY e.debut ASC
         LIMIT 200
         """,
         (),
@@ -111,7 +119,11 @@ def open_or_upcoming_events(
             debut=r["debut"],
             fin=r["fin"],
             lieu=r["lieu"],
+            mode=r.get("mode"),
             session_ouverte=r["session_ouverte"],
+            cible_type=r.get("cible_type") or "general",
+            cible_id=str(r["cible_id"]) if r.get("cible_id") else None,
+            cible_libelle=r.get("cible_libelle"),
         )
         for r in rows
     ]

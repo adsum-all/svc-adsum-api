@@ -251,8 +251,12 @@ def repondre_questionnaire(evenement_id: str, payload: ReponseIn, ctx: Annotated
     if not q:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no questionnaire")
     fenetre = _fenetre_heures(role)
+    # Same window as the display (get_questionnaire_membre): open from the session
+    # start up to the configured hours after the end (or after the start when no
+    # end is set), so what the member is shown as available can always be
+    # submitted, and an event without an end is not permanently closed.
     window = db.fetch_one(
-        "SELECT (fin IS NOT NULL AND now() BETWEEN fin AND fin + (%s || ' hours')::interval) AS ouvert FROM evenement WHERE id = %s",
+        "SELECT (now() >= debut AND now() <= COALESCE(fin, debut) + (%s || ' hours')::interval) AS ouvert FROM evenement WHERE id = %s",
         (str(fenetre), evenement_id),
         role=role,
     )
