@@ -260,6 +260,13 @@ class UpdateMembre(MembreFields):
 
     statut: str | None = Field(default=None, pattern="^(actif|inactif|suspendu)$")
     verifie: bool | None = None
+    # Civil identity refinements (managed by the administration).
+    nom_naissance: str | None = None
+    nom_marital: str | None = None
+    nom_affiche: str | None = Field(default=None, pattern="^(nom|naissance|marital)$")
+    est_berger: bool | None = None
+    nom_pastoral: str | None = None
+    fonction_perimetre: str | None = None
 
 
 class CoordinationOut(BaseModel):

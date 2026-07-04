@@ -133,6 +133,11 @@ def update_membre(
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         return _read_membre(membre_id, user.role)
+    for champ, fonction in (("nom", identite.normaliser_nom), ("prenoms", identite.normaliser_prenoms),
+                            ("nom_naissance", identite.normaliser_nom), ("nom_marital", identite.normaliser_nom),
+                            ("nom_pastoral", identite.normaliser_prenoms)):
+        if fields.get(champ) is not None:
+            fields[champ] = fonction(str(fields[champ]))
     columns = ", ".join(f"{name} = %s" for name in fields)
     params = [*fields.values(), membre_id]
     try:
