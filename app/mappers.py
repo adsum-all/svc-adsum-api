@@ -21,7 +21,7 @@ MEMBRE_PROFILE_SELECT = (
     "fh.libelle_h AS fonction_h, fh.libelle_f AS fonction_f, fh.libelle_n AS fonction_n, fh.est_vip AS fonction_vip, "
     "c.nom AS commission, i.nom AS intendance, bm.nom AS berger_nom, bm.prenoms AS berger_prenoms, "
     "t.nom AS tribu, t.patriarche AS patriarche_biblique, "
-    "pm.nom_affichage AS patr_aff, pm.prenoms AS patr_prenoms, pm.nom AS patr_nom, "
+    "pm.nom_affiche AS patr_aff, pm.prenoms AS patr_prenoms, pm.nom AS patr_nom, "
     "co.nom AS coordination, "
     "cm.nom AS coord_nom, cm.prenoms AS coord_prenoms"
 )

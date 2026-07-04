@@ -193,7 +193,7 @@ def create_sous_commission(
 def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOut]:
     rows = db.fetch_all(
         "SELECT t.id, t.nom, t.patriarche, t.patriarche_membre_id, "
-        "COALESCE(NULLIF(pm.nom_affichage, ''), TRIM(COALESCE(pm.prenoms, '') || ' ' || COALESCE(pm.nom, ''))) AS patriarche_nom "
+        "COALESCE(NULLIF(pm.nom_affiche, ''), TRIM(COALESCE(pm.prenoms, '') || ' ' || COALESCE(pm.nom, ''))) AS patriarche_nom "
         "FROM tribu t LEFT JOIN membre pm ON pm.id = t.patriarche_membre_id ORDER BY t.nom ASC",
         (),
         role=user.role,
@@ -218,9 +218,6 @@ def set_patriarche(
     must belong to that tribe. Every appointment and revocation is written to the
     history table and audited. Assigning a new titulaire closes the previous one.
     """
-    tribu = db.fetch_one("SELECT id FROM tribu WHERE id = %s", (tribu_id,), role=user.role)
-    if not tribu:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tribe not found")
     membre_id = payload.membre_id
     if membre_id is not None:
         membre = db.fetch_one("SELECT tribu_id FROM membre WHERE id = %s", (membre_id,), role=user.role)
@@ -228,16 +225,22 @@ def set_patriarche(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
         if str(membre.get("tribu_id") or "") != str(tribu_id):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="le patriarche doit appartenir a cette tribu")
-    # Close the currently open history line for this tribe, then set the new
-    # titulaire (or clear it) and open a new history line when appointing.
-    db.execute("UPDATE tribu_patriarche_historique SET fin = now() WHERE tribu_id = %s AND fin IS NULL", (tribu_id,), role=user.role)
-    db.execute("UPDATE tribu SET patriarche_membre_id = %s WHERE id = %s", (membre_id, tribu_id), role=user.role)
-    if membre_id is not None:
-        db.execute(
-            "INSERT INTO tribu_patriarche_historique (tribu_id, membre_id, attribue_par, motif) VALUES (%s, %s, %s, %s)",
-            (tribu_id, membre_id, user.id, payload.motif),
-            role=user.role,
-        )
+    # Atomic critical section: lock the tribe row so two concurrent appointments
+    # cannot both run "close then insert", close the currently open history line,
+    # set (or clear) the titulaire and open a new history line, all in one
+    # transaction committed once. A partial unique index also forbids two open
+    # lines per tribe at the database level (migration 0063).
+    with db.connection(user.role) as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM tribu WHERE id = %s FOR UPDATE", (tribu_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tribe not found")
+        cur.execute("UPDATE tribu_patriarche_historique SET fin = now() WHERE tribu_id = %s AND fin IS NULL", (tribu_id,))
+        cur.execute("UPDATE tribu SET patriarche_membre_id = %s WHERE id = %s", (membre_id, tribu_id))
+        if membre_id is not None:
+            cur.execute(
+                "INSERT INTO tribu_patriarche_historique (tribu_id, membre_id, attribue_par, motif) VALUES (%s, %s, %s, %s)",
+                (tribu_id, membre_id, user.id, payload.motif),
+            )
     audit.log(user.id, user.role, "attribution_patriarche" if membre_id else "revocation_patriarche",
               "tribu", tribu_id, {"membre_id": membre_id, "motif": payload.motif})
     return {"ok": True}
