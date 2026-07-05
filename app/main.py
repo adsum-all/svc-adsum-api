@@ -24,6 +24,7 @@ from .fichiers import router as fichiers_router
 from .fonctions import router as fonctions_router
 from .formation import router as formation_router
 from .gestion import router as gestion_router
+from .groupes import router as groupes_router
 from .inscription import router as inscription_router
 from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
@@ -93,6 +94,7 @@ app.include_router(integrations_router)
 app.include_router(fonctions_router)
 app.include_router(niveaux_router)
 app.include_router(gestion_router)
+app.include_router(groupes_router)
 
 
 @app.get("/health", tags=["system"])
