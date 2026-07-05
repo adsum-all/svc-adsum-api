@@ -61,13 +61,15 @@ def create_utilisateur(
     user: Annotated[UserMe, Depends(require_super)],
 ) -> UtilisateurOut:
     try:
+        # An account is always created as 'membre'. Elevated access is granted
+        # afterwards only through an access group, never at account creation.
         created = db.execute(
             """
             INSERT INTO utilisateur (email, hash_mdp, role, membre_id, double_facteur, actif)
-            VALUES (%s, %s, %s, %s, %s, true)
+            VALUES (%s, %s, 'membre', %s, %s, true)
             RETURNING id
             """,
-            (payload.email, hash_password(payload.password), payload.role, payload.membre_id,
+            (payload.email, hash_password(payload.password), payload.membre_id,
              payload.double_facteur),
             role=user.role,
         )
@@ -79,7 +81,7 @@ def create_utilisateur(
     row = db.fetch_one(f"{_SELECT} WHERE u.id = %s", (new_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="read failed")
-    audit.log(user.id, user.role, "creation_compte", "utilisateur", new_id, {"role": payload.role})
+    audit.log(user.id, user.role, "creation_compte", "utilisateur", new_id, {"role": "membre"})
     return _to_out(row)
 
 
@@ -97,11 +99,11 @@ def bulk_create(
             created = db.execute(
                 """
                 INSERT INTO utilisateur (email, hash_mdp, role, actif)
-                VALUES (%s, %s, %s, true)
+                VALUES (%s, %s, 'membre', true)
                 ON CONFLICT (email) DO NOTHING
                 RETURNING id
                 """,
-                (compte.email, hash_password(compte.password), compte.role),
+                (compte.email, hash_password(compte.password)),
                 role=user.role,
             )
             if created:

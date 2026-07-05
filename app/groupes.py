@@ -29,6 +29,23 @@ require_admin = require_roles("super_admin", "admin")
 _ROLE_RANK = {"membre": 0, "controleur": 1, "gestionnaire": 2, "direction": 3, "admin": 4, "super_admin": 5}
 
 
+def _assert_peut_gerer(actor: UserMe, role_accorde: str, membre_cible_id: str) -> None:
+    """Guard against privilege escalation when granting or revoking a group.
+
+    Rules (deny-by-default):
+    - A super_admin may manage any group (including the ones granting super_admin).
+    - Anyone else may only manage a group whose granted role is STRICTLY below
+      their own rank; in particular no admin can touch a group granting admin or
+      super_admin, closing the self-promotion path.
+    - No one below super_admin may manage their own access (no self-elevation).
+    """
+    if actor.role != "super_admin":
+        if actor.membre_id and membre_cible_id == actor.membre_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="vous ne pouvez pas modifier vos propres accès")
+        if _ROLE_RANK.get(actor.role, 0) <= _ROLE_RANK.get(role_accorde, 99):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="vous ne pouvez pas gérer un groupe accordant un rôle égal ou supérieur au vôtre")
+
+
 def _effective_role(membre_id: str, actor_role: str) -> str:
     """The highest platform role granted by the member's active groups, or 'membre'."""
     rows = db.fetch_all(
@@ -61,10 +78,25 @@ def _sync_account_role(membre_id: str, actor: UserMe) -> tuple[str, str | None]:
     email = (membre or {}).get("email")
     if not email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="le membre n'a pas d'e-mail pour créer un accès")
+    # Never silently re-point an existing account bound to a different member:
+    # only adopt an account whose e-mail is free or already this member's, else
+    # refuse (F2: no account hijack, no false audit attribution).
+    par_email = db.fetch_one("SELECT id, membre_id FROM utilisateur WHERE email = %s", (str(email),), role=actor.role)
+    if par_email:
+        if par_email.get("membre_id") not in (None, membre_id):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="un compte existe déjà pour cet e-mail, rattaché à un autre membre")
+        db.execute(
+            "UPDATE utilisateur SET role = %s, membre_id = %s WHERE id = %s",
+            (eff, membre_id, str(par_email["id"])),
+            role=actor.role,
+        )
+        return eff, None
+    # No account at all: create one with a temporary password that expires, like
+    # the inscription path (F4: no non-expiring temporary credential).
     temp = secrets.token_urlsafe(9)
     db.execute(
-        "INSERT INTO utilisateur (email, hash_mdp, role, membre_id, actif, mdp_temporaire, doit_changer_mdp) "
-        "VALUES (%s, %s, %s, %s, true, true, true) ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role, membre_id = EXCLUDED.membre_id",
+        "INSERT INTO utilisateur (email, hash_mdp, role, membre_id, actif, mdp_temporaire, mdp_expire_le, doit_changer_mdp) "
+        "VALUES (%s, %s, %s, %s, true, true, now() + interval '7 days', true)",
         (str(email), hash_password(temp), eff, membre_id),
         role=actor.role,
     )
@@ -167,8 +199,10 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
     created on their member e-mail with a temporary password (returned once)."""
     if not db.fetch_one("SELECT id FROM membre WHERE id = %s", (membre_id,), role=user.role):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membre introuvable")
-    if not db.fetch_one("SELECT id FROM groupe_acces WHERE id = %s AND actif = true", (payload.groupe_id,), role=user.role):
+    groupe = db.fetch_one("SELECT id, role_accorde FROM groupe_acces WHERE id = %s AND actif = true", (payload.groupe_id,), role=user.role)
+    if not groupe:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="groupe introuvable")
+    _assert_peut_gerer(user, str(groupe["role_accorde"]), membre_id)
     db.execute(
         "INSERT INTO membre_groupe (membre_id, groupe_id, ajoute_par) VALUES (%s, %s, %s) ON CONFLICT (membre_id, groupe_id) DO NOTHING",
         (membre_id, payload.groupe_id, user.id),
@@ -183,6 +217,11 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
 def retirer_du_groupe(membre_id: str, groupe_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
     """Remove a member from a group and re-sync their role. The account is never
     deleted: a member with no group falls back to 'membre' and keeps their login."""
+    groupe = db.fetch_one("SELECT role_accorde FROM groupe_acces WHERE id = %s", (groupe_id,), role=user.role)
+    if groupe:
+        # Same hierarchy guard as granting: an admin cannot demote a super_admin by
+        # pulling them out of the super_administration group (F1 reverse path).
+        _assert_peut_gerer(user, str(groupe["role_accorde"]), membre_id)
     db.execute("DELETE FROM membre_groupe WHERE membre_id = %s AND groupe_id = %s", (membre_id, groupe_id), role=user.role)
     eff, _ = _sync_account_role(membre_id, user)
     audit.log(user.id, user.role, "retrait_groupe_acces", "membre", membre_id, {"groupe_id": groupe_id, "effective_role": eff})

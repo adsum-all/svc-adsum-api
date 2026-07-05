@@ -436,9 +436,6 @@ class SetPatriarche(BaseModel):
     motif: str | None = Field(default=None, max_length=300)
 
 
-_ROLE = "^(super_admin|admin|gestionnaire|controleur|direction)$"
-
-
 class UtilisateurOut(BaseModel):
     """An application account with its role, for rights management."""
 
@@ -453,29 +450,35 @@ class UtilisateurOut(BaseModel):
 
 
 class CreateUtilisateur(BaseModel):
-    """Payload to create an application account (the super admin creates accounts)."""
+    """Payload to create an application account.
+
+    An account is always created as a plain 'membre'. Platform access (back
+    office, direction, pilotage) is never set here: it is granted only by adding
+    the member to an access group, so this payload carries no role.
+    """
 
     email: EmailStr
-    role: str = Field(pattern=_ROLE)
     password: str = Field(min_length=8)
     membre_id: str | None = None
     double_facteur: bool = True
 
 
 class UpdateUtilisateur(BaseModel):
-    """Partial update of an account: role and activation."""
+    """Partial update of an account: activation and 2FA only.
 
-    role: str | None = Field(default=None, pattern=_ROLE)
+    A role is never written here: it is derived from the member's access groups,
+    so this endpoint cannot be used to grant platform access outside a group.
+    """
+
     actif: bool | None = None
     double_facteur: bool | None = None
 
 
 class BulkCompte(BaseModel):
-    """One account in a bulk creation request."""
+    """One account in a bulk creation request. Always created as a plain 'membre'."""
 
     email: EmailStr
     password: str = Field(min_length=8)
-    role: str = Field(default="direction", pattern=_ROLE)
 
 
 class BulkCreateUtilisateurs(BaseModel):
