@@ -129,9 +129,14 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_rol
 
 @router.get("/membres/{membre_id}/groupes")
 def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
-    """The groups a member belongs to and their resulting effective role."""
+    """The groups a member belongs to, who granted each and when, and the resulting effective role."""
     rows = db.fetch_all(
-        "SELECT g.id, g.cle, g.libelle, g.role_accorde FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "SELECT g.id, g.cle, g.libelle, g.role_accorde, mg.ajoute_le, "
+        "COALESCE(NULLIF(trim(coalesce(am.prenoms, '') || ' ' || coalesce(am.nom, '')), ''), ua.email) AS ajoute_par_nom "
+        "FROM membre_groupe mg "
+        "JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "LEFT JOIN utilisateur ua ON ua.id = mg.ajoute_par "
+        "LEFT JOIN membre am ON am.id = ua.membre_id "
         "WHERE mg.membre_id = %s ORDER BY g.libelle ASC",
         (membre_id,),
         role=user.role,
@@ -139,7 +144,17 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin
     return {
         "membre_id": membre_id,
         "effective_role": _effective_role(membre_id, user.role),
-        "groupes": [{"id": str(r["id"]), "cle": r["cle"], "libelle": r["libelle"], "role_accorde": r["role_accorde"]} for r in rows],
+        "groupes": [
+            {
+                "id": str(r["id"]),
+                "cle": r["cle"],
+                "libelle": r["libelle"],
+                "role_accorde": r["role_accorde"],
+                "ajoute_le": r["ajoute_le"].isoformat() if r.get("ajoute_le") else None,
+                "ajoute_par_nom": r.get("ajoute_par_nom"),
+            }
+            for r in rows
+        ],
     }
 
 
