@@ -15,6 +15,7 @@ from .comptage import comptage_public_router
 from .comptage import router as comptage_router
 from .config import settings
 from .consentement import router as consentement_router
+from .consultations import router as consultations_router
 from .controle import router as controle_router
 from .demandes import router as demandes_router
 from .doublons import router as doublons_router
@@ -37,6 +38,7 @@ from .participation import router as participation_router
 from .pilotage import router as pilotage_router
 from .reference import router as reference_router
 from .rgpd import router as rgpd_router
+from .tags import router as tags_router
 from .terminaux import router as terminaux_router
 from .users import router as users_router
 
@@ -64,6 +66,8 @@ app.include_router(organisation_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
 app.include_router(pilotage_router)
+app.include_router(consultations_router)
+app.include_router(tags_router)
 app.include_router(analytics_router)
 app.include_router(users_router)
 app.include_router(terminaux_router)

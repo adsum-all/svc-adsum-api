@@ -53,6 +53,19 @@ class Scope:
     def is_empty(self) -> bool:
         return not (self.is_global or self.coordination_ids or self.intendance_ids or self.tribu_ids)
 
+    def couvre(self, dimension: str, unit_id: str | None) -> bool:
+        """Whether a specific organisational unit is inside this scope (non-general)."""
+        if self.is_global:
+            return True
+        if not unit_id:
+            return False
+        by_dim = {
+            "coordination": self.coordination_ids,
+            "intendance": self.intendance_ids,
+            "tribu": self.tribu_ids,
+        }
+        return unit_id in by_dim.get(dimension, frozenset())
+
     def membre_predicate(self, alias: str = "m") -> tuple[str, list[object]]:
         """SQL fragment + params selecting the members inside this scope.
 
