@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from . import db, visibilite
 from .auth import current_user
@@ -37,6 +38,12 @@ from .schemas import (
 from .security import hash_password, verify_password
 
 router = APIRouter(prefix="/api/v1/membres", tags=["membres"])
+
+
+class FuseauIn(BaseModel):
+    """The member's IANA time zone, detected client-side (e.g. 'Europe/Paris')."""
+
+    fuseau: str
 
 
 def _notify(
@@ -96,6 +103,23 @@ def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> Memb
 
     fonctions = fonctions_membre.fonctions_publiques(membre_id, row.get("genre"), role)
     return membre_row_to_profile(row, fonctions)
+
+
+@router.put("/me/fuseau", status_code=status.HTTP_204_NO_CONTENT)
+def set_fuseau(payload: FuseauIn, ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> None:
+    """Store the member's IANA time zone, detected by their device on app open.
+
+    Used to localize server-rendered times (Telegram, e-mail, survey reminders) to
+    the member's own zone. Only a real IANA identifier is accepted, never a fixed
+    offset, so seasonal (DST) transitions stay correct.
+    """
+    from . import temps
+
+    membre_id, role = ctx
+    zone = temps.zone_valide(payload.fuseau)
+    if not zone:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="fuseau horaire invalide")
+    db.execute("UPDATE membre SET fuseau_horaire = %s WHERE id = %s", (zone, membre_id), role=role)
 
 
 @router.get("/me/evenements", response_model=list[EvenementOut])

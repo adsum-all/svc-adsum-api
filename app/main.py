@@ -39,6 +39,7 @@ from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
 from .pilotage import router as pilotage_router
 from .reference import router as reference_router
+from .sondage import router as sondage_router
 from .rgpd import router as rgpd_router
 from .tags import router as tags_router
 from .terminaux import router as terminaux_router
@@ -97,6 +98,7 @@ app.include_router(niveaux_router)
 app.include_router(gestion_router)
 app.include_router(groupes_router)
 app.include_router(emargement_router)
+app.include_router(sondage_router)
 
 
 @app.get("/health", tags=["system"])
