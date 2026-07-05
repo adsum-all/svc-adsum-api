@@ -66,6 +66,7 @@ def moi(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]) -> dict[st
         "coordinations": len(scope.coordination_ids),
         "intendances": len(scope.intendance_ids),
         "tribus": len(scope.tribu_ids),
+        "commissions": len(scope.commission_ids),
         "membres_perimetre": int((row or {}).get("n") or 0),
     }
 

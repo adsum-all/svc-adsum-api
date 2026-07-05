@@ -15,6 +15,7 @@ USA coordination, and one intendance can never read another. Global roles
 This module adds no table and no migration: the closure is computed on the fly
 with a recursive CTE over the existing organisation tables.
 """
+# ruff: noqa: E501
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from fastapi import Depends, HTTPException, status
 from . import db
 from .auth import current_user
 from .schemas import UserMe
+from .scope import Scope
 
 # Roles with unbounded oversight (they already govern the whole base).
 GLOBAL_ROLES = frozenset({"super_admin", "admin", "direction"})
@@ -39,55 +41,6 @@ _AXIS_BY_FONCTION = {
 # Attribute-based functions: the perimeter value lives in membre_fonction.perimetre.
 _PAYS_FONCTION = "responsable_pays"
 _CONTINENT_FONCTION = "responsable_continental"
-
-
-@dataclass(frozen=True)
-class Scope:
-    """The set of organisational units a responsable governs (closure included)."""
-
-    is_global: bool
-    coordination_ids: frozenset[str]
-    intendance_ids: frozenset[str]
-    tribu_ids: frozenset[str]
-
-    def is_empty(self) -> bool:
-        return not (self.is_global or self.coordination_ids or self.intendance_ids or self.tribu_ids)
-
-    def couvre(self, dimension: str, unit_id: str | None) -> bool:
-        """Whether a specific organisational unit is inside this scope (non-general)."""
-        if self.is_global:
-            return True
-        if not unit_id:
-            return False
-        by_dim = {
-            "coordination": self.coordination_ids,
-            "intendance": self.intendance_ids,
-            "tribu": self.tribu_ids,
-        }
-        return unit_id in by_dim.get(dimension, frozenset())
-
-    def membre_predicate(self, alias: str = "m") -> tuple[str, list[object]]:
-        """SQL fragment + params selecting the members inside this scope.
-
-        A member is in scope when their attachment on any governed axis falls in
-        the scope's id set (union across axes). Global scope matches everyone; an
-        empty scope matches no one.
-        """
-        if self.is_global:
-            return "TRUE", []
-        clauses: list[str] = []
-        params: list[object] = []
-        for axis, ids in (
-            ("coordination_id", self.coordination_ids),
-            ("intendance_id", self.intendance_ids),
-            ("tribu_id", self.tribu_ids),
-        ):
-            if ids:
-                clauses.append(f"{alias}.{axis} = ANY(%s::uuid[])")
-                params.append(list(ids))
-        if not clauses:
-            return "FALSE", []
-        return "(" + " OR ".join(clauses) + ")", params
 
 
 def _closure(table: str, roots: set[str], role: str) -> frozenset[str]:
@@ -124,7 +77,16 @@ def resolve_scope(user: UserMe) -> Scope:
         role=user.role,
     )
     cles = {str(f["cle"]) for f in fonctions}
-    if not cles & (set(_AXIS_BY_FONCTION) | {_PAYS_FONCTION, _CONTINENT_FONCTION}):
+    has_perimeter_fn = bool(cles & (set(_AXIS_BY_FONCTION) | {_PAYS_FONCTION, _CONTINENT_FONCTION}))
+
+    # A member is responsable of a commission through the existing model column
+    # commission.responsable_id -> membre.id (not invented, migration 0003).
+    commissions = db.fetch_all(
+        "SELECT id FROM commission WHERE responsable_id = %s", (user.membre_id,), role=user.role
+    )
+    commission_resp = frozenset(str(r["id"]) for r in commissions)
+
+    if not has_perimeter_fn and not commission_resp:
         return Scope(False, frozenset(), frozenset(), frozenset())
 
     me = db.fetch_one(
@@ -136,33 +98,45 @@ def resolve_scope(user: UserMe) -> Scope:
     coord_roots: set[str] = set()
     intend_roots: set[str] = set()
     tribu_roots: set[str] = set()
-    if "coordinateur" in cles and me.get("coordination_id"):
-        coord_roots.add(str(me["coordination_id"]))
-    if "intendant" in cles and me.get("intendance_id"):
-        intend_roots.add(str(me["intendance_id"]))
-    if "patriarche" in cles and me.get("tribu_id"):
-        tribu_roots.add(str(me["tribu_id"]))
+    commission_ids: frozenset[str] = frozenset()
 
-    # Attribute-based perimeters (pays / continent): the perimetre value selects
-    # every coordination and intendance located there, then the closure applies.
-    pays = {str(f["perimetre"]) for f in fonctions if str(f["cle"]) == _PAYS_FONCTION and f.get("perimetre")}
-    continents = {str(f["perimetre"]) for f in fonctions if str(f["cle"]) == _CONTINENT_FONCTION and f.get("perimetre")}
-    for column, values in (("pays_code", pays), ("continent", continents)):
-        if not values:
-            continue
-        for table, roots in (("coordination", coord_roots), ("intendance", intend_roots)):
-            found = db.fetch_all(
-                f"SELECT id FROM {table} WHERE {column} = ANY(%s)",
-                (list(values),),
-                role=user.role,
-            )
-            roots.update(str(r["id"]) for r in found)
+    if has_perimeter_fn:
+        # Perimeter responsable (coordinateur / intendant / patriarche / pays /
+        # continent): governs the whole perimeter, no commission restriction.
+        if "coordinateur" in cles and me.get("coordination_id"):
+            coord_roots.add(str(me["coordination_id"]))
+        if "intendant" in cles and me.get("intendance_id"):
+            intend_roots.add(str(me["intendance_id"]))
+        if "patriarche" in cles and me.get("tribu_id"):
+            tribu_roots.add(str(me["tribu_id"]))
+        pays = {str(f["perimetre"]) for f in fonctions if str(f["cle"]) == _PAYS_FONCTION and f.get("perimetre")}
+        continents = {str(f["perimetre"]) for f in fonctions if str(f["cle"]) == _CONTINENT_FONCTION and f.get("perimetre")}
+        for column, values in (("pays_code", pays), ("continent", continents)):
+            if not values:
+                continue
+            for table, roots in (("coordination", coord_roots), ("intendance", intend_roots)):
+                found = db.fetch_all(
+                    f"SELECT id FROM {table} WHERE {column} = ANY(%s)",
+                    (list(values),),
+                    role=user.role,
+                )
+                roots.update(str(r["id"]) for r in found)
+    else:
+        # Pure commission responsable: scope = their OWN perimeter (coordination or
+        # intendance they belong to) INTERSECTED with the commission(s) they lead.
+        # They never see the same commission in another perimeter.
+        if me.get("coordination_id"):
+            coord_roots.add(str(me["coordination_id"]))
+        if me.get("intendance_id"):
+            intend_roots.add(str(me["intendance_id"]))
+        commission_ids = commission_resp
 
     return Scope(
         is_global=False,
         coordination_ids=_closure("coordination", coord_roots, user.role),
         intendance_ids=_closure("intendance", intend_roots, user.role),
         tribu_ids=frozenset(tribu_roots),
+        commission_ids=commission_ids,
     )
 
 
