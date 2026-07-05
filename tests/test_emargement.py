@@ -36,6 +36,11 @@ def test_phone_does_not_match_empty() -> None:
     assert not emargement._phone_matches("+33", "0612345678", "+33", None)
 
 
+def test_norm_matricule_upper_and_no_space() -> None:
+    assert emargement._norm_matricule("  ads-000001 ") == "ADS-000001"
+    assert emargement._norm_matricule("ads 2026 000001") == "ADS2026000001"
+
+
 def test_token_roundtrip_returns_member() -> None:
     token = emargement._sign("m-1", "e-1")
     assert emargement._verify(token, "e-1") == "m-1"

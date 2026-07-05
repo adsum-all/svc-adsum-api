@@ -90,6 +90,16 @@ def _digits(value: str | None) -> str:
     return re.sub(r"\D", "", value or "")
 
 
+def _norm_matricule(value: str) -> str:
+    """Canonical form of a member matricule for comparison: upper case, no spaces.
+
+    Members carry a human-readable, assigned matricule (e.g. ``ADS-000001`` or
+    ``ADS-2026-000001``). It is matched verbatim once trimmed and upper-cased, so
+    both stored formats work without inventing a second identifier.
+    """
+    return re.sub(r"\s+", "", value or "").upper()
+
+
 def _phone_matches(in_indicatif: str, in_numero: str, stored_indicatif: str | None, stored_numero: str | None) -> bool:
     """Whether an entered (dial code, number) identifies a stored member phone.
 
@@ -111,7 +121,8 @@ def _phone_matches(in_indicatif: str, in_numero: str, stored_indicatif: str | No
 
 def _event_or_404(evenement_id: str) -> dict[str, object]:
     row = db.fetch_one(
-        f"SELECT e.id, e.titre, e.lieu, e.debut, e.emargement_externe, "
+        f"SELECT e.id, e.titre, e.lieu, e.debut, e.fin, e.emargement_externe, "
+        f"coalesce(e.type_diffusion, 'aucun') AS type_diffusion, "
         f"(e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
         f"(e.debut IS NOT NULL AND now() > {FENETRE_FIN_SQL}) AS cloture, "
         f"{FENETRE_FIN_SQL} AS cloture_le "
@@ -138,15 +149,24 @@ class EventCard(BaseModel):
     titre: str
     lieu: str | None = None
     debut: str | None = None
+    fin: str | None = None
+    en_ligne: bool = False
     ouvert: bool
     cloture: bool
     cloture_le: str | None = None
 
 
 class IdentifierIn(BaseModel):
-    indicatif: str = Field(min_length=1, max_length=8)
-    telephone: str = Field(min_length=3, max_length=32)
-    nom: str = Field(min_length=1, max_length=120)
+    """Identify a member either by matricule (priority) or by dial code + phone + last name.
+
+    Only one mode is used per request: the matricule is tried first when provided,
+    otherwise the phone triple. The two modes are never required together.
+    """
+
+    matricule: str | None = Field(default=None, max_length=32)
+    indicatif: str | None = Field(default=None, max_length=8)
+    telephone: str | None = Field(default=None, max_length=32)
+    nom: str | None = Field(default=None, max_length=120)
 
 
 class IdentiteOut(BaseModel):
@@ -177,38 +197,69 @@ def carte_evenement(evenement_id: str) -> EventCard:
         titre=str(ev["titre"]),
         lieu=ev["lieu"],
         debut=ev["debut"].isoformat() if ev["debut"] else None,
+        fin=ev["fin"].isoformat() if ev.get("fin") else None,
+        en_ligne=str(ev.get("type_diffusion") or "aucun") != "aucun",
         ouvert=bool(ev["demarree"]) and not bool(ev["cloture"]),
         cloture=bool(ev["cloture"]),
         cloture_le=ev["cloture_le"].isoformat() if ev.get("cloture_le") else None,
     )
 
 
-@router.post("/emargement/{evenement_id}/identifier", response_model=IdentiteOut)
-def identifier(evenement_id: str, payload: IdentifierIn) -> IdentiteOut:
-    """Identify a member by dial code + phone + last name and issue a bound token.
+_ECHEC_MATRICULE = "Matricule introuvable. Vérifiez votre matricule, ou identifiez-vous avec votre numéro et votre nom."
+_ECHEC_TELEPHONE = "Identification impossible. Vérifiez votre indicatif, votre numéro et votre nom de famille."
 
-    Returns a minimal confirmation card. On any failure the message is uniform so
-    the endpoint cannot be used to test whether a given phone or name is a member.
+
+def _identifier_par_matricule(matricule: str) -> dict[str, object]:
+    """Resolve a member from their matricule (priority mode). Uniform failure."""
+    rows = db.fetch_all(
+        "SELECT id, prenoms, nom, matricule FROM membre WHERE upper(replace(matricule, ' ', '')) = %s",
+        (_norm_matricule(matricule),),
+    )
+    if len(rows) != 1:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_ECHEC_MATRICULE)
+    return rows[0]
+
+
+def _identifier_par_telephone(indicatif: str, telephone: str, nom: str) -> dict[str, object]:
+    """Resolve a member from dial code + phone + last name (fallback mode).
+
+    Two factors required (phone AND name) to resist impersonation. Uniform failure.
     """
-    ev = _event_or_404(evenement_id)
-    _guard_window(ev)
-    nom = payload.nom.strip().upper()
     candidates = db.fetch_all(
         "SELECT id, prenoms, nom, matricule, telephone, indicatif_telephone FROM membre "
         "WHERE upper(nom) = %s AND telephone IS NOT NULL",
-        (nom,),
+        (nom.strip().upper(),),
     )
     matches = [
         c for c in candidates
-        if _phone_matches(payload.indicatif, payload.telephone, c.get("indicatif_telephone"), c.get("telephone"))
+        if _phone_matches(indicatif, telephone, c.get("indicatif_telephone"), c.get("telephone"))
     ]
     if len(matches) != 1:
         # 0 (not found) or >1 (ambiguous) both yield the same neutral answer.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_ECHEC_TELEPHONE)
+    return matches[0]
+
+
+@router.post("/emargement/{evenement_id}/identifier", response_model=IdentiteOut)
+def identifier(evenement_id: str, payload: IdentifierIn) -> IdentiteOut:
+    """Identify a member, matricule first then phone + last name, and issue a bound token.
+
+    Matricule is the priority mode (a member's own assigned, communicated code);
+    when it is not provided, the dial code + phone + last name triple is used as a
+    fallback. The two modes are never required together. On failure the message is
+    uniform so the endpoint cannot confirm whether a matricule, phone or name exists.
+    """
+    ev = _event_or_404(evenement_id)
+    _guard_window(ev)
+    if payload.matricule and payload.matricule.strip():
+        m = _identifier_par_matricule(payload.matricule)
+    elif payload.indicatif and payload.telephone and payload.nom:
+        m = _identifier_par_telephone(payload.indicatif, payload.telephone, payload.nom)
+    else:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Identification impossible. Vérifiez votre indicatif, votre numéro et votre nom de famille.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Fournissez votre matricule, ou votre indicatif, votre numéro et votre nom.",
         )
-    m = matches[0]
     membre_id = str(m["id"])
     existing = db.fetch_one(
         "SELECT statut, valide FROM participation WHERE evenement_id = %s AND membre_id = %s",
