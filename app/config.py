@@ -7,6 +7,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ADSUM_", extra="ignore")
 
+    # Deployment environment. Set ADSUM_ENVIRONMENT=production on the live
+    # deployment: it turns on fail-closed guards (e.g. a dedicated document
+    # encryption key becomes mandatory instead of a dev-only derived fallback).
+    environment: str = "development"
     # PostgreSQL connection (plain postgresql:// form), Supabase Paris in production.
     database_url: str = ""
     # JWT signing
@@ -41,9 +45,10 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
     storage_bucket_photos: str = "member-photos"
     storage_bucket_documents: str = "member-documents"
-    # Encryption key for identity documents at rest (Fernet). If unset, a key is
-    # derived from jwt_secret so encryption still works; set a dedicated key
-    # (ADSUM_DOC_ENCRYPTION_KEY) in production for proper key separation.
+    # Encryption key for identity documents at rest (Fernet). Mandatory in
+    # production: when environment is production the API fails closed if it is
+    # unset. Outside production a key is derived from jwt_secret so local
+    # development still works, without proper key separation.
     doc_encryption_key: str = ""
     # Retired keys kept for decryption during a rotation (comma-separated Fernet
     # keys). New data is always encrypted with doc_encryption_key.
@@ -64,6 +69,10 @@ class Settings(BaseSettings):
     sms_provider: str = ""
     # Daily cron shared secret (Vercel sends it as an Authorization bearer header).
     cron_secret: str = ""
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() in ("production", "prod")
 
     @property
     def database_dsn(self) -> str:

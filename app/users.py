@@ -122,6 +122,14 @@ def update_utilisateur(
 ) -> UtilisateurOut:
     fields = payload.model_dump(exclude_unset=True)
     if fields:
+        # Capture the prior values so the audit trail records the actual change
+        # (role/actif before and after), not merely which fields were touched.
+        # UpdateUtilisateur carries no secret, so the values are safe to log.
+        before = db.fetch_one(
+            "SELECT role, actif, double_facteur FROM utilisateur WHERE id = %s",
+            (utilisateur_id,),
+            role=user.role,
+        )
         columns = ", ".join(f"{name} = %s" for name in fields)
         updated = db.execute(
             f"UPDATE utilisateur SET {columns} WHERE id = %s RETURNING id",
@@ -130,7 +138,15 @@ def update_utilisateur(
         )
         if not updated:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")
-        audit.log(user.id, user.role, "modification_compte", "utilisateur", utilisateur_id, {"champs": list(fields)})
+        avant = {name: (before.get(name) if before else None) for name in fields}
+        audit.log(
+            user.id,
+            user.role,
+            "modification_compte",
+            "utilisateur",
+            utilisateur_id,
+            {"champs": list(fields), "avant": avant, "apres": fields},
+        )
     row = db.fetch_one(f"{_SELECT} WHERE u.id = %s", (utilisateur_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")

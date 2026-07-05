@@ -19,11 +19,12 @@ from typing import Annotated
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db, identite
 from .auth import current_user
 from .demandes import _notify_ticket, _system_message, require_lecture, require_staff
+from .fields import LineStr, ShortStr
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["modifications"])
@@ -62,7 +63,10 @@ class SoumettreModif(BaseModel):
     hint that a replacement photo was staged (correctness never depends on the
     hint, only the confirmation wording does)."""
 
-    champs: dict[str, str] = {}
+    # Bound both cardinality and value length: the values land in core member
+    # columns and are duplicated into the modification_membre journal, so an
+    # unbounded value would write oversized data into the record.
+    champs: dict[ShortStr, LineStr] = Field(default_factory=dict, max_length=64)
     inclure_photo: bool = False
 
 

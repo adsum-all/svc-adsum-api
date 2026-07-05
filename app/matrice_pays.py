@@ -235,7 +235,7 @@ def deposer_attestation(payload: AttestationUploadIn, ctx: Annotated[tuple[str, 
 # --- Admin: attestation review ----------------------------------------------
 
 @router.get("/admin/attestations")
-def list_attestations(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_attestations(user: Annotated[UserMe, Depends(require_writer)]) -> list[dict[str, object]]:
     rows = db.fetch_all(
         "SELECT a.id, a.statut, a.document_id, to_char(a.echeance, 'YYYY-MM-DD') AS echeance, "
         "trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre, m.pays, m.email "

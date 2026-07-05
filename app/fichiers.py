@@ -237,8 +237,13 @@ def _encrypt_document_at_rest(path: str, declared_mime: str | None) -> tuple[str
     Downloads the bytes with the service key, encrypts them (app-controlled key),
     writes the ciphertext to a fresh ``path.enc`` object, then deletes the
     plaintext. A distinct path avoids any overwrite ambiguity and guarantees the
-    stored object is ciphertext. On any storage/crypto issue the plaintext is left
-    in place and (path, False) is returned, rather than breaking the upload.
+    stored object is ciphertext.
+
+    In production this is fail-closed on the most sensitive data: if any step
+    fails, the plaintext is purged (best effort) and the confirmation is refused
+    (503), so an identity document is never recorded or served in clear. Outside
+    production the plaintext is left in place and (path, False) is returned so
+    local development keeps working without the storage/crypto round-trip.
     """
     from . import crypto
 
@@ -250,7 +255,16 @@ def _encrypt_document_at_rest(path: str, declared_mime: str | None) -> tuple[str
         storage.upload_bytes(bucket, enc_path, ciphertext, content_type=_mime_for(path, declared_mime))
         storage.delete_object(bucket, path)
         return enc_path, True
-    except (storage.StorageError, ValueError):
+    except (storage.StorageError, ValueError) as exc:
+        if settings.is_production:
+            try:
+                storage.delete_object(bucket, path)
+            except storage.StorageError:
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="document encryption unavailable, please retry",
+            ) from exc
         return path, False
 
 
@@ -266,6 +280,13 @@ def doc_confirm(payload: DocConfirm, ctx: Annotated[tuple[str, str], Depends(_me
     # authenticated, audited read.
     from . import crypto
 
+    # Path of the object currently attached to this (member, type), if any, so it
+    # can be purged from the bucket when the new upload replaces it (no orphan).
+    ancien = db.fetch_one(
+        "SELECT chemin_stockage FROM document WHERE membre_id = %s AND type = %s",
+        (membre_id, payload.type),
+        role=role,
+    )
     stored_path, chiffre = _encrypt_document_at_rest(payload.path, payload.mime)
     algo = crypto.ALGO if chiffre else None
     # One logical document per (member, type): a new upload replaces the previous
@@ -279,6 +300,9 @@ def doc_confirm(payload: DocConfirm, ctx: Annotated[tuple[str, str], Depends(_me
         role=role,
     )
     if updated:
+        ancien_path = (ancien or {}).get("chemin_stockage")
+        if ancien_path and str(ancien_path) != stored_path:
+            storage.delete_object(settings.storage_bucket_documents, str(ancien_path))
         return {"id": str(updated["id"]), "chiffre": str(chiffre).lower()}
     created = db.execute(
         "INSERT INTO document (membre_id, type, statut, bucket, chemin_stockage, nom_fichier, mime, chiffre, chiffrement_algo, recu_le) "
@@ -312,15 +336,44 @@ def doc_download_url(document_id: str, ctx: Annotated[tuple[str, str], Depends(_
         return {"url": None, "chiffre": False}
 
 
-def _document_bytes(row: dict[str, object]) -> tuple[bytes, str]:
-    """Return (plaintext bytes, mime) for a document row, decrypting when needed."""
+def _document_bytes(row: dict[str, object]) -> bytes:
+    """Return the plaintext bytes for a document row, decrypting when needed."""
     from . import crypto
 
     bucket = str(row.get("bucket") or settings.storage_bucket_documents)
     raw = storage.download_bytes(bucket, str(row["chemin_stockage"]))
     if row.get("chiffre"):
         raw = crypto.decrypt_bytes(raw)
-    return raw, str(row.get("mime") or "application/octet-stream")
+    return raw
+
+
+def _safe_media_type(path: str) -> str:
+    """A content type derived from the real file extension, NEVER the client mime.
+
+    The client-declared mime is untrusted: a member could upload an HTML file
+    tagged text/html and get it executed in the API origin when a staff member
+    opens it. We only ever serve a known image/PDF type; anything else falls back
+    to octet-stream so the browser downloads it instead of rendering it. The
+    stored ciphertext path ends in ``.enc``: strip it to read the real extension.
+    """
+    real = path[:-4] if path.lower().endswith(".enc") else path
+    ext = real.rsplit(".", 1)[-1].lower() if "." in real else ""
+    return _EXT_MIME.get(ext, "application/octet-stream")
+
+
+def _document_response(data: bytes, path: str) -> Response:
+    """Serve a member document defensively: a safe extension-derived content type,
+    forced download, and a locked-down CSP so no markup/script can execute in the
+    API origin even if a hostile file slips through."""
+    return Response(
+        content=data,
+        media_type=_safe_media_type(path),
+        headers={
+            "Content-Disposition": "attachment",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/documents/{document_id}/content")
@@ -335,19 +388,22 @@ def doc_content(document_id: str, ctx: Annotated[tuple[str, str], Depends(_membr
     if not row or not row.get("chemin_stockage"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
     try:
-        data, mime = _document_bytes(row)
+        data = _document_bytes(row)
     except (storage.StorageError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="document unreadable") from exc
-    return Response(content=data, media_type=mime)
+    return _document_response(data, str(row["chemin_stockage"]))
 
 
 _require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
+# Identity documents are decrypted here: keep this to the roles with a real need
+# (never controleur, a field scan operator, nor direction, read-only supervision).
+_require_docs = require_roles("super_admin", "admin", "gestionnaire")
 
 admin_router = APIRouter(prefix="/api/v1/admin", tags=["fichiers"])
 
 
 @admin_router.get("/documents/{document_id}/url")
-def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_staff)]) -> dict[str, str | bool | None]:
+def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_docs)]) -> dict[str, str | bool | None]:
     """Signed download URL for any member's document, for admin review (e.g. a
     hand-signed attestation scan). Encrypted documents are read through the
     audited content endpoint instead of a plain signed URL."""
@@ -368,7 +424,7 @@ def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_sta
 
 
 @admin_router.get("/documents/{document_id}/content")
-def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(_require_staff)]) -> Response:
+def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(_require_docs)]) -> Response:
     """Decrypted bytes of any member's document, for staff review. Every access is
     audited (who read which document), because this is a controlled decryption of
     a sensitive identity file."""
@@ -380,12 +436,12 @@ def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(_require
     if not row or not row.get("chemin_stockage"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
     try:
-        data, mime = _document_bytes(row)
+        data = _document_bytes(row)
     except (storage.StorageError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="document unreadable") from exc
     audit.log(user.id, user.role, "consultation_document", "document", document_id,
               {"membre_id": str(row.get("membre_id")), "chiffre": bool(row.get("chiffre"))})
-    return Response(content=data, media_type=mime)
+    return _document_response(data, str(row["chemin_stockage"]))
 
 
 @admin_router.get("/membres/{membre_id}/photo-url")

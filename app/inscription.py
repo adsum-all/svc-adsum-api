@@ -22,6 +22,7 @@ from . import audit, db, identifiants
 from .auth import current_user
 from .deps import require_roles
 from .email_gateway import send_email
+from .fields import LineStr, ShortStr
 from .modifications import _EDITABLE_FIELDS, soumettre_cycle
 from .schemas import UserMe
 from .security import hash_password
@@ -380,31 +381,31 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
 
 
 class ProfilUpdate(BaseModel):
-    prenoms: str | None = None
-    nom: str | None = None
-    telephone: str | None = None
-    indicatif_telephone: str | None = None
-    date_naissance: str | None = None
+    prenoms: LineStr | None = None
+    nom: LineStr | None = None
+    telephone: ShortStr | None = None
+    indicatif_telephone: ShortStr | None = None
+    date_naissance: ShortStr | None = None
     naissance_annee_visible: bool | None = None
-    genre: str | None = None
-    pays: str | None = None
-    region: str | None = None
-    ville: str | None = None
-    adresse: str | None = None
-    adresse_complement: str | None = None
-    commission_id: str | None = None
-    intendance_id: str | None = None
-    tribu_id: str | None = None
-    groupe: str | None = None
-    profession: str | None = None
-    niveau_etudes: str | None = None
-    situation_matrimoniale: str | None = None
-    type_mariage: str | None = None
+    genre: ShortStr | None = None
+    pays: LineStr | None = None
+    region: LineStr | None = None
+    ville: LineStr | None = None
+    adresse: LineStr | None = None
+    adresse_complement: LineStr | None = None
+    commission_id: ShortStr | None = None
+    intendance_id: ShortStr | None = None
+    tribu_id: ShortStr | None = None
+    groupe: LineStr | None = None
+    profession: LineStr | None = None
+    niveau_etudes: LineStr | None = None
+    situation_matrimoniale: ShortStr | None = None
+    type_mariage: ShortStr | None = None
     baptise: bool | None = None
     confirme: bool | None = None
     premiere_communion: bool | None = None
-    type_membre: str | None = None
-    fonction_cle: str | None = None
+    type_membre: ShortStr | None = None
+    fonction_cle: ShortStr | None = None
 
 
 @router.patch("/membres/me/profil")

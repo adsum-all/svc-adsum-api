@@ -86,6 +86,7 @@ class MembreProfile(BaseModel):
     confirme: bool | None = None
     premiere_communion: bool | None = None
     commission: str | None = None
+    commission_type: str | None = None  # 'commission' | 'mission' | ... for the display prefix
     intendance: str | None = None
     intendance_id: str | None = None
     berger: str | None = None
@@ -94,7 +95,13 @@ class MembreProfile(BaseModel):
     tribu_id: str | None = None
     patriarche: str | None = None  # current human patriarche of the tribe, resolved (blank if none)
     coordination: str | None = None
+    coordination_id: str | None = None
+    # Responsables resolved from the structure the member belongs to, with a
+    # gender-aware title (Intendant/Intendante, Coordinateur/Coordinatrice).
     coordinateur: str | None = None
+    coordinateur_titre: str | None = None
+    intendant: str | None = None
+    intendant_titre: str | None = None
     champs_deverrouilles: list[str] = []
     langue: str = "fr"
     commission_id: str | None = None
@@ -253,6 +260,9 @@ class MembreFields(BaseModel):
     pays: str | None = None
     ville: str | None = None
     intendance_id: str | None = None
+    # A member belongs to a coordination OR an intendance, never both (enforced by
+    # a DB CHECK and validated in the update handler).
+    coordination_id: str | None = None
     berger_referent_id: str | None = None
     date_entree: date | None = None
     cheminement_pastoral: str | None = Field(default=None, pattern=_CHEMINEMENT)
@@ -295,19 +305,46 @@ class UpdateMembre(MembreFields):
 
 
 class CoordinationOut(BaseModel):
-    """A coordination row. Independent by default; parent is optional."""
+    """A coordination row. Independent by default; parent is optional.
+
+    Carries its own descriptive and geographic identity so the administration
+    understands its nature, scope and location, not just a bare name.
+    """
 
     id: str
     nom: str
     description: str | None = None
+    pays_code: str | None = None  # ISO 3166-1 alpha-2, source of truth for the country
+    pays: str | None = None  # display name, kept for backward compatibility
+    continent: str | None = None
+    ville: str | None = None
+    statut: str = "actif"  # actif | archive
     publie: bool = True
     parent_id: str | None = None
     parent: str | None = None
+    responsable: str | None = None  # resolved coordinateur name (via the function)
+    responsable_titre: str | None = None  # Coordinateur/Coordinatrice per gender
 
 
 class CreateCoordination(BaseModel):
-    nom: str = Field(min_length=1)
-    description: str | None = None
+    nom: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pays_code: str | None = Field(default=None, max_length=2)
+    continent: str | None = Field(default=None, max_length=40)
+    ville: str | None = Field(default=None, max_length=120)
+    statut: str = Field(default="actif", pattern="^(actif|archive)$")
+    parent_id: str | None = None
+
+
+class UpdateCoordination(BaseModel):
+    """Partial update of a coordination. Only provided fields are written."""
+
+    nom: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pays_code: str | None = Field(default=None, max_length=2)
+    continent: str | None = Field(default=None, max_length=40)
+    ville: str | None = Field(default=None, max_length=120)
+    statut: str | None = Field(default=None, pattern="^(actif|archive)$")
     parent_id: str | None = None
 
 
@@ -317,19 +354,43 @@ class IntendanceOut(BaseModel):
 
     id: str
     nom: str
-    pays: str | None = None
+    description: str | None = None
+    pays_code: str | None = None  # ISO 3166-1 alpha-2, source of truth
+    pays: str | None = None  # display name, kept for backward compatibility
+    continent: str | None = None
     ville: str | None = None
+    statut: str = "actif"  # actif | archive
     coordination_id: str | None = None
     coordination: str | None = None
     publie: bool = True
     parent_id: str | None = None
     parent: str | None = None
+    responsable: str | None = None  # resolved intendant name (via the function)
+    responsable_titre: str | None = None  # Intendant/Intendante per gender
 
 
 class CreateIntendance(BaseModel):
-    nom: str = Field(min_length=1)
-    pays: str | None = None
-    ville: str | None = None
+    nom: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pays_code: str | None = Field(default=None, max_length=2)
+    pays: str | None = Field(default=None, max_length=120)
+    continent: str | None = Field(default=None, max_length=40)
+    ville: str | None = Field(default=None, max_length=120)
+    statut: str = Field(default="actif", pattern="^(actif|archive)$")
+    coordination_id: str | None = None
+    parent_id: str | None = None
+
+
+class UpdateIntendance(BaseModel):
+    """Partial update of an intendance. Only provided fields are written."""
+
+    nom: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pays_code: str | None = Field(default=None, max_length=2)
+    pays: str | None = Field(default=None, max_length=120)
+    continent: str | None = Field(default=None, max_length=40)
+    ville: str | None = Field(default=None, max_length=120)
+    statut: str | None = Field(default=None, pattern="^(actif|archive)$")
     coordination_id: str | None = None
     parent_id: str | None = None
 

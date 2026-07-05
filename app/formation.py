@@ -16,9 +16,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import audit, db, visibilite
+from . import audit, db, ratelimit, visibilite
 from .auth import current_user
 from .deps import require_roles
+from .fields import LineStr, LongTextStr, ShortStr, TitleStr
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["formation"])
@@ -44,8 +45,8 @@ def _fenetre_heures(role: str) -> int:
 # --- Admin: session link and live session ----------------------------------
 
 class SessionPatch(BaseModel):
-    lien_session: str | None = None
-    liens: list[str] | None = None
+    lien_session: LineStr | None = None
+    liens: list[LineStr] | None = None
     session_ouverte: bool | None = None
     type_diffusion: str | None = Field(default=None, pattern="^(embed|externe|aucun)$")
     visibilite: str | None = Field(default=None, pattern="^(public|membres|prive)$")
@@ -105,6 +106,14 @@ def test_diffusion(evenement_id: str, user: Annotated[UserMe, Depends(require_ev
     ev = db.fetch_one("SELECT titre FROM evenement WHERE id = %s", (evenement_id,), role=user.role)
     if not ev:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
+    # This test fans out to every active member across all channels (including the
+    # paid WhatsApp channel), so cap it to one send per event and per hour to stop
+    # a looped trigger from amplifying notifications or running up cost.
+    if not ratelimit.throttle_action(f"test-diffusion:{evenement_id}", 1, 3600):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="test de diffusion deja envoye pour cet evenement dans la derniere heure",
+        )
     sent = 0
     for m in db.fetch_all("SELECT id FROM membre WHERE statut = 'actif'", (), role=user.role):
         if notifier(str(m["id"]), user.role, "activite_test_diffusion", {"titre": ev["titre"]}, ref_id=evenement_id, dedup=False):
@@ -129,14 +138,14 @@ def _notifier_session_ouverte(evenement_id: str, lien: str, role: str) -> None:
 # --- Admin: questionnaire builder -------------------------------------------
 
 class QuestionIn(BaseModel):
-    libelle: str
-    type: str = "texte"  # 'texte' | 'choix' | 'note'
-    options: list[str] = []
+    libelle: TitleStr
+    type: ShortStr = "texte"  # 'texte' | 'choix' | 'note'
+    options: list[LineStr] = []
 
 
 class QuestionnaireIn(BaseModel):
-    titre: str = "Questionnaire de session"
-    questions: list[QuestionIn]
+    titre: TitleStr = "Questionnaire de session"
+    questions: list[QuestionIn] = Field(max_length=100)
 
 
 @router.put("/admin/evenements/{evenement_id}/questionnaire")
@@ -238,7 +247,9 @@ def get_questionnaire_membre(evenement_id: str, ctx: Annotated[tuple[str, str], 
 
 
 class ReponseIn(BaseModel):
-    reponses: dict[str, str]
+    # Answer values are free text: bound both the number of entries and each
+    # value's length so a single submission cannot carry an unbounded payload.
+    reponses: dict[ShortStr, LongTextStr] = Field(max_length=200)
 
 
 @router.post("/membres/me/evenements/{evenement_id}/questionnaire", status_code=status.HTTP_201_CREATED)

@@ -16,6 +16,7 @@ from . import db, identifiants
 from .auth import current_user
 from .demandes_catalogue import _TRANSITIONS, CATALOGUE, STATUTS_LISIBLES
 from .deps import require_roles
+from .fields import ShortStr, TextStr, TitleStr
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["demandes"])
@@ -32,34 +33,34 @@ def _require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str
 
 
 class DemandeIn(BaseModel):
-    type: str = "question"
-    sujet: str
-    champ_concerne: str | None = None
-    message: str
-    categorie: str | None = None
-    sous_categorie: str | None = None
+    type: ShortStr = "question"
+    sujet: TitleStr
+    champ_concerne: ShortStr | None = None
+    message: TextStr
+    categorie: ShortStr | None = None
+    sous_categorie: ShortStr | None = None
     # Optional supporting document: never required to submit (absolute rule).
-    document_id: str | None = None
+    document_id: ShortStr | None = None
 
 
 class MessageIn(BaseModel):
-    corps: str
+    corps: TextStr
     # Optional supporting document uploaded through the standard document flow,
     # attached to this very ticket message (rule: files live inside the thread).
-    document_id: str | None = None
+    document_id: ShortStr | None = None
 
 
 class DemandePatch(BaseModel):
-    statut: str | None = None
-    champs_deverrouilles: list[str] | None = None
-    motif: str | None = None
+    statut: ShortStr | None = None
+    champs_deverrouilles: list[ShortStr] | None = None
+    motif: TextStr | None = None
     # Response window (days) granted with an unlock; falls back to the central
     # admin parameter deblocage_delai_jours when omitted.
     delai_jours: int | None = Field(default=None, ge=1, le=90)
 
 
 class PieceRequeteIn(BaseModel):
-    description: str
+    description: TextStr
 
 
 class MessageOut(BaseModel):
@@ -276,6 +277,26 @@ def my_demandes(ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) 
     return [_demande_row(r) for r in rows]
 
 
+def _validated_document_id(document_id: str | None, membre_id: str, role: str) -> str | None:
+    """Ensure an attached document belongs to the current member, else reject.
+
+    Without this check a member could attach any document_id, including another
+    member's, to their own ticket: the staff agent handling it would then see and
+    could open a third party's identity file from this thread. Ownership is not
+    verified elsewhere on this write path, so it is enforced here.
+    """
+    if not document_id:
+        return None
+    owns = db.fetch_one(
+        "SELECT 1 FROM document WHERE id = %s AND membre_id = %s",
+        (document_id, membre_id),
+        role=role,
+    )
+    if not owns:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown document")
+    return document_id
+
+
 @router.post("/membres/me/demandes", response_model=DemandeDetail, status_code=status.HTTP_201_CREATED)
 def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) -> DemandeDetail:
     membre_id, role, _ = ctx
@@ -294,9 +315,10 @@ def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depe
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="request not created")
     did = str(created["id"])
+    doc_id = _validated_document_id(payload.document_id, membre_id, role)
     db.execute(
         "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id) VALUES (%s, 'membre', %s, %s, %s)",
-        (did, auteur, payload.message, payload.document_id),
+        (did, auteur, payload.message, doc_id),
         role=role,
     )
     out = _demande_row(created)
@@ -339,10 +361,11 @@ def my_demande_reply(
         "SELECT trim(coalesce(prenoms,'')||' '||coalesce(nom,'')) AS nom FROM membre WHERE id = %s", (membre_id,), role=role
     )
     auteur = (nom_row["nom"] if nom_row and nom_row.get("nom") else "Membre") or "Membre"
+    doc_id = _validated_document_id(payload.document_id, membre_id, role)
     created = db.execute(
         "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id) VALUES (%s, 'membre', %s, %s, %s) "
         "RETURNING id, auteur_type, auteur_nom, corps, cree_le",
-        (demande_id, auteur, payload.corps, payload.document_id),
+        (demande_id, auteur, payload.corps, doc_id),
         role=role,
     )
     db.execute("UPDATE demande SET maj_le = now() WHERE id = %s", (demande_id,), role=role)

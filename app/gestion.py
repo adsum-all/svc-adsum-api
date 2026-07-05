@@ -87,8 +87,12 @@ def demander_document(membre_id: str, payload: DemandeDocIn, user: Annotated[Use
 
 
 @router.get("/{membre_id}/connexions")
-def connexions(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
-    """Recent login sessions for the member (security tracking)."""
+def connexions(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> list[dict[str, object]]:
+    """Recent login sessions for the member (security tracking).
+
+    Exposes the member's IP and geolocation history, so it is reserved to the
+    account administrators, not the general member-managing staff (gestionnaire).
+    """
     rows = db.fetch_all(
         "SELECT s.ip::text AS ip, s.appareil, s.pays, s.ville, s.region, s.cree_le, s.fin, s.revoque, "
         "EXTRACT(EPOCH FROM (COALESCE(s.fin, now()) - s.cree_le))::bigint AS duree_s "

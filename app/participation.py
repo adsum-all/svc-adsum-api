@@ -30,6 +30,11 @@ from .schemas import UserMe
 router = APIRouter(prefix="/api/v1", tags=["participation"])
 
 require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
+# The per-member analytic profile lives inside the member file, which is reserved
+# to the member-managing roles (same set as admin.get_membre): a field scanner
+# (controleur) only scans attendance and read-only supervision (direction) works
+# from aggregates, so neither reads one member's individual behaviour.
+require_membre_reader = require_roles("super_admin", "admin", "gestionnaire")
 
 _STATUTS = ("present", "partiel", "absent")
 _MODALITES = ("presentiel", "en_ligne")
@@ -517,7 +522,7 @@ def participation_global(user: Annotated[UserMe, Depends(require_staff)]) -> dic
 # --- Admin: per-member analytics (inside the member file only) ---------------
 
 @router.get("/admin/membres/{membre_id}/participation-analytique")
-def participation_membre(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object]:
+def participation_membre(membre_id: str, user: Annotated[UserMe, Depends(require_membre_reader)]) -> dict[str, object]:
     """Individual participation view for one member's file.
 
     Meant for understanding and accompaniment, never for ranking: it is only

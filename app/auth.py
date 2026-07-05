@@ -10,8 +10,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
 from . import audit, db, ratelimit
+from .clientip import client_ip
 from .schemas import LoginRequest, TokenResponse, UserMe
-from .security import create_access_token, decode_access_token, hash_password, verify_password
+from .security import create_access_token, decode_access_token, hash_password, verify_password_or_dummy
 
 try:
     from .email_gateway import send_code, verify_and_consume, verify_code
@@ -53,7 +54,8 @@ class ResetRequest(BaseModel):
 def login(payload: LoginRequest, request: Request) -> TokenResponse:
     ratelimit.enforce(request, "login")
     user = db.get_user_by_email(payload.email)
-    if not user or not user["actif"] or not verify_password(payload.password, user["hash_mdp"]):
+    password_ok = verify_password_or_dummy(payload.password, user["hash_mdp"] if user else None)
+    if not user or not user["actif"] or not password_ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
     # A temporary password is only valid for 72h (server-side). After that the
     # member must contact the administration for a new one.
@@ -79,10 +81,7 @@ def _geo(request: Request) -> tuple[str | None, str | None, str | None]:
 
 
 def _client_ip(request: Request) -> str | None:
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else None
+    return client_ip(request)
 
 
 def _record_session(user_id: str, role: str, request: Request) -> str | None:
@@ -162,19 +161,28 @@ def premiere_connexion(payload: PremiereConnexion, request: Request) -> TokenRes
     if len(payload.nouveau_mdp) < 8:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password too short")
     user = db.get_user_by_email(payload.email)
-    if not user or not user["actif"] or not verify_password(payload.mdp_temporaire, user["hash_mdp"]):
+    password_ok = verify_password_or_dummy(payload.mdp_temporaire, user["hash_mdp"] if user else None)
+    if not user or not user["actif"] or not password_ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid temporary password")
     if user.get("mdp_temporaire") and _temp_expired(user.get("mdp_expire_le")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="temporary password expired")
-    client_ip = request.client.host if request.client else None
-    if not verify_and_consume(str(payload.email), "login_2fa", payload.code_otp, ip=client_ip):
+    # Per-account OTP lockout, independent of the caller IP, so the login_2fa code
+    # cannot be brute-forced by rotating IPs. This endpoint sets the definitive
+    # password, so a forced OTP would mean a full account takeover.
+    ratelimit.otp_guard(str(payload.email), "login_2fa")
+    consent_ip = client_ip(request)
+    if not verify_and_consume(str(payload.email), "login_2fa", payload.code_otp, ip=consent_ip):
+        ratelimit.otp_failure(str(payload.email), "login_2fa")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid code")
     db.execute(
         "UPDATE utilisateur SET hash_mdp = %s, mdp_temporaire = false, doit_changer_mdp = false, "
         "mdp_expire_le = NULL WHERE id = %s",
         (hash_password(payload.nouveau_mdp), str(user["id"])),
     )
-    token = create_access_token(subject=str(user["id"]), role=user["role"])
+    # Emit a session-bound token like login, so logout and admin revocation can
+    # invalidate this first-login token before its natural 14-day expiry.
+    sid = _record_session(str(user["id"]), user["role"], request)
+    token = create_access_token(subject=str(user["id"]), role=user["role"], sid=sid)
     return TokenResponse(access_token=token, role=user["role"], doit_changer_mdp=False)
 
 
@@ -187,6 +195,17 @@ def current_user(creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)
     user = db.get_user_by_id(claims["sub"], role=claims["role"])
     if not user or not user["actif"]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="account not available")
+    # A revoked or closed session invalidates the token immediately, so logout and
+    # admin revocation take effect before the token's natural expiry.
+    sid = claims.get("sid")
+    if sid:
+        session = db.fetch_one(
+            "SELECT 1 FROM session WHERE id = %s AND revoque = false AND fin IS NULL",
+            (str(sid),),
+            role=claims["role"],
+        )
+        if not session:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session closed")
     return UserMe(
         id=str(user["id"]),
         email=user["email"],
@@ -258,8 +277,15 @@ def _otp_via_telegram(email: str, purpose: str) -> None:
 
 
 @router.post("/verify-otp")
-def verify_otp(payload: OtpVerify) -> dict[str, object]:
-    return {"valid": verify_code(str(payload.email), payload.purpose, payload.code)}
+def verify_otp(payload: OtpVerify, request: Request) -> dict[str, object]:
+    # Rate-limited per (trusted) IP and locked out per account after repeated
+    # failures, so this verification cannot be used as a brute-force oracle.
+    ratelimit.enforce(request, "verify-otp")
+    ratelimit.otp_guard(str(payload.email), payload.purpose)
+    valid = verify_code(str(payload.email), payload.purpose, payload.code)
+    if not valid:
+        ratelimit.otp_failure(str(payload.email), payload.purpose)
+    return {"valid": valid}
 
 
 @router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
@@ -268,8 +294,9 @@ def reset_password(payload: ResetRequest, request: Request) -> None:
     ratelimit.enforce(request, "reset-password")
     if len(payload.nouveau) < 8:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password too short")
-    client_ip = request.client.host if request.client else None
-    if not verify_and_consume(str(payload.email), "password_reset", payload.code, ip=client_ip):
+    ratelimit.otp_guard(str(payload.email), "password_reset")
+    if not verify_and_consume(str(payload.email), "password_reset", payload.code, ip=client_ip(request)):
+        ratelimit.otp_failure(str(payload.email), "password_reset")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid code")
     # Owner connection (role=None) bypasses RLS; scoped by e-mail. No reveal if absent.
     db.execute(

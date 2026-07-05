@@ -34,10 +34,30 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 STAFF = ("super_admin", "admin", "gestionnaire", "controleur", "direction")
 MEMBRE_WRITERS = ("super_admin", "admin")
 EVENT_WRITERS = ("super_admin", "admin", "gestionnaire")
+# Reading a member's full personal record (address, phone, DOB, marital status)
+# is not needed by a field scanner (controleur) nor read-only supervision
+# (direction): keep the nominative directory to the member-managing roles.
+MEMBRE_READERS = ("super_admin", "admin", "gestionnaire")
 
 require_staff = require_roles(*STAFF)
 require_membre_writer = require_roles(*MEMBRE_WRITERS)
 require_event_writer = require_roles(*EVENT_WRITERS)
+require_membre_reader = require_roles(*MEMBRE_READERS)
+
+# Governance and state fields whose before/after values are safe to record in
+# the audit trail: they carry accountability (validation, membership state,
+# pastoral status) without free personal data. The confidential note and raw
+# PII fields are deliberately excluded, so the audit stays minimal (RGPD).
+_AUDITED_VALUE_FIELDS = (
+    "statut",
+    "verifie",
+    "appartenance",
+    "est_berger",
+    "type_membre",
+    "fonction_cle",
+    "fonction_perimetre",
+    "nom_affiche",
+)
 
 
 def _read_membre(membre_id: str, role: str) -> MembreProfile:
@@ -92,7 +112,7 @@ def create_membre(
 
 @router.get("/membres", response_model=list[MembreProfile])
 def list_membres(
-    user: Annotated[UserMe, Depends(require_staff)],
+    user: Annotated[UserMe, Depends(require_membre_reader)],
     q: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -124,9 +144,31 @@ def list_membres(
 @router.get("/membres/{membre_id}", response_model=MembreProfile)
 def get_membre(
     membre_id: str,
-    user: Annotated[UserMe, Depends(require_staff)],
+    user: Annotated[UserMe, Depends(require_membre_reader)],
 ) -> MembreProfile:
     return _read_membre(membre_id, user.role)
+
+
+def _verifier_axe_orga_exclusif(membre_id: str, fields: dict[str, object], role: str) -> None:
+    """Reject setting both a coordination and an intendance on a member.
+
+    A member belongs to a coordination OR an intendance (business rule R3, also a
+    DB CHECK). The effective value of each axis is the one in this update when
+    present, else the value already stored. Raising here gives a clean 400 rather
+    than surfacing the constraint violation as a 500.
+    """
+    if "coordination_id" not in fields and "intendance_id" not in fields:
+        return
+    current = db.fetch_one(
+        "SELECT coordination_id, intendance_id FROM membre WHERE id = %s", (membre_id,), role=role
+    ) or {}
+    coord = fields.get("coordination_id") if "coordination_id" in fields else current.get("coordination_id")
+    intend = fields.get("intendance_id") if "intendance_id" in fields else current.get("intendance_id")
+    if coord and intend:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="un membre ne peut pas appartenir a la fois a une coordination et a une intendance",
+        )
 
 
 @router.patch("/membres/{membre_id}", response_model=MembreProfile)
@@ -138,11 +180,24 @@ def update_membre(
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         return _read_membre(membre_id, user.role)
+    _verifier_axe_orga_exclusif(membre_id, fields, user.role)
     for champ, fonction in (("nom", identite.normaliser_nom), ("prenoms", identite.normaliser_prenoms),
                             ("nom_naissance", identite.normaliser_nom), ("nom_marital", identite.normaliser_nom),
                             ("nom_pastoral", identite.normaliser_prenoms)):
         if fields.get(champ) is not None:
             fields[champ] = fonction(str(fields[champ]))
+    # Snapshot the prior values of the audited governance fields before writing,
+    # so the trail records the actual state change (e.g. verifie false -> true).
+    audited = [name for name in fields if name in _AUDITED_VALUE_FIELDS]
+    before = (
+        db.fetch_one(
+            f"SELECT {', '.join(audited)} FROM membre WHERE id = %s",
+            (membre_id,),
+            role=user.role,
+        )
+        if audited
+        else None
+    )
     columns = ", ".join(f"{name} = %s" for name in fields)
     params = [*fields.values(), membre_id]
     try:
@@ -159,8 +214,13 @@ def update_membre(
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
     action = "validation_identite" if fields.get("verifie") is True else "modification_membre"
-    # Trace field names only, never the confidential note's content.
-    audit.log(user.id, user.role, action, "membre", membre_id, {"champs": list(fields)})
+    # Trace field names always; record before/after only for the whitelisted
+    # governance fields, never the confidential note nor raw personal data.
+    details: dict[str, object] = {"champs": list(fields)}
+    if audited:
+        details["avant"] = {name: (before.get(name) if before else None) for name in audited}
+        details["apres"] = {name: fields[name] for name in audited}
+    audit.log(user.id, user.role, action, "membre", membre_id, details)
     return _read_membre(membre_id, user.role)
 
 
@@ -216,6 +276,7 @@ def create_commission(
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
+    audit.log(user.id, user.role, "creation_commission", "commission", str(created["id"]), {"nom": created["nom"]})
     return CommissionOut(
         id=str(created["id"]),
         nom=created["nom"],
@@ -304,4 +365,8 @@ def create_evenement(
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
+    audit.log(
+        user.id, user.role, "creation_evenement", "evenement", str(created["id"]),
+        {"titre": created["titre"], "cible_type": payload.cible_type},
+    )
     return _evenement_out(created)

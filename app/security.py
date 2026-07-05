@@ -11,6 +11,10 @@ from argon2.exceptions import VerifyMismatchError
 from .config import settings
 
 _hasher = PasswordHasher()
+# A constant Argon2 hash to verify against when an account does not exist, so a
+# failed login takes the same time whether the e-mail is known or not (defeats
+# timing-based account enumeration).
+_DUMMY_HASH = _hasher.hash("adsum-timing-equaliser")
 
 
 def verify_password(password: str, hashed: str) -> bool:
@@ -20,6 +24,12 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
     except Exception:
         return False
+
+
+def verify_password_or_dummy(password: str, hashed: str | None) -> bool:
+    """Verify against the real hash, or against a constant dummy hash when the
+    account is absent. Always runs one Argon2 verification, equalising timing."""
+    return verify_password(password, hashed) if hashed else (verify_password(password, _DUMMY_HASH) and False)
 
 
 def hash_password(password: str) -> str:

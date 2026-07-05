@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from . import db
 from .deps import require_roles
+from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/collaboration", tags=["collaboration"])
@@ -30,8 +31,8 @@ DEFAULT_COLUMNS = ("A preparer", "En preparation", "Pret", "Publie")
 
 
 class TableauIn(BaseModel):
-    nom: str
-    description: str | None = None
+    nom: TitleStr
+    description: TextStr | None = None
 
 
 class TableauOut(BaseModel):
@@ -71,27 +72,27 @@ class TableauDetail(BaseModel):
 
 
 class CarteIn(BaseModel):
-    tableau_id: str
-    colonne_id: str
-    titre: str
-    description: str | None = None
-    type_activite: str | None = None
+    tableau_id: ShortStr
+    colonne_id: ShortStr
+    titre: TitleStr
+    description: TextStr | None = None
+    type_activite: ShortStr | None = None
     date_prevue: datetime | None = None
-    lieu: str | None = None
+    lieu: LineStr | None = None
 
 
 class CartePatch(BaseModel):
-    colonne_id: str | None = None
-    titre: str | None = None
-    description: str | None = None
-    type_activite: str | None = None
+    colonne_id: ShortStr | None = None
+    titre: TitleStr | None = None
+    description: TextStr | None = None
+    type_activite: ShortStr | None = None
     date_prevue: datetime | None = None
-    lieu: str | None = None
+    lieu: LineStr | None = None
     position: int | None = None
 
 
 class CommentaireIn(BaseModel):
-    corps: str
+    corps: TextStr
 
 
 class CommentaireOut(BaseModel):

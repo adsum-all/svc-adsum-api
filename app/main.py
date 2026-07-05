@@ -27,7 +27,7 @@ from .inscription import router as inscription_router
 from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
-from .middleware import SecurityHeadersMiddleware
+from .middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .modifications import router as modifications_router
 from .niveaux import router as niveaux_router
 from .notifications import router as notifications_router
@@ -46,6 +46,7 @@ app = FastAPI(
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",")],

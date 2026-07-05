@@ -21,8 +21,11 @@ a new key, set it as the primary and move the previous one into
 existing documents with the new primary. Once every document is re-encrypted the
 old key can be dropped from ``..._KEYS_OLD``.
 
-If no dedicated key is set, a key is derived from the JWT secret so encryption
-still works; set a dedicated key in production.
+In production (``ADSUM_ENVIRONMENT=production``) a dedicated key is mandatory:
+if it is missing, the API fails closed rather than silently deriving one from
+the JWT secret, which would tie document confidentiality to the token secret and
+break every document the day the JWT secret is rotated. Outside production the
+key may be derived from the JWT secret so local development still works.
 """
 from __future__ import annotations
 
@@ -38,12 +41,24 @@ ALGO = "fernet-v1"
 
 
 def _key_from(raw: str) -> Fernet:
-    """A Fernet from a ready-made key, else derived from the given secret."""
+    """A Fernet from a ready-made key, else derived from the JWT secret.
+
+    In production the derived fallback is refused: a missing or malformed
+    dedicated key raises ``RuntimeError`` so documents are never encrypted with
+    a JWT-derived key. Outside production the derivation keeps local dev working.
+    """
     if raw:
         try:
             return Fernet(raw.encode())
         except (ValueError, TypeError):
-            pass
+            if settings.is_production:
+                raise RuntimeError(
+                    "ADSUM_DOC_ENCRYPTION_KEY is set but is not a valid Fernet key in production"
+                ) from None
+    elif settings.is_production:
+        raise RuntimeError(
+            "ADSUM_DOC_ENCRYPTION_KEY must be set in production (no JWT-derived fallback allowed)"
+        )
     seed = (raw or settings.jwt_secret or "adsum").encode()
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(seed).digest()))
 

@@ -27,6 +27,10 @@ router = APIRouter(prefix="/api/v1/admin/doublons", tags=["doublons"])
 
 require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 require_writer = require_roles("super_admin", "admin")
+# The side-by-side comparison reveals every personal field of two members at once
+# (e-mail, phone, date of birth, full address): keep it to the member-managing
+# roles, never a field scanner (controleur) nor read-only supervision (direction).
+require_reader = require_roles("super_admin", "admin", "gestionnaire")
 
 # Signal weights, summing to 1.0. Name and date of birth dominate; the address
 # adds trigram nuance; the city is a weak corroborating signal. A second set is
@@ -183,7 +187,7 @@ def list_detections(user: Annotated[UserMe, Depends(require_staff)], statut: str
 
 
 @router.get("/comparaison")
-def comparaison(a: str, b: str, user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object]:
+def comparaison(a: str, b: str, user: Annotated[UserMe, Depends(require_reader)]) -> dict[str, object]:
     """Side-by-side comparison of two members with per-field match flags."""
     ma = db.fetch_one(f"SELECT {_DISPLAY} FROM membre WHERE id = %s", (a,), role=user.role)
     mb = db.fetch_one(f"SELECT {_DISPLAY} FROM membre WHERE id = %s", (b,), role=user.role)
