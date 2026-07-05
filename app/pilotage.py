@@ -70,6 +70,28 @@ def moi(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]) -> dict[st
     }
 
 
+@router.get("/perimetres")
+def perimetres(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]) -> list[dict[str, object]]:
+    """The organisational units the caller governs, for targeting activities and
+    consultations. A global role gets the published coordinations and intendances."""
+    scope = ctx.scope
+    out: list[dict[str, object]] = []
+    if scope.is_global:
+        for table, dim in (("coordination", "coordination"), ("intendance", "intendance")):
+            for r in db.fetch_all(f"SELECT id, nom FROM {table} ORDER BY nom ASC LIMIT 500", (), role=ctx.user.role):
+                out.append({"id": str(r["id"]), "nom": r["nom"], "dimension": dim})
+        return out
+    for dim, table, ids in (
+        ("coordination", "coordination", scope.coordination_ids),
+        ("intendance", "intendance", scope.intendance_ids),
+        ("tribu", "tribu", scope.tribu_ids),
+    ):
+        if ids:
+            for r in db.fetch_all(f"SELECT id, nom FROM {table} WHERE id = ANY(%s::uuid[]) ORDER BY nom ASC", (list(ids),), role=ctx.user.role):
+                out.append({"id": str(r["id"]), "nom": r["nom"], "dimension": dim})
+    return out
+
+
 @router.get("/membres")
 def membres(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]) -> list[dict[str, object]]:
     """Members of the caller's perimeter, minimal fields only (relance-safe).
