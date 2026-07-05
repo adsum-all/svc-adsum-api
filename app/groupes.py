@@ -202,6 +202,72 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_rol
     return GroupeOut(id=str(created["id"]), cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=payload.role_accorde, systeme=False, actif=True)
 
 
+@router.get("/catalogue-acces")
+def catalogue_acces(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+    """The role -> capabilities catalogue with labels, descriptions and risk levels.
+
+    Powers the pedagogical admin UI: it explains, for every platform role, exactly
+    what it lets a person do, on which scope, and how sensitive it is, so access is
+    granted knowingly and never by broad guesswork.
+    """
+    from . import permissions
+
+    return {"roles": permissions.catalogue()}
+
+
+@router.get("/membres/{membre_id}/acces-effectif")
+def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+    """A reviewable explanation of a member's effective access, with warnings.
+
+    Lists the global role, every scoped membership with its perimeter, the atomic
+    capabilities each grants, and safety warnings (broad global power, sensitive
+    capabilities), so an admin can review who can see and do what, and where.
+    """
+    from . import permissions
+
+    eff = _effective_role(membre_id, user.role)
+    rows = db.fetch_all(
+        "SELECT g.role_accorde, mg.portee_type, mg.portee_id, "
+        "COALESCE(pc.nom, pin.nom, pk.nom, pt.nom) AS portee_libelle "
+        "FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "LEFT JOIN coordination pc ON mg.portee_type = 'coordination' AND pc.id = mg.portee_id "
+        "LEFT JOIN intendance pin ON mg.portee_type = 'intendance' AND pin.id = mg.portee_id "
+        "LEFT JOIN commission pk ON mg.portee_type = 'commission' AND pk.id = mg.portee_id "
+        "LEFT JOIN tribu pt ON mg.portee_type = 'tribu' AND pt.id = mg.portee_id "
+        "WHERE mg.membre_id = %s AND g.actif = true ORDER BY g.role_accorde DESC",
+        (membre_id,),
+        role=user.role,
+    )
+    acces = []
+    warnings: list[str] = []
+    for r in rows:
+        role_accorde = str(r["role_accorde"])
+        portee_type = str(r["portee_type"])
+        explication = permissions.expliquer_role(role_accorde)
+        acces.append({
+            "role": role_accorde,
+            "role_libelle": explication["libelle"],
+            "risque": explication["risque"],
+            "portee_type": portee_type,
+            "portee_libelle": r.get("portee_libelle"),
+            "portee_texte": "toute la base" if portee_type == "global" else (r.get("portee_libelle") or portee_type),
+            "capabilities": explication["capabilities"],
+        })
+        if portee_type == "global" and role_accorde in ("admin", "super_admin"):
+            warnings.append(f"Accès {explication['libelle']} GLOBAL : pouvoir très large sur toute la base. À réserver au strict nécessaire.")
+        if role_accorde == "super_admin":
+            warnings.append("Rôle super-administration : tous les pouvoirs système. Séparation des tâches recommandée.")
+    if eff == "membre" and acces:
+        warnings.append("Accès uniquement scopés : aucune visibilité globale (comportement attendu, hermétique).")
+    return {
+        "membre_id": membre_id,
+        "role_global_effectif": eff,
+        "risque_global": permissions.role_risque(eff),
+        "acces": acces,
+        "avertissements": warnings,
+    }
+
+
 @router.get("/perimetres-disponibles")
 def perimetres_disponibles(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
     """The organisational units that a scoped group can be attached to."""
