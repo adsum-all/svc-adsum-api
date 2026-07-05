@@ -220,6 +220,38 @@ def tableau_de_bord(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]
     }
 
 
+@router.get("/assiduite")
+def assiduite(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]) -> dict[str, object]:
+    """Attendance follow-up over a 90-day window, scope-bounded: presences per
+    member and the members to reach out to (no presence in the window)."""
+    where, params = ctx.scope.membre_predicate("m")
+    fen = db.fetch_one(
+        "SELECT count(*) AS n FROM evenement WHERE debut >= now() - interval '90 days' AND debut <= now()",
+        (),
+        role=ctx.user.role,
+    ) or {}
+    rows = db.fetch_all(
+        f"SELECT m.id, m.matricule, m.prenoms, m.nom, "
+        f"count(p.id) FILTER (WHERE e.debut >= now() - interval '90 days' AND e.debut <= now()) AS presences "
+        f"FROM membre m LEFT JOIN presence p ON p.membre_id = m.id LEFT JOIN evenement e ON e.id = p.evenement_id "
+        f"WHERE {where} GROUP BY m.id, m.matricule, m.prenoms, m.nom "
+        f"ORDER BY presences ASC, m.nom ASC LIMIT 500",
+        tuple(params),
+        role=ctx.user.role,
+    )
+    membres = [
+        {
+            "id": str(r["id"]),
+            "matricule": r.get("matricule"),
+            "nom_affichage": identite.nom_affichage(r.get("nom"), r.get("prenoms")),
+            "presences": int(r.get("presences") or 0),
+        }
+        for r in rows
+    ]
+    a_relancer = [m for m in membres if m["presences"] == 0]
+    return {"fenetre_jours": 90, "evenements": int(fen.get("n") or 0), "a_relancer": len(a_relancer), "membres": membres}
+
+
 @router.get("/export/membres.csv")
 def export_membres_csv(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]) -> Response:
     """CSV export of the perimeter's members (minimal fields), scope-bounded and
