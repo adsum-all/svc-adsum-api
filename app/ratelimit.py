@@ -14,7 +14,10 @@ from .clientip import client_ip
 
 # endpoint -> (max attempts, window in seconds)
 _LIMITS = {
-    "login": (10, 300),
+    # A shared household/office IP plus the odd password typo trips 10/5min too
+    # easily; 15 still bounds brute force (no password oracle beyond this) while
+    # being forgiving for real members.
+    "login": (15, 300),
     "premiere-connexion": (10, 300),
     "request-otp": (5, 300),
     "reset-password": (10, 300),
