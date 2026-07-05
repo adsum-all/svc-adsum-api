@@ -19,6 +19,7 @@ from .consultations import router as consultations_router
 from .controle import router as controle_router
 from .demandes import router as demandes_router
 from .doublons import router as doublons_router
+from .emargement import router as emargement_router
 from .fichiers import admin_router as fichiers_admin_router
 from .fichiers import router as fichiers_router
 from .fonctions import router as fonctions_router
@@ -95,6 +96,7 @@ app.include_router(fonctions_router)
 app.include_router(niveaux_router)
 app.include_router(gestion_router)
 app.include_router(groupes_router)
+app.include_router(emargement_router)
 
 
 @app.get("/health", tags=["system"])

@@ -191,9 +191,61 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
                 detail="Précisez comment vous avez suivi l'activité (présentiel ou en ligne).",
             )
 
-    # Atomic upsert: a scan always wins (its presence and modality are never
-    # downgraded by a concurrent declaration), and a finalized row is never
-    # touched (WHERE NOT valide).
+    upsert_participation(
+        evenement_id,
+        membre_id,
+        statut=new_statut,
+        source=new_source,
+        valide=payload.valider,
+        avis=payload.avis,
+        note=payload.note,
+        modalite=new_modalite,
+        role=role,
+    )
+    return {"ok": True, "verrouille": payload.valider, "statut": new_statut, "valide": payload.valider, "modalite": new_modalite}
+
+
+def upsert_participation(
+    evenement_id: str,
+    membre_id: str,
+    *,
+    statut: str,
+    source: str,
+    valide: bool,
+    avis: str | None,
+    note: int | None,
+    modalite: str | None,
+    role: str | None = None,
+) -> None:
+    """Write a participation row, converging every channel onto one source of truth.
+
+    This is THE single write path for the ``participation`` table shared by the
+    member space, the QR scan reconciliation and the external check-in link, so a
+    person is counted exactly once whatever the channel. The upsert is atomic on
+    the ``(evenement_id, membre_id)`` unique key: a scan always wins (its presence
+    and modality are never downgraded by a concurrent declaration), and a
+    finalized (``valide``) row is never touched (``WHERE NOT participation.valide``).
+
+    Parameters
+    ----------
+    evenement_id, membre_id : str
+        The event and member the participation belongs to.
+    statut : str
+        One of ``present``, ``partiel`` or ``absent``.
+    source : str
+        ``scan`` or ``declaration``; a stored scan is never overwritten here.
+    valide : bool
+        Whether the declaration is finalized (immutable afterwards).
+    avis : str | None
+        Free-text feedback, kept when the new value is ``None``.
+    note : int | None
+        Rating from 1 to 5, kept when the new value is ``None``.
+    modalite : str | None
+        ``presentiel`` or ``en_ligne`` for a declaration; forced to ``presentiel``
+        when a scan already proves on-site presence.
+    role : str | None
+        The database role for RLS; ``None`` runs as the owner (public channel).
+    """
     db.execute(
         """
         INSERT INTO participation (evenement_id, membre_id, statut, source, valide, avis, note, modalite)
@@ -209,10 +261,9 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
             maj_le = now()
         WHERE NOT participation.valide
         """,
-        (evenement_id, membre_id, new_statut, new_source, payload.valider, payload.avis, payload.note, new_modalite),
+        (evenement_id, membre_id, statut, source, valide, avis, note, modalite),
         role=role,
     )
-    return {"ok": True, "verrouille": payload.valider, "statut": new_statut, "valide": payload.valider, "modalite": new_modalite}
 
 
 # --- Admin: per-event statistics --------------------------------------------
