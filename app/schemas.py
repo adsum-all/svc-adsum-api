@@ -634,6 +634,9 @@ class CreateEvenement(BaseModel):
     # Response-window override in hours after the session end; when empty the
     # global admin parameter applies (questionnaire_fenetre_heures, default 6h).
     fenetre_reponse_heures: int | None = Field(default=None, ge=1, le=336)
+    # The activity's reference IANA time zone (the zone the start/end were entered
+    # in). Default is the base's home GMT zone; members still see their own time.
+    fuseau_horaire: str = Field(default="Africa/Abidjan", max_length=64)
 
 
 class VerifyResult(BaseModel):

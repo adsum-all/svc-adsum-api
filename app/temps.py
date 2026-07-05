@@ -19,6 +19,31 @@ _MOIS = [
     "juillet", "août", "septembre", "octobre", "novembre", "décembre",
 ]
 
+# Human, non-technical zone label: the country, so a member never mistakes an
+# offset. "heure de France" is clear; "(UTC+2)" makes people add 2 hours again.
+_PAYS_PAR_ZONE = {
+    "Africa/Abidjan": "Côte d'Ivoire", "Europe/Paris": "France", "America/New_York": "États-Unis (Est)",
+    "America/Chicago": "États-Unis (Centre)", "America/Los_Angeles": "États-Unis (Ouest)",
+    "America/Toronto": "Canada", "America/Montreal": "Canada", "Europe/London": "Royaume-Uni",
+    "Europe/Brussels": "Belgique", "Europe/Zurich": "Suisse", "Europe/Madrid": "Espagne",
+    "Europe/Rome": "Italie", "Europe/Berlin": "Allemagne", "Africa/Dakar": "Sénégal",
+    "Africa/Accra": "Ghana", "Africa/Lagos": "Nigéria", "Africa/Douala": "Cameroun",
+    "Africa/Libreville": "Gabon", "Africa/Cotonou": "Bénin", "Africa/Lome": "Togo",
+    "Africa/Niamey": "Niger", "Africa/Ouagadougou": "Burkina Faso", "Africa/Bamako": "Mali",
+    "Africa/Conakry": "Guinée", "Africa/Kinshasa": "RD Congo", "Africa/Brazzaville": "Congo",
+    "Africa/Casablanca": "Maroc", "Africa/Tunis": "Tunisie", "Africa/Algiers": "Algérie",
+    "Africa/Nairobi": "Kenya", "Africa/Johannesburg": "Afrique du Sud",
+}
+
+
+def pays_du_fuseau(fuseau: str | None) -> str:
+    """A human country label for an IANA zone, e.g. 'France', with a city fallback."""
+    if not zone_valide(fuseau):
+        return _PAYS_PAR_ZONE[DEFAULT_TZ]
+    if fuseau in _PAYS_PAR_ZONE:
+        return _PAYS_PAR_ZONE[fuseau]
+    return (fuseau or "").split("/")[-1].replace("_", " ")
+
 
 def zone_valide(fuseau: str | None) -> str | None:
     """Return the IANA zone if it is a real one, else None (no fixed offsets)."""
@@ -38,22 +63,13 @@ def _zone(fuseau: str | None) -> ZoneInfo:
         return ZoneInfo(DEFAULT_TZ)
 
 
-def _abbrev(local: datetime) -> str:
-    """A short, human offset label such as 'UTC+2' for the localized instant."""
-    offset = local.utcoffset()
-    if offset is None:
-        return "UTC"
-    total = int(offset.total_seconds() // 60)
-    sign = "+" if total >= 0 else "-"
-    h, m = divmod(abs(total), 60)
-    return f"UTC{sign}{h}" + (f":{m:02d}" if m else "")
-
-
 def formater_instant(instant: datetime | None, fuseau: str | None, avec_zone: bool = True) -> str:
     """Format an absolute instant in the recipient's zone, in French.
 
-    Example: an instant of 12:00 UTC shown to a member in Europe/Paris (summer)
-    reads ``mardi 5 juillet 2026 à 14:00 (UTC+2)``.
+    The time is already the recipient's own local time; the label names the
+    COUNTRY, never a UTC offset, so nobody adds hours by mistake. Example: an
+    instant of 12:00 UTC shown to a member in Europe/Paris reads
+    ``mardi 5 juillet 2026 à 14:00 (heure de France)``.
     """
     if instant is None:
         return "-"
@@ -64,4 +80,4 @@ def formater_instant(instant: datetime | None, fuseau: str | None, avec_zone: bo
         f"{_JOURS[local.weekday()]} {local.day} {_MOIS[local.month - 1]} {local.year} "
         f"à {local.hour:02d}:{local.minute:02d}"
     )
-    return f"{base} ({_abbrev(local)})" if avec_zone else base
+    return f"{base} (heure de {pays_du_fuseau(fuseau)})" if avec_zone else base

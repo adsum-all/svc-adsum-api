@@ -8,17 +8,19 @@ from app.temps import DEFAULT_TZ, formater_instant, zone_valide
 _NOON_UTC = datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc)
 
 
-def test_paris_summer_is_utc_plus_2() -> None:
-    # The owner's example: 12:00 UTC shows as 14:00 for a member in Europe/Paris.
+def test_paris_summer_is_local_time_with_country() -> None:
+    # The owner's example: 12:00 UTC shows as 14:00 for a member in Europe/Paris,
+    # labelled by country (never a UTC offset that people re-add by mistake).
     out = formater_instant(_NOON_UTC, "Europe/Paris")
     assert "14:00" in out
-    assert "UTC+2" in out
+    assert "heure de France" in out
+    assert "UTC" not in out
 
 
 def test_abidjan_is_utc() -> None:
     out = formater_instant(_NOON_UTC, "Africa/Abidjan")
     assert "12:00" in out
-    assert "UTC+0" in out
+    assert "Côte d'Ivoire" in out
 
 
 def test_new_york_is_behind() -> None:
