@@ -71,3 +71,23 @@ def test_couvre_only_governed_units() -> None:
     assert s.couvre("intendance", "i1")
     assert not s.couvre("intendance", "iX")
     assert not s.couvre("tribu", "t1")
+
+
+def test_commission_union_axis_alone() -> None:
+    # A commission/mission-scoped group: its members are in scope on their own,
+    # a union axis (unlike the intersection commission which needs a perimeter).
+    s = Scope(False, frozenset(), frozenset(), frozenset(), commission_union_ids=frozenset({"cm1"}))
+    where, params = s.membre_predicate("m")
+    assert where == "m.commission_id = ANY(%s::uuid[])"
+    assert params == [["cm1"]]
+    assert not s.is_empty()
+    assert s.couvre("commission", "cm1")
+    assert not s.couvre("commission", "cmX")
+
+
+def test_commission_union_ored_with_perimeter() -> None:
+    s = Scope(False, frozenset({"c1"}), frozenset(), frozenset(), commission_union_ids=frozenset({"cm1"}))
+    where, _ = s.membre_predicate("m")
+    assert "m.coordination_id = ANY(%s::uuid[])" in where
+    assert "m.commission_id = ANY(%s::uuid[])" in where
+    assert " OR " in where

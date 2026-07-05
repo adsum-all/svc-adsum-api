@@ -28,6 +28,18 @@ require_admin = require_roles("super_admin", "admin")
 # Platform role hierarchy, to pick the highest role a member's groups grant.
 _ROLE_RANK = {"membre": 0, "controleur": 1, "gestionnaire": 2, "direction": 3, "admin": 4, "super_admin": 5}
 
+# Roles that only make sense globally: they govern the whole base, so a group
+# granting them can never be scoped to a single organisational unit.
+_GLOBAL_ONLY_ROLES = frozenset({"super_admin", "admin"})
+
+# Scopable perimeter types and the organisation table each ``portee_id`` points to.
+_PORTEE_TABLES = {
+    "coordination": "coordination",
+    "intendance": "intendance",
+    "commission": "commission",
+    "tribu": "tribu",
+}
+
 
 def _assert_peut_gerer(actor: UserMe, role_accorde: str, membre_cible_id: str) -> None:
     """Guard against privilege escalation when granting or revoking a group.
@@ -47,10 +59,17 @@ def _assert_peut_gerer(actor: UserMe, role_accorde: str, membre_cible_id: str) -
 
 
 def _effective_role(membre_id: str, actor_role: str) -> str:
-    """The highest platform role granted by the member's active groups, or 'membre'."""
+    """The highest GLOBAL platform role granted by the member's active groups, or 'membre'.
+
+    Only GLOBAL memberships elevate the account role (and thus back-office reach).
+    A scoped membership (coordination/intendance/commission/tribu) grants a bounded
+    pilotage access through :func:`app.perimetre.resolve_scope`, never a global
+    back-office role, so the account role stays 'membre' and no data leaks outside
+    the perimeter.
+    """
     rows = db.fetch_all(
         "SELECT g.role_accorde FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = %s AND g.actif = true",
+        "WHERE mg.membre_id = %s AND g.actif = true AND mg.portee_type = 'global'",
         (membre_id,),
         role=actor_role,
     )
@@ -122,6 +141,30 @@ class GroupeIn(BaseModel):
 
 class MembreGroupeIn(BaseModel):
     groupe_id: ShortStr
+    portee_type: str = "global"
+    portee_id: str | None = None
+
+
+def _valider_portee(role_accorde: str, portee_type: str, portee_id: str | None, actor_role: str) -> None:
+    """Check the requested perimeter is coherent with the group and exists.
+
+    A global-only role (super_admin / admin) can only be granted globally. A
+    scopable role may be granted globally or on a real coordination / intendance /
+    commission / tribu unit, whose existence is verified.
+    """
+    if portee_type == "global":
+        if portee_id is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="une portée globale ne prend pas d'unité")
+        return
+    if role_accorde in _GLOBAL_ONLY_ROLES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ce groupe ne peut être accordé que globalement")
+    table = _PORTEE_TABLES.get(portee_type)
+    if not table:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type de portée invalide")
+    if not portee_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unité de portée requise")
+    if not db.fetch_one(f"SELECT id FROM {table} WHERE id = %s", (portee_id,), role=actor_role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unité de portée introuvable")
 
 
 @router.get("/groupes", response_model=list[GroupeOut])
@@ -159,17 +202,33 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_rol
     return GroupeOut(id=str(created["id"]), cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=payload.role_accorde, systeme=False, actif=True)
 
 
+@router.get("/perimetres-disponibles")
+def perimetres_disponibles(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+    """The organisational units that a scoped group can be attached to."""
+    out: dict[str, object] = {}
+    for cle, table in _PORTEE_TABLES.items():
+        rows = db.fetch_all(f"SELECT id, nom FROM {table} ORDER BY nom ASC", (), role=user.role)
+        out[cle] = [{"id": str(r["id"]), "nom": r["nom"]} for r in rows]
+    return out
+
+
 @router.get("/membres/{membre_id}/groupes")
 def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
-    """The groups a member belongs to, who granted each and when, and the resulting effective role."""
+    """The scoped group memberships of a member, with who granted each and when, and the effective global role."""
     rows = db.fetch_all(
-        "SELECT g.id, g.cle, g.libelle, g.role_accorde, mg.ajoute_le, "
+        "SELECT mg.id AS appartenance_id, g.id AS groupe_id, g.cle, g.libelle, g.role_accorde, "
+        "mg.portee_type, mg.portee_id, mg.ajoute_le, "
+        "COALESCE(pc.nom, pin.nom, pk.nom, pt.nom) AS portee_libelle, "
         "COALESCE(NULLIF(trim(coalesce(am.prenoms, '') || ' ' || coalesce(am.nom, '')), ''), ua.email) AS ajoute_par_nom "
         "FROM membre_groupe mg "
         "JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "LEFT JOIN coordination pc ON mg.portee_type = 'coordination' AND pc.id = mg.portee_id "
+        "LEFT JOIN intendance pin ON mg.portee_type = 'intendance' AND pin.id = mg.portee_id "
+        "LEFT JOIN commission pk ON mg.portee_type = 'commission' AND pk.id = mg.portee_id "
+        "LEFT JOIN tribu pt ON mg.portee_type = 'tribu' AND pt.id = mg.portee_id "
         "LEFT JOIN utilisateur ua ON ua.id = mg.ajoute_par "
         "LEFT JOIN membre am ON am.id = ua.membre_id "
-        "WHERE mg.membre_id = %s ORDER BY g.libelle ASC",
+        "WHERE mg.membre_id = %s ORDER BY g.libelle ASC, mg.portee_type ASC",
         (membre_id,),
         role=user.role,
     )
@@ -178,10 +237,14 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin
         "effective_role": _effective_role(membre_id, user.role),
         "groupes": [
             {
-                "id": str(r["id"]),
+                "appartenance_id": str(r["appartenance_id"]),
+                "groupe_id": str(r["groupe_id"]),
                 "cle": r["cle"],
                 "libelle": r["libelle"],
                 "role_accorde": r["role_accorde"],
+                "portee_type": r["portee_type"],
+                "portee_id": str(r["portee_id"]) if r.get("portee_id") else None,
+                "portee_libelle": r.get("portee_libelle"),
                 "ajoute_le": r["ajoute_le"].isoformat() if r.get("ajoute_le") else None,
                 "ajoute_par_nom": r.get("ajoute_par_nom"),
             }
@@ -192,37 +255,52 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin
 
 @router.post("/membres/{membre_id}/groupes")
 def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
-    """Add a member to an access group, then sync their login account role.
+    """Add a member to an access group, on a global or scoped perimeter.
 
-    Grants platform access without changing who the member is: they keep their
-    member account, now with the group's role. If they had no login yet, one is
-    created on their member e-mail with a temporary password (returned once)."""
+    A global membership elevates the account's back-office role; a scoped one
+    grants a bounded pilotage access to a single unit without any global role. A
+    member may hold several scoped memberships (the same group over several
+    perimeters). The identity is never changed; a first grant creates the login
+    on the member's e-mail with a temporary password (returned once)."""
     if not db.fetch_one("SELECT id FROM membre WHERE id = %s", (membre_id,), role=user.role):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membre introuvable")
     groupe = db.fetch_one("SELECT id, role_accorde FROM groupe_acces WHERE id = %s AND actif = true", (payload.groupe_id,), role=user.role)
     if not groupe:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="groupe introuvable")
     _assert_peut_gerer(user, str(groupe["role_accorde"]), membre_id)
+    _valider_portee(str(groupe["role_accorde"]), payload.portee_type, payload.portee_id, user.role)
     db.execute(
-        "INSERT INTO membre_groupe (membre_id, groupe_id, ajoute_par) VALUES (%s, %s, %s) ON CONFLICT (membre_id, groupe_id) DO NOTHING",
-        (membre_id, payload.groupe_id, user.id),
+        "INSERT INTO membre_groupe (membre_id, groupe_id, portee_type, portee_id, ajoute_par) "
+        "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+        (membre_id, payload.groupe_id, payload.portee_type, payload.portee_id, user.id),
         role=user.role,
     )
     eff, temp = _sync_account_role(membre_id, user)
-    audit.log(user.id, user.role, "ajout_groupe_acces", "membre", membre_id, {"groupe_id": payload.groupe_id, "effective_role": eff})
+    audit.log(
+        user.id, user.role, "ajout_groupe_acces", "membre", membre_id,
+        {"groupe_id": payload.groupe_id, "portee_type": payload.portee_type, "portee_id": payload.portee_id, "effective_role": eff},
+    )
     return {"membre_id": membre_id, "effective_role": eff, "mot_de_passe_temporaire": temp}
 
 
-@router.delete("/membres/{membre_id}/groupes/{groupe_id}", status_code=status.HTTP_200_OK)
-def retirer_du_groupe(membre_id: str, groupe_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
-    """Remove a member from a group and re-sync their role. The account is never
-    deleted: a member with no group falls back to 'membre' and keeps their login."""
-    groupe = db.fetch_one("SELECT role_accorde FROM groupe_acces WHERE id = %s", (groupe_id,), role=user.role)
-    if groupe:
+@router.delete("/membres/{membre_id}/groupes/{appartenance_id}", status_code=status.HTTP_200_OK)
+def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+    """Remove ONE membership (a group on a given perimeter) and re-sync the role.
+
+    Targets a single ``membre_groupe`` row so multi-membership is respected. The
+    account is never deleted: a member with no membership left falls back to
+    'membre' and keeps their own login."""
+    row = db.fetch_one(
+        "SELECT mg.id, g.role_accorde FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "WHERE mg.id = %s AND mg.membre_id = %s",
+        (appartenance_id, membre_id),
+        role=user.role,
+    )
+    if row:
         # Same hierarchy guard as granting: an admin cannot demote a super_admin by
         # pulling them out of the super_administration group (F1 reverse path).
-        _assert_peut_gerer(user, str(groupe["role_accorde"]), membre_id)
-    db.execute("DELETE FROM membre_groupe WHERE membre_id = %s AND groupe_id = %s", (membre_id, groupe_id), role=user.role)
+        _assert_peut_gerer(user, str(row["role_accorde"]), membre_id)
+        db.execute("DELETE FROM membre_groupe WHERE id = %s AND membre_id = %s", (appartenance_id, membre_id), role=user.role)
     eff, _ = _sync_account_role(membre_id, user)
-    audit.log(user.id, user.role, "retrait_groupe_acces", "membre", membre_id, {"groupe_id": groupe_id, "effective_role": eff})
+    audit.log(user.id, user.role, "retrait_groupe_acces", "membre", membre_id, {"appartenance_id": appartenance_id, "effective_role": eff})
     return {"membre_id": membre_id, "effective_role": eff}

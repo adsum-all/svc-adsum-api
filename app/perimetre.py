@@ -86,7 +86,23 @@ def resolve_scope(user: UserMe) -> Scope:
     )
     commission_resp = frozenset(str(r["id"]) for r in commissions)
 
-    if not has_perimeter_fn and not commission_resp:
+    # Scoped access-group memberships also grant a bounded pilotage perimeter: an
+    # admin can delegate a coordination / intendance / commission / tribu to a
+    # helper through a scoped group, without giving them any global role. This is
+    # unioned with the function-derived scope.
+    scoped = db.fetch_all(
+        "SELECT mg.portee_type, mg.portee_id FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "WHERE mg.membre_id = %s AND g.actif = true AND mg.portee_type <> 'global' AND mg.portee_id IS NOT NULL",
+        (user.membre_id,),
+        role=user.role,
+    )
+    group_by_type: dict[str, set[str]] = {"coordination": set(), "intendance": set(), "commission": set(), "tribu": set()}
+    for s in scoped:
+        bucket = group_by_type.get(str(s["portee_type"]))
+        if bucket is not None and s.get("portee_id"):
+            bucket.add(str(s["portee_id"]))
+
+    if not has_perimeter_fn and not commission_resp and not scoped:
         return Scope(False, frozenset(), frozenset(), frozenset())
 
     me = db.fetch_one(
@@ -95,10 +111,11 @@ def resolve_scope(user: UserMe) -> Scope:
         role=user.role,
     ) or {}
 
-    coord_roots: set[str] = set()
-    intend_roots: set[str] = set()
-    tribu_roots: set[str] = set()
+    coord_roots: set[str] = set(group_by_type["coordination"])
+    intend_roots: set[str] = set(group_by_type["intendance"])
+    tribu_roots: set[str] = set(group_by_type["tribu"])
     commission_ids: frozenset[str] = frozenset()
+    commission_union_ids: frozenset[str] = frozenset(group_by_type["commission"])
 
     if has_perimeter_fn:
         # Perimeter responsable (coordinateur / intendant / patriarche / pays /
@@ -109,19 +126,8 @@ def resolve_scope(user: UserMe) -> Scope:
             intend_roots.add(str(me["intendance_id"]))
         if "patriarche" in cles and me.get("tribu_id"):
             tribu_roots.add(str(me["tribu_id"]))
-        pays = {str(f["perimetre"]) for f in fonctions if str(f["cle"]) == _PAYS_FONCTION and f.get("perimetre")}
-        continents = {str(f["perimetre"]) for f in fonctions if str(f["cle"]) == _CONTINENT_FONCTION and f.get("perimetre")}
-        for column, values in (("pays_code", pays), ("continent", continents)):
-            if not values:
-                continue
-            for table, roots in (("coordination", coord_roots), ("intendance", intend_roots)):
-                found = db.fetch_all(
-                    f"SELECT id FROM {table} WHERE {column} = ANY(%s)",
-                    (list(values),),
-                    role=user.role,
-                )
-                roots.update(str(r["id"]) for r in found)
-    else:
+        _expand_attribute_perimeters(fonctions, coord_roots, intend_roots, user.role)
+    elif commission_resp:
         # Pure commission responsable: scope = their OWN perimeter (coordination or
         # intendance they belong to) INTERSECTED with the commission(s) they lead.
         # They never see the same commission in another perimeter.
@@ -130,6 +136,8 @@ def resolve_scope(user: UserMe) -> Scope:
         if me.get("intendance_id"):
             intend_roots.add(str(me["intendance_id"]))
         commission_ids = commission_resp
+    # else: the perimeter comes only from scoped groups (roots already seeded);
+    # the member's own attachment is NOT added (they are no responsable of it).
 
     return Scope(
         is_global=False,
@@ -137,7 +145,31 @@ def resolve_scope(user: UserMe) -> Scope:
         intendance_ids=_closure("intendance", intend_roots, user.role),
         tribu_ids=frozenset(tribu_roots),
         commission_ids=commission_ids,
+        commission_union_ids=commission_union_ids,
     )
+
+
+def _expand_attribute_perimeters(
+    fonctions: list[dict[str, object]], coord_roots: set[str], intend_roots: set[str], role: str
+) -> None:
+    """Add the coordinations/intendances covered by responsable_pays / _continental.
+
+    Those functions carry their perimeter as an attribute (a country code or a
+    continent) in ``membre_fonction.perimetre``; every unit matching it becomes a
+    root of the scope closure.
+    """
+    pays = {str(f["perimetre"]) for f in fonctions if str(f["cle"]) == _PAYS_FONCTION and f.get("perimetre")}
+    continents = {str(f["perimetre"]) for f in fonctions if str(f["cle"]) == _CONTINENT_FONCTION and f.get("perimetre")}
+    for column, values in (("pays_code", pays), ("continent", continents)):
+        if not values:
+            continue
+        for table, roots in (("coordination", coord_roots), ("intendance", intend_roots)):
+            found = db.fetch_all(
+                f"SELECT id FROM {table} WHERE {column} = ANY(%s)",
+                (list(values),),
+                role=role,
+            )
+            roots.update(str(r["id"]) for r in found)
 
 
 @dataclass(frozen=True)
