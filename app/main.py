@@ -28,6 +28,7 @@ from .gestion import router as gestion_router
 from .groupes import router as groupes_router
 from .groupes_lecture import router as groupes_lecture_router
 from .inscription import router as inscription_router
+from .inscription_admin import router as inscription_admin_router
 from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
@@ -85,6 +86,7 @@ app.include_router(fichiers_router)
 app.include_router(fichiers_admin_router)
 app.include_router(formation_router)
 app.include_router(inscription_router)
+app.include_router(inscription_admin_router)
 app.include_router(modifications_router)
 app.include_router(consentement_router)
 app.include_router(matrice_pays_router)

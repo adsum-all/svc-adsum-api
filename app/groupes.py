@@ -442,8 +442,13 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
     _assert_peut_gerer(user, str(groupe["role_accorde"]), membre_id)
     # A 'permissions' group grants global permissions (permissions_effectives only
     # counts global memberships); a scoped grant would be a silent no-op, so refuse it.
-    if str(groupe.get("mode") or "role") == "permissions" and payload.portee_type != "global":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un groupe de permissions ne s'accorde qu'en portée globale")
+    if str(groupe.get("mode") or "role") == "permissions":
+        if payload.portee_type != "global":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un groupe de permissions ne s'accorde qu'en portée globale")
+        # Least privilege on ASSIGNMENT too, not only on creation: an admin cannot
+        # hand out a permission group that carries a critical permission or one they
+        # do not hold themselves, closing the puppet-account escalation path.
+        _assert_peut_accorder_permissions(_permissions_du_groupe(str(groupe["id"]), user.role), user)
     _valider_portee(str(groupe["role_accorde"]), payload.portee_type, payload.portee_id, user.role)
     db.execute(
         "INSERT INTO membre_groupe (membre_id, groupe_id, portee_type, portee_id, ajoute_par) "

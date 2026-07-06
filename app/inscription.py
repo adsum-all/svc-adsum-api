@@ -16,7 +16,7 @@ from typing import Annotated
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 from . import audit, db, identifiants
 from .auth import current_user
@@ -103,22 +103,23 @@ def _notify_membre(membre_id: str, role: str, titre: str, corps: str) -> None:
 
 
 # --- Admin: account creation ----------------------------------------------
-
-class CompteMembreIn(BaseModel):
-    email: EmailStr
-    prenoms: str | None = None
-    nom: str | None = None
+# The single and bulk creation endpoints live in app.inscription_admin; this module
+# keeps the shared creation helper they both call.
 
 
-@router.post("/admin/inscriptions/membre", status_code=status.HTTP_201_CREATED)
-def creer_compte_membre(payload: CompteMembreIn, user: Annotated[UserMe, Depends(require_permission("inscriptions.administrer"))]) -> dict[str, object]:
-    matricule = identifiants.next_matricule(user.role)
+def creer_membre_inscription(email: str, prenoms: str | None, nom: str | None, actor: UserMe) -> dict[str, object]:
+    """Create one member registration (member row + login) and send the access.
+
+    Shared by the single and bulk endpoints. Raises HTTP 409 on a duplicate e-mail so
+    the bulk caller counts it without aborting the batch. Starts at 'incomplet'.
+    """
+    matricule = identifiants.next_matricule(actor.role)
     try:
         created = db.execute(
             "INSERT INTO membre (matricule, email, prenoms, nom, statut, verifie, statut_inscription) "
             "VALUES (%s, %s, %s, %s, 'actif', false, 'incomplet') RETURNING id",
-            (matricule, str(payload.email), payload.prenoms, payload.nom),
-            role=user.role,
+            (matricule, email, prenoms, nom),
+            role=actor.role,
         )
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="email or matricule already in use") from exc
@@ -131,14 +132,14 @@ def creer_compte_membre(payload: CompteMembreIn, user: Annotated[UserMe, Depends
         db.execute(
             "INSERT INTO utilisateur (email, hash_mdp, role, membre_id, actif, mdp_temporaire, mdp_expire_le, doit_changer_mdp) "
             "VALUES (%s, %s, 'membre', %s, true, true, %s, true)",
-            (str(payload.email), hash_password(temp), membre_id, expire),
-            role=user.role,
+            (email, hash_password(temp), membre_id, expire),
+            role=actor.role,
         )
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="account already exists") from exc
-    sent, provider = _send_temp_password(str(payload.email), temp)
-    telegram_envoye = _temp_password_via_telegram(membre_id, user.role, temp)
-    audit.log(user.id, user.role, "creation_inscription", "membre", membre_id,
+    sent, provider = _send_temp_password(email, temp)
+    telegram_envoye = _temp_password_via_telegram(membre_id, actor.role, temp)
+    audit.log(actor.id, actor.role, "creation_inscription", "membre", membre_id,
               {"matricule": matricule, "email_envoye": sent, "canal": provider, "telegram_envoye": telegram_envoye})
     return {
         "membre_id": membre_id,
@@ -171,29 +172,8 @@ def relancer_mdp(membre_id: str, user: Annotated[UserMe, Depends(require_permiss
 
 
 # --- Admin: review and decision -------------------------------------------
-
-@router.get("/admin/inscriptions")
-def list_inscriptions(user: Annotated[UserMe, Depends(require_permission("inscriptions.gerer"))]) -> list[dict[str, object]]:
-    rows = db.fetch_all(
-        "SELECT id, matricule, prenoms, nom, email, statut_inscription, soumis_le, "
-        "(SELECT count(*) FROM document d WHERE d.membre_id = membre.id) AS nb_documents "
-        "FROM membre WHERE statut_inscription IN ('soumis', 'en_revue', 'modification_demandee') "
-        "ORDER BY soumis_le ASC NULLS LAST",
-        (),
-        role=user.role,
-    )
-    return [
-        {
-            "id": str(r["id"]),
-            "matricule": r["matricule"],
-            "nom": f"{r['prenoms'] or ''} {r['nom'] or ''}".strip(),
-            "email": r["email"],
-            "statut": r["statut_inscription"],
-            "soumis_le": r["soumis_le"].isoformat() if r["soumis_le"] else None,
-            "nb_documents": int(r["nb_documents"]),
-        }
-        for r in rows
-    ]
+# The registration lists (one queue per lifecycle stage) and their counts live in
+# app.inscription_admin to keep this module focused and under the size threshold.
 
 
 class DecisionIn(BaseModel):
