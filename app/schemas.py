@@ -12,7 +12,7 @@ _UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=1)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class TokenResponse(BaseModel):
@@ -163,8 +163,8 @@ class NotificationOut(BaseModel):
 class ChangePasswordIn(BaseModel):
     """Change the member's own password (first login and settings)."""
 
-    ancien: str
-    nouveau: str
+    ancien: str = Field(min_length=1, max_length=128)
+    nouveau: str = Field(min_length=8, max_length=128)
 
 
 class EngagementAcceptIn(BaseModel):
@@ -458,7 +458,7 @@ class CreateUtilisateur(BaseModel):
     """
 
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=8, max_length=128)
     membre_id: str | None = None
     double_facteur: bool = True
 
@@ -478,7 +478,7 @@ class BulkCompte(BaseModel):
     """One account in a bulk creation request. Always created as a plain 'membre'."""
 
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=8, max_length=128)
 
 
 class BulkCreateUtilisateurs(BaseModel):

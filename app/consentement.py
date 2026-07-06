@@ -193,10 +193,11 @@ def publish_consentement(cle: str, payload: ConsentDocPublishIn, user: Annotated
 # --- Member: electronic signature -------------------------------------------
 
 def _client_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
+    # Delegate to the trusted resolver: the leftmost X-Forwarded-For value is
+    # attacker-controlled, so a consent proof must use the platform-set hop instead.
+    from .clientip import client_ip
+
+    return client_ip(request)
 
 
 @router.post("/consentements/signature/demander")
