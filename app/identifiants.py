@@ -1,48 +1,72 @@
-"""Durable, non-saturating business identifiers.
+"""Durable, unique business identifiers.
 
-Both the member matricule and the request reference are year-partitioned with a
-per-year atomic counter, so the numeric space resets every year (it never
-saturates) and generation is concurrency-safe: a single ``INSERT ... ON CONFLICT
-DO UPDATE ... RETURNING`` serialises concurrent callers on the counter row, which
-rules out the read-max-then-increment race the previous MAX+1 logic had.
+Member matricule, single canonical format::
 
-Formats::
+    ADS-{L1}{L2}-{NNNNNN}-{X}   e.g. ADS-AM-000001-Q
 
-    matricule  ADS-YYYY-NNNNNN   (new members; legacy ADS-NNNNNN kept as is)
-    reference  DEM-YYYY-NNNNNN   (requests)
+- L1 = first significant letter of the family name (uppercase, accent-stripped).
+- L2 = first significant letter of the first given name (same rule).
+- NNNNNN = a GLOBAL 6-digit sequence (Postgres sequence ``matricule_seq``), so the
+  numeric part is unique on its own: the whole matricule is unique regardless of the
+  initials or the trailing letter, and the DB unique index is the real guarantee.
+- X = a random uppercase letter, a light differentiator / visual check character; it
+  is not needed for uniqueness (NNNNNN already is), only for readability.
 
-Six digits give 999 999 new items per year, far beyond any realistic need and
-expandable without breaking any value already assigned.
+Generation is server side only and concurrency-safe: ``nextval`` never returns the
+same value twice, so no read-then-increment race and no collision retry are needed.
+A missing/empty name falls back to 'X' for that initial, so a matricule is always
+producible. The matricule is IMMUTABLE once assigned (business reference used in
+exports and history); a later name change does not recompute it.
+
+The request reference keeps its year-partitioned format ``DEM-YYYY-NNNNNN``.
 """
 from __future__ import annotations
 
+import random
+import string
+import unicodedata
+
 from . import db
 
-_MATRICULE_SQL = (
-    "INSERT INTO matricule_compteur (annee, dernier) VALUES (extract(year FROM now())::int, 1) "
-    "ON CONFLICT (annee) DO UPDATE SET dernier = matricule_compteur.dernier + 1 RETURNING annee, dernier"
-)
+MATRICULE_RE = r"^ADS-[A-Z]{2}-[0-9]{6}-[A-Z]$"
+
+
+def premiere_lettre(valeur: str | None) -> str:
+    """First A-Z letter of a value, accent-stripped and uppercased, else 'X'."""
+    ascii_form = unicodedata.normalize("NFD", valeur or "").encode("ascii", "ignore").decode()
+    for ch in ascii_form:
+        if ch.isalpha():
+            return ch.upper()
+    return "X"
+
+
+def initiales(nom: str | None, prenoms: str | None) -> str:
+    """Two-letter code: family-name initial then first-given-name initial."""
+    premier_prenom = (prenoms or "").strip().split(" ", 1)[0]
+    return premiere_lettre(nom) + premiere_lettre(premier_prenom)
+
+
+def _lettre_aleatoire() -> str:
+    return random.choice(string.ascii_uppercase)  # noqa: S311 - non-cryptographic differentiator
+
+
+def next_matricule(role: str | None, nom: str | None = None, prenoms: str | None = None) -> str:
+    """Return the next member matricule in the single canonical format."""
+    row = db.fetch_one("SELECT nextval('matricule_seq') AS n", (), role=role)
+    if not row:
+        raise RuntimeError("matricule sequence did not return a value")
+    return f"ADS-{initiales(nom, prenoms)}-{int(row['n']):06d}-{_lettre_aleatoire()}"
+
+
 _REFERENCE_SQL = (
     "INSERT INTO demande_compteur (annee, dernier) VALUES (extract(year FROM now())::int, 1) "
     "ON CONFLICT (annee) DO UPDATE SET dernier = demande_compteur.dernier + 1 RETURNING annee, dernier"
 )
 
 
-def _bump(sql: str, role: str | None) -> tuple[int, int]:
-    """Atomically bump the relevant year counter and return (year, sequence)."""
-    row = db.execute(sql, (), role=role)
-    if not row:
-        raise RuntimeError("identifier counter did not return a row")
-    return int(row["annee"]), int(row["dernier"])
-
-
-def next_matricule(role: str | None) -> str:
-    """Return the next member matricule, ADS-YYYY-NNNNNN."""
-    annee, seq = _bump(_MATRICULE_SQL, role)
-    return f"ADS-{annee}-{seq:06d}"
-
-
 def next_reference(role: str | None) -> str:
     """Return the next request reference, DEM-YYYY-NNNNNN."""
-    annee, seq = _bump(_REFERENCE_SQL, role)
-    return f"DEM-{annee}-{seq:06d}"
+    row = db.execute(_REFERENCE_SQL, (), role=role)
+    if not row:
+        raise RuntimeError("reference counter did not return a row")
+    return f"DEM-{int(row['annee'])}-{int(row['dernier']):06d}"

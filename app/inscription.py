@@ -113,7 +113,7 @@ def creer_membre_inscription(email: str, prenoms: str | None, nom: str | None, a
     Shared by the single and bulk endpoints. Raises HTTP 409 on a duplicate e-mail so
     the bulk caller counts it without aborting the batch. Starts at 'incomplet'.
     """
-    matricule = identifiants.next_matricule(actor.role)
+    matricule = identifiants.next_matricule(actor.role, nom, prenoms)
     try:
         created = db.execute(
             "INSERT INTO membre (matricule, email, prenoms, nom, statut, verifie, statut_inscription) "

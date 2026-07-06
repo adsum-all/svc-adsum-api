@@ -71,7 +71,7 @@ def create_membre(
     payload: CreateMembre,
     user: Annotated[UserMe, Depends(require_permission("membres.administrer"))],
 ) -> MembreProfile:
-    matricule = payload.matricule or identifiants.next_matricule(user.role)
+    matricule = payload.matricule or identifiants.next_matricule(user.role, payload.nom, payload.prenoms)
     data = payload.model_dump(exclude_unset=True, exclude={"matricule"})
     data["matricule"] = matricule
     data.setdefault("statut", "actif")

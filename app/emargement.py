@@ -211,10 +211,16 @@ _ECHEC_TELEPHONE = "Identification impossible. Vérifiez votre indicatif, votre 
 
 
 def _identifier_par_matricule(matricule: str) -> dict[str, object]:
-    """Resolve a member from their matricule (priority mode). Uniform failure."""
+    """Resolve a member from their matricule (priority mode). Uniform failure.
+
+    Also matches the historical matricule so a member holding an old card keeps
+    checking in during the transition to the canonical format.
+    """
+    norm = _norm_matricule(matricule)
     rows = db.fetch_all(
-        "SELECT id, prenoms, nom, matricule FROM membre WHERE upper(replace(matricule, ' ', '')) = %s",
-        (_norm_matricule(matricule),),
+        "SELECT id, prenoms, nom, matricule FROM membre "
+        "WHERE upper(replace(matricule, ' ', '')) = %s OR upper(replace(coalesce(matricule_historique, ''), ' ', '')) = %s",
+        (norm, norm),
     )
     if len(rows) != 1:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_ECHEC_MATRICULE)
