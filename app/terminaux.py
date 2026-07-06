@@ -11,13 +11,11 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import audit, db
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import CreateTerminal, TerminalOut, UpdateTerminal, UserMe
 
 router = APIRouter(prefix="/api/v1/admin/terminaux", tags=["terminaux"])
 
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
-require_writer = require_roles("super_admin", "admin")
 
 _SELECT = "SELECT id, nom, appareil_id, autorise, appaire_le, dernier_sync FROM terminal"
 
@@ -34,7 +32,7 @@ def _to_out(row: dict[str, object]) -> TerminalOut:
 
 
 @router.get("", response_model=list[TerminalOut])
-def list_terminaux(user: Annotated[UserMe, Depends(require_staff)]) -> list[TerminalOut]:
+def list_terminaux(user: Annotated[UserMe, Depends(require_permission("terminaux.consulter"))]) -> list[TerminalOut]:
     rows = db.fetch_all(f"{_SELECT} ORDER BY nom ASC NULLS LAST", (), role=user.role)
     return [_to_out(r) for r in rows]
 
@@ -42,7 +40,7 @@ def list_terminaux(user: Annotated[UserMe, Depends(require_staff)]) -> list[Term
 @router.post("", response_model=TerminalOut, status_code=status.HTTP_201_CREATED)
 def register_terminal(
     payload: CreateTerminal,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("terminaux.administrer"))],
 ) -> TerminalOut:
     try:
         created = db.execute(
@@ -70,7 +68,7 @@ def register_terminal(
 def update_terminal(
     terminal_id: str,
     payload: UpdateTerminal,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("terminaux.administrer"))],
 ) -> TerminalOut:
     fields = payload.model_dump(exclude_unset=True)
     if fields:

@@ -15,15 +15,12 @@ from pydantic import BaseModel, Field
 from . import db, identifiants
 from .auth import current_user
 from .demandes_catalogue import _TRANSITIONS, CATALOGUE, STATUTS_LISIBLES
-from .deps import require_roles
 from .fields import ShortStr, TextStr, TitleStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["demandes"])
 
-STAFF = ("super_admin", "admin", "gestionnaire")
-require_staff = require_roles(*STAFF)
-require_lecture = require_roles("super_admin", "admin", "gestionnaire", "direction")
 
 
 def _require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str, str]:
@@ -385,7 +382,7 @@ def my_demande_reply(
 
 @router.get("/admin/demandes", response_model=list[DemandeOut])
 def admin_demandes(
-    user: Annotated[UserMe, Depends(require_lecture)],
+    user: Annotated[UserMe, Depends(require_permission("demandes.superviser"))],
     statut: str | None = None,
     categorie: str | None = None,
     q: str | None = None,
@@ -422,7 +419,7 @@ def admin_demandes(
 
 
 @router.get("/admin/demandes/{demande_id}", response_model=DemandeDetailAdmin)
-def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> DemandeDetailAdmin:
+def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_permission("demandes.superviser"))]) -> DemandeDetailAdmin:
     row = db.fetch_one(
         """
         SELECT d.id, d.numero, d.reference, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
@@ -451,7 +448,7 @@ def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lectu
 
 
 @router.post("/admin/demandes/{demande_id}/messages", response_model=MessageOut, status_code=status.HTTP_201_CREATED)
-def admin_reply(demande_id: str, payload: MessageIn, user: Annotated[UserMe, Depends(require_staff)]) -> MessageOut:
+def admin_reply(demande_id: str, payload: MessageIn, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]) -> MessageOut:
     created = db.execute(
         "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id) VALUES (%s, 'staff', 'Administration', %s, %s) "
         "RETURNING id, cree_le",
@@ -470,7 +467,7 @@ def admin_reply(demande_id: str, payload: MessageIn, user: Annotated[UserMe, Dep
 
 
 @router.post("/admin/demandes/{demande_id}/prendre-en-charge", response_model=DemandeOut)
-def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> DemandeOut:
+def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]) -> DemandeOut:
     """Explicitly take a request over: records who and when, moves an open
     request to 'en cours', writes the timeline entry and informs the member."""
     from . import audit
@@ -502,7 +499,7 @@ def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(req
 
 @router.post("/admin/demandes/{demande_id}/demander-piece", response_model=DemandeOut)
 def admin_demander_piece(
-    demande_id: str, payload: PieceRequeteIn, user: Annotated[UserMe, Depends(require_staff)]
+    demande_id: str, payload: PieceRequeteIn, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]
 ) -> DemandeOut:
     """Ask the member for a supporting document INSIDE the same ticket: staff
     message describing the expected document, state moves to pieces_demandees,
@@ -535,7 +532,7 @@ def admin_demander_piece(
 
 
 @router.patch("/admin/demandes/{demande_id}", response_model=DemandeOut)
-def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe, Depends(require_staff)]) -> DemandeOut:
+def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]) -> DemandeOut:
     from . import audit
 
     if payload.statut:
@@ -644,7 +641,7 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
 
 
 @router.get("/admin/deblocage/elements")
-def catalogue_deblocage(user: Annotated[UserMe, Depends(require_lecture)]) -> list[dict[str, str]]:
+def catalogue_deblocage(user: Annotated[UserMe, Depends(require_permission("deblocage.superviser"))]) -> list[dict[str, str]]:
     """Extensible catalog of unlockable elements (fields, photo, documents)."""
     from .deblocage import ELEMENTS
 

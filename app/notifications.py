@@ -22,14 +22,12 @@ from pydantic import BaseModel
 
 from . import audit, channels, db
 from .cron_auth import require_cron_auth
-from .deps import require_roles
 from .email_templates import render_anniversaire_email, render_notification_email
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["notifications"])
 
-require_writer = require_roles("super_admin", "admin", "gestionnaire")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 # Type -> member preference category that gates it (None = always sent, critical).
 _CATEGORY_PREF = {
@@ -417,7 +415,7 @@ def cron_quotidien(authorization: Annotated[str | None, Header()] = None) -> dic
 
 
 @router.post("/admin/notifications/declencher-quotidien")
-def declencher_quotidien(user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def declencher_quotidien(user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, object]:
     """Run the daily job on demand (admin), for testing."""
     result = _run_quotidien(role=user.role)
     audit.log(user.id, user.role, "declenchement_notifications", "membre", None, result)
@@ -431,7 +429,7 @@ class TypeToggle(BaseModel):
 
 
 @router.get("/admin/notifications/types")
-def list_types(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_types(user: Annotated[UserMe, Depends(require_permission("notifications.consulter"))]) -> list[dict[str, object]]:
     rows = db.fetch_all("SELECT cle, libelle, categorie, actif, scheduled, sensibilite FROM type_notification ORDER BY categorie, libelle", (), role=user.role)
     return [
         {"cle": r["cle"], "libelle": r["libelle"], "categorie": r["categorie"], "actif": bool(r["actif"]),
@@ -441,7 +439,7 @@ def list_types(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str
 
 
 @router.put("/admin/notifications/types/{cle}")
-def toggle_type(cle: str, payload: TypeToggle, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def toggle_type(cle: str, payload: TypeToggle, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, object]:
     current = db.fetch_one("SELECT sensibilite FROM type_notification WHERE cle = %s", (cle,), role=user.role)
     if not current:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown type")
@@ -461,7 +459,7 @@ def toggle_type(cle: str, payload: TypeToggle, user: Annotated[UserMe, Depends(r
 
 @router.get("/admin/notifications/echecs")
 def list_echecs(
-    user: Annotated[UserMe, Depends(require_staff)], limit: int = 100, inclure_resolus: bool = False
+    user: Annotated[UserMe, Depends(require_permission("notifications.consulter"))], limit: int = 100, inclure_resolus: bool = False
 ) -> dict[str, object]:
     """Delivery-failure observability: the recent failed channel sends so the
     administration can see who did not receive a message and follow up."""
@@ -494,7 +492,7 @@ def list_echecs(
 
 
 @router.post("/admin/notifications/echecs/{echec_id}/resolu", status_code=status.HTTP_204_NO_CONTENT)
-def resoudre_echec(echec_id: str, user: Annotated[UserMe, Depends(require_writer)]) -> None:
+def resoudre_echec(echec_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> None:
     """Mark a delivery failure as handled so it leaves the open list."""
     row = db.execute("UPDATE notification_echec SET resolu = true WHERE id = %s RETURNING id", (echec_id,), role=user.role)
     if not row:
@@ -509,7 +507,7 @@ class LangueIn(BaseModel):
 
 
 @router.put("/membres/me/langue")
-def set_langue(payload: LangueIn, user: Annotated[UserMe, Depends(require_roles("membre", "super_admin", "admin", "gestionnaire", "controleur", "direction"))]) -> dict[str, object]:
+def set_langue(payload: LangueIn, user: Annotated[UserMe, Depends(require_permission("membres.self"))]) -> dict[str, object]:
     if payload.langue not in ("fr", "en"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="langue must be fr or en")
     if not user.membre_id:

@@ -16,14 +16,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from . import audit, db
-from .deps import require_roles
 from .fields import ShortStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 from .security import hash_password
 
 router = APIRouter(prefix="/api/v1/admin", tags=["groupes"])
 
-require_admin = require_roles("super_admin", "admin")
 
 # Platform role hierarchy, to pick the highest role a member's groups grant.
 _ROLE_RANK = {"membre": 0, "controleur": 1, "gestionnaire": 2, "direction": 3, "admin": 4, "super_admin": 5}
@@ -168,7 +167,7 @@ def _valider_portee(role_accorde: str, portee_type: str, portee_id: str | None, 
 
 
 @router.get("/groupes", response_model=list[GroupeOut])
-def list_groupes(user: Annotated[UserMe, Depends(require_admin)]) -> list[GroupeOut]:
+def list_groupes(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> list[GroupeOut]:
     """The access-group catalogue (built-in and custom)."""
     rows = db.fetch_all(
         "SELECT id, cle, libelle, description, role_accorde, systeme, actif FROM groupe_acces WHERE actif = true ORDER BY systeme DESC, libelle ASC",
@@ -185,7 +184,7 @@ def list_groupes(user: Annotated[UserMe, Depends(require_admin)]) -> list[Groupe
 
 
 @router.post("/groupes", response_model=GroupeOut, status_code=status.HTTP_201_CREATED)
-def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_roles("super_admin"))]) -> GroupeOut:
+def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> GroupeOut:
     """Create a custom access group (super_admin only). The granted role must be a
     known platform role."""
     if payload.role_accorde not in _ROLE_RANK:
@@ -203,7 +202,7 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_rol
 
 
 @router.get("/catalogue-acces")
-def catalogue_acces(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def catalogue_acces(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """The role -> capabilities catalogue with labels, descriptions and risk levels.
 
     Powers the pedagogical admin UI: it explains, for every platform role, exactly
@@ -216,7 +215,7 @@ def catalogue_acces(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str
 
 
 @router.get("/membres/{membre_id}/acces-effectif")
-def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """A reviewable explanation of a member's effective access, with warnings.
 
     Lists the global role, every scoped membership with its perimeter, the atomic
@@ -269,7 +268,7 @@ def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_admin
 
 
 @router.get("/perimetres-disponibles")
-def perimetres_disponibles(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def perimetres_disponibles(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """The organisational units that a scoped group can be attached to."""
     out: dict[str, object] = {}
     for cle, table in _PORTEE_TABLES.items():
@@ -279,7 +278,7 @@ def perimetres_disponibles(user: Annotated[UserMe, Depends(require_admin)]) -> d
 
 
 @router.get("/membres/{membre_id}/groupes")
-def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """The scoped group memberships of a member, with who granted each and when, and the effective global role."""
     rows = db.fetch_all(
         "SELECT mg.id AS appartenance_id, g.id AS groupe_id, g.cle, g.libelle, g.role_accorde, "
@@ -320,7 +319,7 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin
 
 
 @router.post("/membres/{membre_id}/groupes")
-def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """Add a member to an access group, on a global or scoped perimeter.
 
     A global membership elevates the account's back-office role; a scoped one
@@ -350,7 +349,7 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
 
 
 @router.delete("/membres/{membre_id}/groupes/{appartenance_id}", status_code=status.HTTP_200_OK)
-def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """Remove ONE membership (a group on a given perimeter) and re-sync the role.
 
     Targets a single ``membre_groupe`` row so multi-membership is respected. The

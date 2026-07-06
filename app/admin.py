@@ -16,8 +16,8 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from . import audit, db, identifiants, identite
-from .deps import require_roles
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
+from .permissions_rbac import require_permission
 from .schemas import (
     CommissionOut,
     CreateCommission,
@@ -31,18 +31,10 @@ from .schemas import (
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
-STAFF = ("super_admin", "admin", "gestionnaire", "controleur", "direction")
-MEMBRE_WRITERS = ("super_admin", "admin")
-EVENT_WRITERS = ("super_admin", "admin", "gestionnaire")
 # Reading a member's full personal record (address, phone, DOB, marital status)
 # is not needed by a field scanner (controleur) nor read-only supervision
 # (direction): keep the nominative directory to the member-managing roles.
-MEMBRE_READERS = ("super_admin", "admin", "gestionnaire")
 
-require_staff = require_roles(*STAFF)
-require_membre_writer = require_roles(*MEMBRE_WRITERS)
-require_event_writer = require_roles(*EVENT_WRITERS)
-require_membre_reader = require_roles(*MEMBRE_READERS)
 
 # Governance and state fields whose before/after values are safe to record in
 # the audit trail: they carry accountability (validation, membership state,
@@ -77,7 +69,7 @@ def _read_membre(membre_id: str, role: str) -> MembreProfile:
 @router.post("/membres", response_model=MembreProfile, status_code=status.HTTP_201_CREATED)
 def create_membre(
     payload: CreateMembre,
-    user: Annotated[UserMe, Depends(require_membre_writer)],
+    user: Annotated[UserMe, Depends(require_permission("membres.administrer"))],
 ) -> MembreProfile:
     matricule = payload.matricule or identifiants.next_matricule(user.role)
     data = payload.model_dump(exclude_unset=True, exclude={"matricule"})
@@ -112,7 +104,7 @@ def create_membre(
 
 @router.get("/membres", response_model=list[MembreProfile])
 def list_membres(
-    user: Annotated[UserMe, Depends(require_membre_reader)],
+    user: Annotated[UserMe, Depends(require_permission("membres.gerer"))],
     q: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -144,7 +136,7 @@ def list_membres(
 @router.get("/membres/{membre_id}", response_model=MembreProfile)
 def get_membre(
     membre_id: str,
-    user: Annotated[UserMe, Depends(require_membre_reader)],
+    user: Annotated[UserMe, Depends(require_permission("membres.gerer"))],
 ) -> MembreProfile:
     return _read_membre(membre_id, user.role)
 
@@ -175,7 +167,7 @@ def _verifier_axe_orga_exclusif(membre_id: str, fields: dict[str, object], role:
 def update_membre(
     membre_id: str,
     payload: UpdateMembre,
-    user: Annotated[UserMe, Depends(require_membre_writer)],
+    user: Annotated[UserMe, Depends(require_permission("membres.administrer"))],
 ) -> MembreProfile:
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
@@ -227,7 +219,7 @@ def update_membre(
 @router.get("/membres/{membre_id}/gouvernance")
 def membre_gouvernance(
     membre_id: str,
-    user: Annotated[UserMe, Depends(require_membre_writer)],
+    user: Annotated[UserMe, Depends(require_permission("membres.administrer"))],
 ) -> dict[str, object]:
     """Admin-only governance block for a member: membership relationship state,
     an optional confidential internal note (reason for a departure, a title
@@ -248,7 +240,7 @@ def membre_gouvernance(
 
 
 @router.get("/commissions", response_model=list[CommissionOut])
-def list_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> list[CommissionOut]:
+def list_commissions(user: Annotated[UserMe, Depends(require_permission("commissions.consulter"))]) -> list[CommissionOut]:
     rows = db.fetch_all(
         "SELECT id, nom, description, publie, type_organisation FROM commission ORDER BY type_organisation, nom ASC",
         (),
@@ -266,7 +258,7 @@ def list_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> list[Co
 @router.post("/commissions", response_model=CommissionOut, status_code=status.HTTP_201_CREATED)
 def create_commission(
     payload: CreateCommission,
-    user: Annotated[UserMe, Depends(require_membre_writer)],
+    user: Annotated[UserMe, Depends(require_permission("commissions.administrer"))],
 ) -> CommissionOut:
     created = db.execute(
         "INSERT INTO commission (nom, description, type_organisation) VALUES (%s, %s, %s) "
@@ -286,7 +278,7 @@ def create_commission(
 
 
 @router.get("/evenements", response_model=list[EvenementOut])
-def list_evenements(user: Annotated[UserMe, Depends(require_staff)]) -> list[EvenementOut]:
+def list_evenements(user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))]) -> list[EvenementOut]:
     rows = db.fetch_all(
         """
         SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode, e.session_ouverte,
@@ -332,7 +324,7 @@ def _evenement_out(r: dict[str, object]) -> EvenementOut:
 @router.post("/evenements", response_model=EvenementOut, status_code=status.HTTP_201_CREATED)
 def create_evenement(
     payload: CreateEvenement,
-    user: Annotated[UserMe, Depends(require_event_writer)],
+    user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
 ) -> EvenementOut:
     liens = [x.strip() for x in payload.liens if x and x.strip()]
     primary = payload.lien_session or (liens[0] if liens else None)

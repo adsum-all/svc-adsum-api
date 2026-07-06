@@ -39,8 +39,8 @@ from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
 from .pilotage import router as pilotage_router
 from .reference import router as reference_router
-from .sondage import router as sondage_router
 from .rgpd import router as rgpd_router
+from .sondage import router as sondage_router
 from .tags import router as tags_router
 from .terminaux import router as terminaux_router
 from .users import router as users_router

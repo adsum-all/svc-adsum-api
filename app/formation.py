@@ -18,14 +18,12 @@ from pydantic import BaseModel, Field
 
 from . import audit, db, ratelimit, visibilite
 from .auth import current_user
-from .deps import require_roles
 from .fields import LineStr, LongTextStr, ShortStr, TitleStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["formation"])
 
-require_event_writer = require_roles("super_admin", "admin", "gestionnaire")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 
 def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
@@ -53,7 +51,7 @@ class SessionPatch(BaseModel):
 
 
 @router.patch("/admin/evenements/{evenement_id}/session")
-def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
+def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))]) -> dict[str, object]:
     """Set the session links, broadcast kind/visibility, and open or close the live session."""
     import json
 
@@ -95,7 +93,7 @@ def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe
 
 
 @router.post("/admin/evenements/{evenement_id}/test-diffusion")
-def test_diffusion(evenement_id: str, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
+def test_diffusion(evenement_id: str, user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))]) -> dict[str, object]:
     """Send a 'live broadcast test' notification so members can verify the stream view.
 
     The message clearly flags itself as a test. Not deduplicated: each explicit
@@ -149,7 +147,7 @@ class QuestionnaireIn(BaseModel):
 
 
 @router.put("/admin/evenements/{evenement_id}/questionnaire")
-def definir_questionnaire(evenement_id: str, payload: QuestionnaireIn, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
+def definir_questionnaire(evenement_id: str, payload: QuestionnaireIn, user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))]) -> dict[str, object]:
     """Create or replace the questionnaire attached to an event."""
     if not payload.questions:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="at least one question required")
@@ -184,7 +182,7 @@ def _questions(qid: str, role: str) -> list[dict[str, object]]:
 
 
 @router.get("/admin/evenements/{evenement_id}/questionnaire")
-def get_questionnaire_admin(evenement_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object] | None:
+def get_questionnaire_admin(evenement_id: str, user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))]) -> dict[str, object] | None:
     q = db.fetch_one("SELECT id, titre FROM questionnaire WHERE evenement_id = %s", (evenement_id,), role=user.role)
     if not q:
         return None
@@ -192,7 +190,7 @@ def get_questionnaire_admin(evenement_id: str, user: Annotated[UserMe, Depends(r
 
 
 @router.get("/admin/evenements/{evenement_id}/reponses")
-def get_reponses(evenement_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def get_reponses(evenement_id: str, user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))]) -> list[dict[str, object]]:
     """All member responses to an event questionnaire."""
     rows = db.fetch_all(
         """
@@ -346,12 +344,12 @@ class FenetreIn(BaseModel):
 
 
 @router.get("/admin/parametres/questionnaire-fenetre")
-def get_fenetre(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, int]:
+def get_fenetre(user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> dict[str, int]:
     return {"heures": _fenetre_heures(user.role)}
 
 
 @router.put("/admin/parametres/questionnaire-fenetre")
-def set_fenetre(payload: FenetreIn, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, int]:
+def set_fenetre(payload: FenetreIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, int]:
     if not 1 <= payload.heures <= 168:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="heures must be between 1 and 168")
     db.execute(

@@ -12,7 +12,7 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import audit, db
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import (
     BulkCreateUtilisateurs,
     BulkResult,
@@ -25,8 +25,6 @@ from .security import hash_password
 
 router = APIRouter(prefix="/api/v1/admin/utilisateurs", tags=["utilisateurs"])
 
-require_admin = require_roles("super_admin", "admin")
-require_super = require_roles("super_admin")
 
 _SELECT = (
     "SELECT u.id, u.email, u.role, u.actif, u.double_facteur, u.membre_id, u.dernier_login, "
@@ -50,7 +48,9 @@ def _to_out(row: dict[str, object]) -> UtilisateurOut:
 
 
 @router.get("", response_model=list[UtilisateurOut])
-def list_utilisateurs(user: Annotated[UserMe, Depends(require_admin)]) -> list[UtilisateurOut]:
+def list_utilisateurs(
+    user: Annotated[UserMe, Depends(require_permission("comptes.administrer"))]
+) -> list[UtilisateurOut]:
     rows = db.fetch_all(f"{_SELECT} ORDER BY u.role ASC, u.email ASC", (), role=user.role)
     return [_to_out(r) for r in rows]
 
@@ -58,7 +58,7 @@ def list_utilisateurs(user: Annotated[UserMe, Depends(require_admin)]) -> list[U
 @router.post("", response_model=UtilisateurOut, status_code=status.HTTP_201_CREATED)
 def create_utilisateur(
     payload: CreateUtilisateur,
-    user: Annotated[UserMe, Depends(require_super)],
+    user: Annotated[UserMe, Depends(require_permission("comptes.systeme"))],
 ) -> UtilisateurOut:
     try:
         # An account is always created as 'membre'. Elevated access is granted
@@ -88,7 +88,7 @@ def create_utilisateur(
 @router.post("/lot", response_model=BulkResult)
 def bulk_create(
     payload: BulkCreateUtilisateurs,
-    user: Annotated[UserMe, Depends(require_super)],
+    user: Annotated[UserMe, Depends(require_permission("comptes.systeme"))],
 ) -> BulkResult:
     """Create access accounts in bulk; profiles are completed later by each member."""
     crees = 0
@@ -120,7 +120,7 @@ def bulk_create(
 def update_utilisateur(
     utilisateur_id: str,
     payload: UpdateUtilisateur,
-    user: Annotated[UserMe, Depends(require_super)],
+    user: Annotated[UserMe, Depends(require_permission("comptes.systeme"))],
 ) -> UtilisateurOut:
     fields = payload.model_dump(exclude_unset=True)
     if fields:

@@ -16,12 +16,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from . import channels, db, notifications, temps
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/admin", tags=["sondage"])
 
-require_writer = require_roles("super_admin", "admin", "gestionnaire", "direction")
 
 
 class SondageIn(BaseModel):
@@ -38,7 +37,7 @@ def _base_pointage() -> str:
 def envoyer_sondage(
     evenement_id: str,
     payload: SondageIn,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("evenements.superviser"))],
 ) -> dict[str, object]:
     """Send the attendance survey of an activity, localized to each member's zone."""
     ev = db.fetch_one(

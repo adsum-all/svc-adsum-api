@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from . import audit, db, storage
 from .auth import current_user
 from .config import settings
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/membres/me", tags=["fichiers"])
@@ -394,16 +394,14 @@ def doc_content(document_id: str, ctx: Annotated[tuple[str, str], Depends(_membr
     return _document_response(data, str(row["chemin_stockage"]))
 
 
-_require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 # Identity documents are decrypted here: keep this to the roles with a real need
 # (never controleur, a field scan operator, nor direction, read-only supervision).
-_require_docs = require_roles("super_admin", "admin", "gestionnaire")
 
 admin_router = APIRouter(prefix="/api/v1/admin", tags=["fichiers"])
 
 
 @admin_router.get("/documents/{document_id}/url")
-def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_docs)]) -> dict[str, str | bool | None]:
+def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(require_permission("documents.gerer"))]) -> dict[str, str | bool | None]:
     """Signed download URL for any member's document, for admin review (e.g. a
     hand-signed attestation scan). Encrypted documents are read through the
     audited content endpoint instead of a plain signed URL."""
@@ -424,7 +422,7 @@ def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_doc
 
 
 @admin_router.get("/documents/{document_id}/content")
-def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(_require_docs)]) -> Response:
+def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(require_permission("documents.gerer"))]) -> Response:
     """Decrypted bytes of any member's document, for staff review. Every access is
     audited (who read which document), because this is a controlled decryption of
     a sensitive identity file."""
@@ -445,7 +443,7 @@ def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(_require
 
 
 @admin_router.get("/membres/{membre_id}/photo-url")
-def admin_photo_url(membre_id: str, user: Annotated[UserMe, Depends(_require_staff)]) -> dict[str, str | None]:
+def admin_photo_url(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.consulter"))]) -> dict[str, str | None]:
     """Signed download URL for any member's identity photo, for staff views
     (registration review, QR-scan identity card, member directory). Reads as an
     owner query since the endpoint is already gated by staff roles."""

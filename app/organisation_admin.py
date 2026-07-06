@@ -15,12 +15,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from . import audit, db
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/admin/organisation", tags=["organisation"])
 
-require_writer = require_roles("super_admin", "admin")
 
 # URL segment -> physical table. The table name is resolved through this fixed
 # whitelist and never taken from user input, so it cannot be used for injection.
@@ -52,7 +51,7 @@ def rename(
     entity: str,
     item_id: str,
     payload: RenameIn,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> dict[str, object]:
     """Rename a structural entity."""
     nom = payload.nom.strip()
@@ -71,7 +70,7 @@ def publication(
     entity: str,
     item_id: str,
     payload: PublishIn,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> dict[str, object]:
     """Publish or unpublish an entity (controls member dropdown visibility)."""
     table = _table(entity)
@@ -90,7 +89,7 @@ def publication(
 def supprimer(
     entity: str,
     item_id: str,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> None:
     """Delete an entity, refusing if a member or sub-entity still references it."""
     table = _table(entity)

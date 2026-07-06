@@ -15,15 +15,14 @@ from pydantic import BaseModel
 
 from . import audit, db
 from .auth import current_user
-from .deps import require_roles
 from .fields import ShortStr, TextStr, TitleStr
 from .perimetre import PerimetreContext, require_perimetre
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["tags"])
 
 _FAMILLES = ("diffusion", "territoire", "organisation", "type_activite", "transverse")
-require_admin = require_roles("super_admin", "admin")
 
 
 class TagIn(BaseModel):
@@ -55,7 +54,7 @@ def lister_tags(user: Annotated[UserMe, Depends(current_user)], famille: str | N
 
 
 @router.post("/admin/tags", status_code=status.HTTP_201_CREATED)
-def creer_tag(payload: TagIn, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, str]:
+def creer_tag(payload: TagIn, user: Annotated[UserMe, Depends(require_permission("tags.administrer"))]) -> dict[str, str]:
     """Create a catalogue tag (central governance)."""
     if payload.famille not in _FAMILLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="famille invalide")
@@ -87,7 +86,7 @@ def demander_tag(payload: TagDemandeIn, ctx: Annotated[PerimetreContext, Depends
 
 
 @router.get("/admin/tags/demandes")
-def lister_demandes(user: Annotated[UserMe, Depends(require_admin)], statut: str | None = None) -> list[dict[str, object]]:
+def lister_demandes(user: Annotated[UserMe, Depends(require_permission("tags.administrer"))], statut: str | None = None) -> list[dict[str, object]]:
     """Pending or all tag requests, for central review."""
     if statut:
         rows = db.fetch_all("SELECT id, famille, libelle, justification, statut, cree_le FROM tag_demande WHERE statut = %s ORDER BY cree_le DESC LIMIT 200", (statut,), role=user.role)
@@ -97,7 +96,7 @@ def lister_demandes(user: Annotated[UserMe, Depends(require_admin)], statut: str
 
 
 @router.post("/admin/tags/demandes/{demande_id}/decision")
-def decider_demande(demande_id: str, payload: DecisionIn, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def decider_demande(demande_id: str, payload: DecisionIn, user: Annotated[UserMe, Depends(require_permission("tags.administrer"))]) -> dict[str, object]:
     """Accept (creating the catalogue tag) or refuse a tag request."""
     if payload.statut not in ("accepte", "refuse"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statut invalide")
