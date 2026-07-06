@@ -132,6 +132,24 @@ def update_utilisateur(
             (utilisateur_id,),
             role=user.role,
         )
+        # Availability floor: never deactivate the last active super_admin account.
+        desactive_super = (
+            fields.get("actif") is False
+            and before is not None
+            and before.get("role") == "super_admin"
+            and before.get("actif")
+        )
+        if desactive_super:
+            still = db.fetch_one(
+                "SELECT count(*) AS n FROM utilisateur WHERE role = 'super_admin' AND actif = true",
+                (),
+                role=user.role,
+            )
+            if int((still or {}).get("n", 0)) <= 1:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="impossible de desactiver le dernier super-administrateur actif",
+                )
         columns = ", ".join(f"{name} = %s" for name in fields)
         updated = db.execute(
             f"UPDATE utilisateur SET {columns} WHERE id = %s RETURNING id",

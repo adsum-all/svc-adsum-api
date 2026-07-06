@@ -40,6 +40,36 @@ _PORTEE_TABLES = {
 }
 
 
+def _super_admins_actifs(role: str) -> int:
+    """Count active super_admin login accounts (the availability floor)."""
+    r = db.fetch_one("SELECT count(*) AS n FROM utilisateur WHERE role = 'super_admin' AND actif = true", (), role=role)
+    return int((r or {}).get("n", 0))
+
+
+def _assert_super_admin_preserve(membre_id: str, role_accorde: str, actor: UserMe) -> None:
+    """Never let the system lose its last super_admin, nor let one self-demote.
+
+    Removing a super_administration membership is refused when it would drop this
+    member from super_admin AND either the actor is removing their own access, or
+    this is the last active super_admin account (availability floor, M1).
+    """
+    if role_accorde != "super_admin":
+        return
+    # Does the member keep super_admin via another active super_admin group?
+    autres = db.fetch_one(
+        "SELECT count(*) AS n FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "WHERE mg.membre_id = %s AND g.actif = true AND g.role_accorde = 'super_admin'",
+        (membre_id,),
+        role=actor.role,
+    )
+    if int((autres or {}).get("n", 0)) > 1:
+        return  # they stay super_admin through another group
+    if actor.membre_id and actor.membre_id == membre_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="vous ne pouvez pas retirer votre propre accès super-administration")
+    if _super_admins_actifs(actor.role) <= 1:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="impossible de retirer le dernier super-administrateur actif")
+
+
 def _assert_peut_gerer(actor: UserMe, role_accorde: str, membre_cible_id: str) -> None:
     """Guard against privilege escalation when granting or revoking a group.
 
@@ -365,6 +395,7 @@ def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[User
         # Same hierarchy guard as granting: an admin cannot demote a super_admin by
         # pulling them out of the super_administration group (F1 reverse path).
         _assert_peut_gerer(user, str(row["role_accorde"]), membre_id)
+        _assert_super_admin_preserve(membre_id, str(row["role_accorde"]), user)
         db.execute("DELETE FROM membre_groupe WHERE id = %s AND membre_id = %s", (appartenance_id, membre_id), role=user.role)
     eff, _ = _sync_account_role(membre_id, user)
     audit.log(user.id, user.role, "retrait_groupe_acces", "membre", membre_id, {"appartenance_id": appartenance_id, "effective_role": eff})
