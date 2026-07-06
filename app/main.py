@@ -20,6 +20,9 @@ from .controle import router as controle_router
 from .demandes import router as demandes_router
 from .doublons import router as doublons_router
 from .emargement import router as emargement_router
+from .engagement import public_router as engagement_public_router
+from .engagement import router as engagement_router
+from .engagement_import import router as engagement_import_router
 from .fichiers import admin_router as fichiers_admin_router
 from .fichiers import router as fichiers_router
 from .fonctions import router as fonctions_router
@@ -102,6 +105,9 @@ app.include_router(gestion_router)
 app.include_router(groupes_router)
 app.include_router(groupes_lecture_router)
 app.include_router(emargement_router)
+app.include_router(engagement_public_router)
+app.include_router(engagement_router)
+app.include_router(engagement_import_router)
 app.include_router(sondage_router)
 
 

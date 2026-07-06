@@ -24,6 +24,9 @@ _LIMITS = {
     # OTP verification is the sensitive oracle: keep it tight per IP, on top of
     # the per-email failure lockout below.
     "verify-otp": (10, 300),
+    # Public engagement form (no auth): bound abuse from a single source while
+    # staying generous for a live event where many people scan from shared Wi-Fi.
+    "public-engagement": (30, 300),
 }
 
 # One-time-code guessing lockout per account, independent of the IP so it cannot
