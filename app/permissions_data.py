@@ -88,6 +88,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/admin/audit': 'audit.administrer',
     'GET /api/v1/admin/bergers': 'bergers.consulter',
     'GET /api/v1/admin/catalogue-acces': 'acces.administrer',
+    'GET /api/v1/admin/catalogue-permissions': 'acces.administrer',
     'GET /api/v1/admin/commissions': 'commissions.consulter',
     'GET /api/v1/admin/comptage/{evenement_id}': 'comptage.superviser',
     'GET /api/v1/admin/consentements': 'consentements.consulter',

@@ -244,6 +244,76 @@ def catalogue_acces(user: Annotated[UserMe, Depends(require_permission("acces.ad
     return {"roles": permissions.catalogue()}
 
 
+_ORDRE_ROLES = ("membre", "controleur", "gestionnaire", "direction", "admin", "super_admin")
+
+
+def _matrice_permissions() -> dict[str, object]:
+    """The atomic permission catalogue and the role -> permissions matrix.
+
+    Pure data (from :mod:`app.permissions_data`), so the read-only matrix shown in
+    the back office is derived from the very mapping the server enforces, never a
+    hand-kept copy that could drift. Permissions are grouped by domain and each
+    role lists exactly the keys it holds.
+    """
+    from . import permissions_data
+
+    permissions = [
+        {"cle": cle, "domaine": meta["domaine"], "libelle": meta["libelle"],
+         "risque": meta["risque"], "portee": meta["portee"]}
+        for cle, meta in sorted(permissions_data.CATALOGUE.items())
+    ]
+    domaines = sorted({meta["domaine"] for meta in permissions_data.CATALOGUE.values()})
+    roles = [
+        {"role": role, "permissions": sorted(permissions_data.permissions_du_role(role))}
+        for role in _ORDRE_ROLES
+    ]
+    return {"permissions": permissions, "domaines": domaines, "roles": roles}
+
+
+def _groupes_specialises(role: str) -> list[dict[str, object]]:
+    """The permission-mode access groups with the atomic permissions each grants.
+
+    Reads ``groupe_acces`` (mode = 'permissions') joined with ``groupe_permission``.
+    Both belong to migrations 0075/0076, the same hard dependency as
+    ``require_permission`` itself, so the code and the schema always deploy
+    together and no failure is masked here.
+    """
+    rows = db.fetch_all(
+        "SELECT g.id, g.cle, g.libelle, g.description, g.actif, "
+        "COALESCE(array_agg(gp.permission ORDER BY gp.permission) "
+        "FILTER (WHERE gp.permission IS NOT NULL), '{}') AS permissions "
+        "FROM groupe_acces g "
+        "LEFT JOIN groupe_permission gp ON gp.groupe_id = g.id "
+        "WHERE g.mode = 'permissions' "
+        "GROUP BY g.id, g.cle, g.libelle, g.description, g.actif "
+        "ORDER BY g.libelle ASC",
+        (),
+        role=role,
+    )
+    return [
+        {"id": str(r["id"]), "cle": r["cle"], "libelle": r["libelle"],
+         "description": r.get("description"), "actif": bool(r["actif"]),
+         "permissions": list(r.get("permissions") or [])}
+        for r in rows
+    ]
+
+
+@router.get("/catalogue-permissions")
+def catalogue_permissions(
+    user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]
+) -> dict[str, object]:
+    """The granular permission catalogue, the role matrix and the specialized groups.
+
+    Powers the read-only access matrix in the back office: which atomic permission
+    each role holds, and which permissions each specialized (permission-mode) group
+    grants. The UI is a mirror; the server dependency ``require_permission`` remains
+    the only enforcement.
+    """
+    matrice = _matrice_permissions()
+    matrice["groupes_specialises"] = _groupes_specialises(user.role)
+    return matrice
+
+
 @router.get("/membres/{membre_id}/acces-effectif")
 def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """A reviewable explanation of a member's effective access, with warnings.
