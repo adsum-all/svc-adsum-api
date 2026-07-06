@@ -80,3 +80,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Fail closed at startup: the JWT secret signs access tokens and derives the OTP and
+# QR keys. An empty secret would make tokens forgeable and one-time codes computable
+# offline (account takeover), so the API refuses to run without it.
+if not settings.jwt_secret.strip():
+    raise RuntimeError("ADSUM_JWT_SECRET is required and must not be empty (fail-closed).")

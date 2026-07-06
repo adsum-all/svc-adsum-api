@@ -198,6 +198,14 @@ class AttestationUploadIn(BaseModel):
 def deposer_attestation(payload: AttestationUploadIn, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     """Attach the uploaded scan of the hand-signed attestation for admin review."""
     membre_id, role = ctx
+    # Ownership check (HDS/RGPD): the document MUST belong to this member, so nobody
+    # can reference another member's identity document into their own attestation.
+    if not db.fetch_one(
+        "SELECT 1 AS ok FROM document WHERE id = %s AND membre_id = %s",
+        (payload.document_id, membre_id),
+        role=role,
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="document introuvable ou non rattaché à ce membre")
     row = db.execute(
         "UPDATE attestation_manuelle SET document_id = %s, statut = 'under_review', soumise_le = now(), motif_rejet = NULL "
         "WHERE membre_id = %s AND statut IN ('awaiting', 'reminded', 'overdue', 'rejected') RETURNING id, demande_id",

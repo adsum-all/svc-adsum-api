@@ -256,16 +256,17 @@ def _encrypt_document_at_rest(path: str, declared_mime: str | None) -> tuple[str
         storage.delete_object(bucket, path)
         return enc_path, True
     except (storage.StorageError, ValueError) as exc:
-        if settings.is_production:
-            try:
-                storage.delete_object(bucket, path)
-            except storage.StorageError:
-                pass
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="document encryption unavailable, please retry",
-            ) from exc
-        return path, False
+        # Fail closed ALWAYS, not only in production: an identity document is never
+        # persisted in clear. On any encryption failure, purge the plaintext object
+        # and refuse, whatever the environment (the prod env flag is not relied upon).
+        try:
+            storage.delete_object(bucket, path)
+        except storage.StorageError:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="document encryption unavailable, please retry",
+        ) from exc
 
 
 @router.post("/documents/confirm", status_code=status.HTTP_201_CREATED)

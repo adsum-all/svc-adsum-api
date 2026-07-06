@@ -304,7 +304,17 @@ def reset_password(payload: ResetRequest, request: Request) -> None:
         ratelimit.otp_failure(str(payload.email), "password_reset")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid code")
     # Owner connection (role=None) bypasses RLS; scoped by e-mail. No reveal if absent.
-    db.execute(
-        "UPDATE utilisateur SET hash_mdp = %s WHERE email = %s",
+    # Also clear the temporary-password flags (a reset produces a definitive
+    # password), and revoke every existing session so a stolen token cannot survive
+    # the recovery. The password value is never logged.
+    updated = db.execute(
+        "UPDATE utilisateur SET hash_mdp = %s, mdp_temporaire = false, mdp_expire_le = NULL, "
+        "doit_changer_mdp = false WHERE email = %s RETURNING id",
         (hash_password(payload.nouveau), str(payload.email)),
     )
+    if updated:
+        uid = str(updated["id"])
+        db.execute("UPDATE session SET fin = now(), revoque = true WHERE utilisateur_id = %s AND fin IS NULL", (uid,))
+        from . import audit
+
+        audit.log(uid, "membre", "reinitialisation_mdp", "utilisateur", uid, {"sessions_revoquees": True})

@@ -251,10 +251,23 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     )
     actifs = db.fetch_all("SELECT id, prenoms, langue FROM membre WHERE statut = 'actif'", (), role=role)
     lien_app = channels.integration_value("site_officiel") or "https://adsum-web-membre.pages.dev"
+    from .visibilite import CIBLE_PREDICATE
+
     for ev in evs:
         date_str = ev["debut"].strftime("%d/%m/%Y") if ev["debut"] else ""
         heure_str = ev["debut"].strftime("%Hh%M") if ev["debut"] else ""
-        for m in actifs:
+        # Only the members TARGETED by this event receive the reminder: a restricted
+        # event (commission/intendance/coordination/tribu) never leaks its title and
+        # time to the whole base. General events still reach everyone.
+        cibles = db.fetch_all(
+            "SELECT m.id, m.prenoms, m.langue FROM membre m "
+            "LEFT JOIN intendance mi ON mi.id = m.intendance_id "
+            "JOIN evenement e ON e.id = %s "
+            f"WHERE m.statut = 'actif' AND {CIBLE_PREDICATE}",
+            (str(ev["id"]),),
+            role=role,
+        )
+        for m in cibles:
             ctx = {"prenom": _prenom(m), "titre": ev["titre"], "date": date_str, "heure": heure_str, "lien": lien_app}
             if notifier(str(m["id"]), role, "activite_rappel_j1", ctx, ref_id=str(ev["id"]), dedup=True):
                 result["rappels_j1"] += 1
@@ -282,8 +295,11 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
 
     # 3) Monday: weekly agenda of the coming week.
     if weekday == 0:
+        # Shared digest to every active member, so it lists only community-wide
+        # events; a targeted event never appears in a broadcast agenda.
         semaine = db.fetch_all(
-            "SELECT titre, debut FROM evenement WHERE debut BETWEEN now() AND now() + interval '7 days' ORDER BY debut ASC",
+            "SELECT titre, debut FROM evenement WHERE cible_type = 'general' "
+            "AND debut BETWEEN now() AND now() + interval '7 days' ORDER BY debut ASC",
             (),
             role=role,
         )
@@ -297,7 +313,8 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     # 4) Sunday: recap of the past week.
     if weekday == 6:
         passe = db.fetch_all(
-            "SELECT titre FROM evenement WHERE debut BETWEEN now() - interval '7 days' AND now() ORDER BY debut ASC",
+            "SELECT titre FROM evenement WHERE cible_type = 'general' "
+            "AND debut BETWEEN now() - interval '7 days' AND now() ORDER BY debut ASC",
             (),
             role=role,
         )

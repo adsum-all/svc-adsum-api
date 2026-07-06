@@ -426,6 +426,16 @@ def change_password(
         (hash_password(payload.nouveau), user.id),
         role=user.role,
     )
+    # Revoke every session so a stolen token cannot outlive the change, and audit
+    # the event (never the password value). The caller re-authenticates afterwards.
+    db.execute(
+        "UPDATE session SET fin = now(), revoque = true WHERE utilisateur_id = %s AND fin IS NULL",
+        (user.id,),
+        role=user.role,
+    )
+    from . import audit
+
+    audit.log(user.id, user.role, "changement_mdp", "utilisateur", user.id, {"sessions_revoquees": True})
 
 
 @router.post("/me/engagements/accepter", response_model=EngagementOut, status_code=status.HTTP_201_CREATED)

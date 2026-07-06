@@ -93,7 +93,7 @@ def generate_code(email: str, purpose: str, window: int | None = None) -> str:
     """Derive the 6-digit code for ``email``/``purpose`` in the given time window."""
     w = window if window is not None else _windows()[0]
     msg = f"{email.lower().strip()}|{purpose}|{w}".encode()
-    digest = hmac.new(settings.jwt_secret.encode() or b"adsum", msg, hashlib.sha256).hexdigest()
+    digest = hmac.new(settings.jwt_secret.encode(), msg, hashlib.sha256).hexdigest()
     number = int(digest, 16) % (10**CODE_DIGITS)
     return str(number).zfill(CODE_DIGITS)
 
@@ -112,7 +112,7 @@ def verify_code(email: str, purpose: str, code: str) -> bool:
 def _code_fingerprint(email: str, purpose: str, code: str) -> str:
     """Keyed hash stored in the consumption ledger (never the code in clear)."""
     msg = f"{email.lower().strip()}|{purpose}|{(code or '').strip()}".encode()
-    return hmac.new(settings.jwt_secret.encode() or b"adsum", msg, hashlib.sha256).hexdigest()
+    return hmac.new(settings.jwt_secret.encode(), msg, hashlib.sha256).hexdigest()
 
 
 def consume_code(email: str, purpose: str, code: str, ip: str | None = None) -> bool:
