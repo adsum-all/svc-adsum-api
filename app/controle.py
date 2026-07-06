@@ -204,12 +204,12 @@ def checkin_manuel(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
     inserted = db.execute(
         """
-        INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode)
-        VALUES (%s, %s, 'presentiel', now(), 'manuelle')
+        INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode, cree_par)
+        VALUES (%s, %s, 'presentiel', now(), 'manuelle', %s)
         ON CONFLICT (membre_id, evenement_id) DO NOTHING
         RETURNING arrivee
         """,
-        (payload.membre_id, payload.evenement_id),
+        (payload.membre_id, payload.evenement_id, user.id),
         role=user.role,
     )
     if inserted:
@@ -360,12 +360,12 @@ def checkin(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
     inserted = db.execute(
         """
-        INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode)
-        VALUES (%s, %s, 'presentiel', now(), 'qr')
+        INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode, cree_par)
+        VALUES (%s, %s, 'presentiel', now(), 'qr', %s)
         ON CONFLICT (membre_id, evenement_id) DO NOTHING
         RETURNING arrivee
         """,
-        (membre_id, payload.evenement_id),
+        (membre_id, payload.evenement_id, user.id),
         role=user.role,
     )
     if inserted:

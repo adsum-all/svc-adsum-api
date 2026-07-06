@@ -450,9 +450,9 @@ def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_permi
 @router.post("/admin/demandes/{demande_id}/messages", response_model=MessageOut, status_code=status.HTTP_201_CREATED)
 def admin_reply(demande_id: str, payload: MessageIn, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]) -> MessageOut:
     created = db.execute(
-        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id) VALUES (%s, 'staff', 'Administration', %s, %s) "
+        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id, auteur_id) VALUES (%s, 'staff', 'Administration', %s, %s, %s) "
         "RETURNING id, cree_le",
-        (demande_id, payload.corps, payload.document_id),
+        (demande_id, payload.corps, payload.document_id, user.id),
         role=user.role,
     )
     db.execute("UPDATE demande SET maj_le = now(), statut = 'en_cours' WHERE id = %s AND statut = 'ouverte'", (demande_id,), role=user.role)
@@ -512,8 +512,8 @@ def admin_demander_piece(
     if str(row["statut"]) in ("resolue", "refusee"):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="request is closed")
     db.execute(
-        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps) VALUES (%s, 'staff', 'Administration', %s)",
-        (demande_id, f"Pièce demandée : {payload.description}"),
+        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, auteur_id) VALUES (%s, 'staff', 'Administration', %s, %s)",
+        (demande_id, f"Pièce demandée : {payload.description}", user.id),
         role=user.role,
     )
     db.execute("UPDATE demande SET statut = 'pieces_demandees', maj_le = now() WHERE id = %s", (demande_id,), role=user.role)
