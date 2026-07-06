@@ -102,6 +102,21 @@ def enregistrer_invitation(payload: EngagementIn, source: str, cree_par: str | N
     return {"id": inv_id, "email": email, "remerciement_envoye": sent}
 
 
+@public_router.get("/engagement/contexte")
+def engagement_contexte(evenement_id: str) -> dict[str, object]:
+    """Public title of the activity a QR invitation is tied to, to show a discreet
+    context on the form. Returns null on an unknown/invalid id, never an error."""
+    import re
+
+    if not re.fullmatch(r"[0-9a-fA-F-]{6,40}", evenement_id or ""):
+        return {"titre": None}
+    try:
+        row = db.fetch_one("SELECT titre FROM evenement WHERE id = %s", (evenement_id,), role=None)
+    except Exception:  # noqa: BLE001 - a malformed id must not raise on a public route
+        return {"titre": None}
+    return {"titre": row["titre"] if row else None}
+
+
 @public_router.post("/engagement", status_code=status.HTTP_201_CREATED)
 def engagement_public(payload: EngagementIn, request: Request) -> dict[str, object]:
     """Public engagement form (scanned QR). No auth; rate limited. E-mail required."""
