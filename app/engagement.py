@@ -184,9 +184,16 @@ def dashboard_engagement(
     total = db.fetch_one(f"SELECT count(*) AS n FROM invitation_engagement {scope}", params, role=user.role)
     par_source = db.fetch_all(f"SELECT source, count(*) AS n FROM invitation_engagement {scope} GROUP BY source", params, role=user.role)
     par_statut = db.fetch_all(f"SELECT statut, count(*) AS n FROM invitation_engagement {scope} GROUP BY statut", params, role=user.role)
+    par_pays = db.fetch_all(
+        f"SELECT COALESCE(NULLIF(pays_code, ''), 'NC') AS pays, count(*) AS n FROM invitation_engagement {scope} "
+        "GROUP BY 1 ORDER BY n DESC LIMIT 8",
+        params,
+        role=user.role,
+    )
     return {
         "total": int((total or {}).get("n", 0)),
         "par_canal": {str(r["source"]): int(r["n"]) for r in par_source},
+        "par_pays": {str(r["pays"]): int(r["n"]) for r in par_pays},
         "en_attente": next((int(r["n"]) for r in par_statut if r["statut"] == "en_attente"), 0),
         "converti": next((int(r["n"]) for r in par_statut if r["statut"] == "converti"), 0),
     }
