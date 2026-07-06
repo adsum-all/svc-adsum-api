@@ -42,6 +42,7 @@ class MembreProfile(BaseModel):
 
     id: str
     matricule: str
+    code_membre: str | None = None
     email: EmailStr
     nom: str | None = None
     prenoms: str | None = None
@@ -252,6 +253,9 @@ class MembreFields(BaseModel):
 
     nom: str | None = None
     prenoms: str | None = None
+    # External member code (distinct from the app matricule): optional, uppercased,
+    # loose format (letters, digits and hyphens) so real-world codes fit.
+    code_membre: str | None = Field(default=None, max_length=32, pattern=r"^[A-Za-z0-9\- ]*$")
     telephone: str | None = None
     commission_id: str | None = None
     groupe: str | None = None

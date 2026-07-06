@@ -181,6 +181,9 @@ def update_membre(
                             ("nom_pastoral", identite.normaliser_prenoms)):
         if fields.get(champ) is not None:
             fields[champ] = fonction(str(fields[champ]))
+    # The external member code is always stored uppercase; an empty string clears it.
+    if "code_membre" in fields:
+        fields["code_membre"] = (str(fields["code_membre"]).strip().upper() or None) if fields["code_membre"] is not None else None
     # Snapshot the prior values of the audited governance fields before writing,
     # so the trail records the actual state change (e.g. verifie false -> true).
     audited = [name for name in fields if name in _AUDITED_VALUE_FIELDS]

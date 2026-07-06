@@ -35,7 +35,7 @@ router = APIRouter(prefix="/api/v1", tags=["modifications"])
 # by the administration only, so a member can never grant themselves a function
 # during a correction cycle.
 _EDITABLE_FIELDS = {
-    "prenoms", "nom", "telephone", "indicatif_telephone", "date_naissance",
+    "prenoms", "nom", "code_membre", "telephone", "indicatif_telephone", "date_naissance",
     "naissance_annee_visible", "genre", "pays", "region", "ville", "adresse",
     "adresse_complement", "commission_id", "intendance_id", "tribu_id", "groupe",
     "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage",
@@ -46,7 +46,7 @@ _EDITABLE_FIELDS = {
 # pending proposal, even though the submission already filtered the input.
 _COMMITTABLE_FIELDS = frozenset(
     {
-        "prenoms", "nom", "telephone", "date_naissance", "genre", "pays", "ville",
+        "prenoms", "nom", "code_membre", "telephone", "date_naissance", "genre", "pays", "ville",
         "commission_id", "intendance_id", "tribu_id", "groupe", "profession",
         "niveau_etudes", "situation_matrimoniale", "type_mariage",
         "baptise", "confirme", "premiere_communion",

@@ -10,7 +10,7 @@ from .schemas import MembreProfile
 
 # Columns a member SELECT must expose for membre_row_to_profile, in order.
 MEMBRE_PROFILE_SELECT = (
-    "m.id, m.matricule, m.email, m.nom, m.prenoms, m.telephone, m.indicatif_telephone, m.groupe, m.photo_url, "
+    "m.id, m.matricule, m.code_membre, m.email, m.nom, m.prenoms, m.telephone, m.indicatif_telephone, m.groupe, m.photo_url, "
     "m.photo_pending_url, m.photo_focus_x, m.photo_focus_y, "
     "m.nom_naissance, m.nom_marital, m.nom_affiche, m.est_berger, m.nom_pastoral, m.fonction_perimetre, "
     "m.statut, m.verifie, m.genre, m.date_naissance, m.naissance_annee_visible, m.pays, m.region, m.ville, "
@@ -147,6 +147,7 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
     return MembreProfile(
         id=str(row["id"]),
         matricule=row["matricule"],
+        code_membre=row.get("code_membre"),
         email=row["email"],
         nom=row["nom"],
         prenoms=row["prenoms"],

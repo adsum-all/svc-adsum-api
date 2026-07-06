@@ -164,6 +164,7 @@ class IdentifierIn(BaseModel):
     """
 
     matricule: str | None = Field(default=None, max_length=32)
+    code_membre: str | None = Field(default=None, max_length=32)
     indicatif: str | None = Field(default=None, max_length=8)
     telephone: str | None = Field(default=None, max_length=32)
     nom: str | None = Field(default=None, max_length=120)
@@ -220,6 +221,17 @@ def _identifier_par_matricule(matricule: str) -> dict[str, object]:
     return rows[0]
 
 
+def _identifier_par_code_membre(code: str) -> dict[str, object]:
+    """Resolve a member from their external member code (uppercase, unique). Uniform failure."""
+    rows = db.fetch_all(
+        "SELECT id, prenoms, nom, matricule FROM membre WHERE upper(code_membre) = %s AND code_membre IS NOT NULL",
+        (code.strip().upper(),),
+    )
+    if len(rows) != 1:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_ECHEC_MATRICULE)
+    return rows[0]
+
+
 def _identifier_par_telephone(indicatif: str, telephone: str, nom: str) -> dict[str, object]:
     """Resolve a member from dial code + phone + last name (fallback mode).
 
@@ -253,12 +265,14 @@ def identifier(evenement_id: str, payload: IdentifierIn) -> IdentiteOut:
     _guard_window(ev)
     if payload.matricule and payload.matricule.strip():
         m = _identifier_par_matricule(payload.matricule)
+    elif payload.code_membre and payload.code_membre.strip():
+        m = _identifier_par_code_membre(payload.code_membre)
     elif payload.indicatif and payload.telephone and payload.nom:
         m = _identifier_par_telephone(payload.indicatif, payload.telephone, payload.nom)
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Fournissez votre matricule, ou votre indicatif, votre numéro et votre nom.",
+            detail="Fournissez votre matricule, votre code membre, ou votre indicatif, votre numéro et votre nom.",
         )
     membre_id = str(m["id"])
     existing = db.fetch_one(
