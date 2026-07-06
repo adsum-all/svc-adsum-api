@@ -140,8 +140,10 @@ def _alerter_connexion_inhabituelle(user_id: str, role: str) -> None:
 
 
 def _temp_expired(expire_le: object) -> bool:
+    # Fail closed: a temporary password without a valid expiry (NULL/unknown type)
+    # is treated as expired, never as valid forever.
     if not isinstance(expire_le, datetime):
-        return False
+        return True
     now = datetime.now(tz=expire_le.tzinfo) if expire_le.tzinfo else datetime.utcnow()
     return now > expire_le
 

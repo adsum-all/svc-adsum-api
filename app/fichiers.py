@@ -115,7 +115,7 @@ def photo_confirm(payload: PhotoConfirm, ctx: Annotated[tuple[str, str], Depends
     anything. The staged photo travels with the single modification submission and
     is only promoted to the live photo when the administration validates it."""
     membre_id, role = ctx
-    if not payload.path.startswith(f"{membre_id}/"):
+    if not payload.path.startswith(f"{membre_id}/") or ".." in payload.path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
     etat = db.fetch_one(
         "SELECT photo_url, coalesce(champs_deverrouilles, '{}') AS deverrouilles FROM membre WHERE id = %s",
@@ -274,7 +274,7 @@ def doc_confirm(payload: DocConfirm, ctx: Annotated[tuple[str, str], Depends(_me
     membre_id, role = ctx
     if payload.type not in DOC_TYPES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown document type")
-    if not payload.path.startswith(f"{membre_id}/"):
+    if not payload.path.startswith(f"{membre_id}/") or ".." in payload.path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
     # Encrypt the uploaded identity document at rest before recording it, so the
     # bytes in the bucket are ciphertext. Decryption happens only through an
