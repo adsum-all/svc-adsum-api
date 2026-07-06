@@ -21,6 +21,12 @@ def permissions_effectives(user: UserMe) -> frozenset[str]:
 
     A 'role' group resolves via role_permission[role_accorde]; a 'permissions' group
     via groupe_permission. Union, deny-by-default.
+
+    Only GLOBAL memberships contribute here, exactly like ``_effective_role``: a
+    scoped membership (coordination/intendance/commission/tribu) grants a bounded
+    pilotage access through ``resolve_scope``/``require_perimetre``, never a global
+    permission. Without this filter a scoped group would leak its whole role's
+    permissions across the entire base, an escalation the pre-RBAC role gate refused.
     """
     perms: set[str] = set(permissions_du_role(user.role))
     if not user.membre_id:
@@ -29,7 +35,7 @@ def permissions_effectives(user: UserMe) -> frozenset[str]:
         "SELECT g.mode, g.role_accorde, gp.permission "
         "FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
         "LEFT JOIN groupe_permission gp ON gp.groupe_id = g.id AND g.mode = 'permissions' "
-        "WHERE mg.membre_id = %s AND g.actif = true",
+        "WHERE mg.membre_id = %s AND g.actif = true AND mg.portee_type = 'global'",
         (user.membre_id,),
         role=user.role,
     )
