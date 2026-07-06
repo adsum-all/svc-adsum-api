@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
-from . import audit, db, ratelimit
+from . import db, ratelimit
 from .clientip import client_ip
 from .schemas import LoginRequest, TokenResponse, UserMe
 from .security import create_access_token, decode_access_token, hash_password, verify_password_or_dummy
@@ -225,6 +225,11 @@ def logout(user: Annotated[UserMe, Depends(current_user)]) -> dict[str, object]:
     """Close the current session: mark its end and revoke it, so the security log
     holds a real connection/disconnection with a computable duration."""
     if user.session_id:
+        # Imported here, not at module level: auth is a foundational module and an
+        # eager import of audit (which depends on permissions_rbac -> auth) would
+        # close an import cycle. Audit is only needed at logout, at request time.
+        from . import audit
+
         db.execute(
             "UPDATE session SET fin = now(), revoque = true WHERE id = %s AND fin IS NULL",
             (user.session_id,),
