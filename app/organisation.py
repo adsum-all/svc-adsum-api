@@ -12,8 +12,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import audit, db
-from .deps import require_roles
 from .fonctions_membre import label_genre
+from .permissions_rbac import require_permission
 from .schemas import (
     BergerOut,
     CoordinationOut,
@@ -31,10 +31,6 @@ from .schemas import (
 
 router = APIRouter(prefix="/api/v1/admin", tags=["organisation"])
 
-STAFF = ("super_admin", "admin", "gestionnaire", "controleur", "direction")
-WRITERS = ("super_admin", "admin")
-require_staff = require_roles(*STAFF)
-require_writer = require_roles(*WRITERS)
 
 
 def _parent_id(table: str, parent_id: str | None, role: str) -> str | None:
@@ -110,7 +106,7 @@ _COORD_SELECT = (
 
 
 @router.get("/coordinations", response_model=list[CoordinationOut])
-def list_coordinations(user: Annotated[UserMe, Depends(require_staff)]) -> list[CoordinationOut]:
+def list_coordinations(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> list[CoordinationOut]:
     rows = db.fetch_all(
         _COORD_SELECT + _responsable_lateral("coordination_id", "coordinateur") + "ORDER BY s.nom ASC",
         (),
@@ -133,7 +129,7 @@ def _coordination_by_id(item_id: str, role: str) -> CoordinationOut:
 @router.post("/coordinations", response_model=CoordinationOut, status_code=status.HTTP_201_CREATED)
 def create_coordination(
     payload: CreateCoordination,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> CoordinationOut:
     parent = _parent_id("coordination", payload.parent_id, user.role)
     created = db.execute(
@@ -152,7 +148,7 @@ def create_coordination(
 def update_coordination(
     item_id: str,
     payload: UpdateCoordination,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> CoordinationOut:
     """Full edit of a coordination: descriptive/geographic fields and the optional
     parent link, with a cycle guard. Only provided fields are written."""
@@ -209,7 +205,7 @@ def _intendance_by_id(item_id: str, role: str) -> IntendanceOut:
 
 
 @router.get("/intendances", response_model=list[IntendanceOut])
-def list_intendances(user: Annotated[UserMe, Depends(require_staff)]) -> list[IntendanceOut]:
+def list_intendances(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> list[IntendanceOut]:
     rows = db.fetch_all(
         _INTENDANCE_SELECT + _responsable_lateral("intendance_id", "intendant") + "ORDER BY s.nom ASC",
         (),
@@ -221,7 +217,7 @@ def list_intendances(user: Annotated[UserMe, Depends(require_staff)]) -> list[In
 @router.post("/intendances", response_model=IntendanceOut, status_code=status.HTTP_201_CREATED)
 def create_intendance(
     payload: CreateIntendance,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> IntendanceOut:
     # Coordination and parent intendance are both optional and independent: an
     # intendance never requires either to exist.
@@ -243,7 +239,7 @@ def create_intendance(
 def update_intendance(
     item_id: str,
     payload: UpdateIntendance,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> IntendanceOut:
     """Full edit of an intendance: descriptive/geographic fields, the optional
     coordination link and the optional parent intendance, with a cycle guard."""
@@ -268,7 +264,7 @@ def update_intendance(
 
 
 @router.get("/sous-commissions", response_model=list[SousCommissionOut])
-def list_sous_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> list[SousCommissionOut]:
+def list_sous_commissions(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> list[SousCommissionOut]:
     rows = db.fetch_all(
         """
         SELECT s.id, s.nom, s.commission_id, s.publie, c.nom AS commission
@@ -294,7 +290,7 @@ def list_sous_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> li
 @router.post("/sous-commissions", response_model=SousCommissionOut, status_code=status.HTTP_201_CREATED)
 def create_sous_commission(
     payload: CreateSousCommission,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> SousCommissionOut:
     created = db.execute(
         """
@@ -316,7 +312,7 @@ def create_sous_commission(
 
 
 @router.get("/tribus", response_model=list[TribuOut])
-def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOut]:
+def list_tribus(user: Annotated[UserMe, Depends(require_permission("tribus.consulter"))]) -> list[TribuOut]:
     rows = db.fetch_all(
         "SELECT t.id, t.nom, t.patriarche, patr.membre_id AS patriarche_membre_id, "
         "TRIM(COALESCE(patr.prenoms, '') || ' ' || COALESCE(patr.nom, '')) AS patriarche_nom "
@@ -341,7 +337,7 @@ def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOu
 
 @router.put("/tribus/{tribu_id}/patriarche")
 def set_patriarche(
-    tribu_id: str, payload: SetPatriarche, user: Annotated[UserMe, Depends(require_writer)]
+    tribu_id: str, payload: SetPatriarche, user: Annotated[UserMe, Depends(require_permission("tribus.administrer"))]
 ) -> dict[str, object]:
     """Assign or revoke the human patriarche of a tribe.
 
@@ -378,7 +374,7 @@ def set_patriarche(
 
 
 @router.get("/bergers", response_model=list[BergerOut])
-def list_bergers(user: Annotated[UserMe, Depends(require_staff)]) -> list[BergerOut]:
+def list_bergers(user: Annotated[UserMe, Depends(require_permission("bergers.consulter"))]) -> list[BergerOut]:
     """Users that can be set as a member shepherd, with their member display name."""
     rows = db.fetch_all(
         """

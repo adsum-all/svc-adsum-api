@@ -20,17 +20,15 @@ from pydantic import BaseModel, EmailStr
 
 from . import audit, db, identifiants
 from .auth import current_user
-from .deps import require_roles
 from .email_gateway import send_email
 from .fields import LineStr, ShortStr
 from .modifications import _EDITABLE_FIELDS, soumettre_cycle
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 from .security import hash_password
 
 router = APIRouter(prefix="/api/v1", tags=["inscription"])
 
-require_writer = require_roles("super_admin", "admin")
-require_reviewer = require_roles("super_admin", "admin", "gestionnaire")
 TEMP_VALID_HOURS = 72
 DECISIONS = {"approuve", "refuse", "modification_demandee", "en_revue"}
 
@@ -113,7 +111,7 @@ class CompteMembreIn(BaseModel):
 
 
 @router.post("/admin/inscriptions/membre", status_code=status.HTTP_201_CREATED)
-def creer_compte_membre(payload: CompteMembreIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def creer_compte_membre(payload: CompteMembreIn, user: Annotated[UserMe, Depends(require_permission("inscriptions.administrer"))]) -> dict[str, object]:
     matricule = identifiants.next_matricule(user.role)
     try:
         created = db.execute(
@@ -153,7 +151,7 @@ def creer_compte_membre(payload: CompteMembreIn, user: Annotated[UserMe, Depends
 
 
 @router.post("/admin/inscriptions/{membre_id}/relancer-mdp")
-def relancer_mdp(membre_id: str, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def relancer_mdp(membre_id: str, user: Annotated[UserMe, Depends(require_permission("inscriptions.administrer"))]) -> dict[str, object]:
     row = db.fetch_one("SELECT email FROM membre WHERE id = %s", (membre_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
@@ -175,7 +173,7 @@ def relancer_mdp(membre_id: str, user: Annotated[UserMe, Depends(require_writer)
 # --- Admin: review and decision -------------------------------------------
 
 @router.get("/admin/inscriptions")
-def list_inscriptions(user: Annotated[UserMe, Depends(require_reviewer)]) -> list[dict[str, object]]:
+def list_inscriptions(user: Annotated[UserMe, Depends(require_permission("inscriptions.gerer"))]) -> list[dict[str, object]]:
     rows = db.fetch_all(
         "SELECT id, matricule, prenoms, nom, email, statut_inscription, soumis_le, "
         "(SELECT count(*) FROM document d WHERE d.membre_id = membre.id) AS nb_documents "
@@ -205,7 +203,7 @@ class DecisionIn(BaseModel):
 
 
 @router.post("/admin/inscriptions/{membre_id}/decision")
-def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[UserMe, Depends(require_reviewer)]) -> dict[str, object]:
+def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[UserMe, Depends(require_permission("inscriptions.gerer"))]) -> dict[str, object]:
     if payload.decision not in DECISIONS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown decision")
     verifie = payload.decision == "approuve"
@@ -246,7 +244,7 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
 
 
 @router.get("/admin/inscriptions/{membre_id}/corrections")
-def historique_corrections(membre_id: str, user: Annotated[UserMe, Depends(require_reviewer)]) -> list[dict[str, object]]:
+def historique_corrections(membre_id: str, user: Annotated[UserMe, Depends(require_permission("inscriptions.gerer"))]) -> list[dict[str, object]]:
     """Old/new/who/when trail of a member's corrections, for fast admin re-review."""
     rows = db.fetch_all(
         "SELECT champ, ancienne_valeur, nouvelle_valeur, modifie_le FROM correction_historique "
@@ -266,7 +264,7 @@ def historique_corrections(membre_id: str, user: Annotated[UserMe, Depends(requi
 
 
 @router.get("/admin/inscriptions/{membre_id}/dossier")
-def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_reviewer)]) -> dict[str, object]:
+def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_permission("inscriptions.gerer"))]) -> dict[str, object]:
     """Full review dossier for a member: identity photo, uploaded documents (each
     with a short-lived signed URL) and the electronic-signature proof.
 

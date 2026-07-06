@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import audit, db
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import (
     ComptageLigne,
     ComptageResume,
@@ -23,8 +23,6 @@ from .schemas import (
 router = APIRouter(prefix="/api/v1/admin/comptage", tags=["comptage"])
 comptage_public_router = APIRouter(prefix="/api/v1/public", tags=["public"])
 
-require_counter = require_roles("super_admin", "admin", "gestionnaire", "controleur")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "direction")
 
 
 def _resume(evenement_id: str, role: str | None) -> ComptageResume:
@@ -68,7 +66,7 @@ def _resume(evenement_id: str, role: str | None) -> ComptageResume:
 @router.get("/{evenement_id}", response_model=ComptageResume)
 def get_comptage(
     evenement_id: str,
-    user: Annotated[UserMe, Depends(require_staff)],
+    user: Annotated[UserMe, Depends(require_permission("comptage.superviser"))],
 ) -> ComptageResume:
     return _resume(evenement_id, user.role)
 
@@ -76,7 +74,7 @@ def get_comptage(
 @router.post("", response_model=ComptageResume, status_code=status.HTTP_201_CREATED)
 def add_comptage(
     payload: CreateComptage,
-    user: Annotated[UserMe, Depends(require_counter)],
+    user: Annotated[UserMe, Depends(require_permission("comptage.controler"))],
 ) -> ComptageResume:
     db.execute(
         """

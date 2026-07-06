@@ -11,8 +11,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from . import db, identite
-from .deps import require_roles
 from .mappers import titre_prefixe
+from .permissions_rbac import require_permission
 from .qr import verify_token
 from .schemas import (
     CheckinMembre,
@@ -49,8 +49,6 @@ def _pastoral(row: dict[str, object]) -> str | None:
         return None
     return identite.nom_pastoral_affichage(row.get("genre"), row.get("nom_pastoral"))  # type: ignore[arg-type]
 
-CONTROL_ROLES = ("super_admin", "admin", "gestionnaire", "controleur")
-require_control = require_roles(*CONTROL_ROLES)
 
 
 def _lookup_membre(membre_id: str, role: str) -> dict[str, object] | None:
@@ -89,7 +87,7 @@ def _signed_photo(path: object) -> str | None:
 
 @router.get("/evenements", response_model=list[EvenementOut])
 def open_or_upcoming_events(
-    user: Annotated[UserMe, Depends(require_control)],
+    user: Annotated[UserMe, Depends(require_permission("controle.controler"))],
 ) -> list[EvenementOut]:
     rows = db.fetch_all(
         """
@@ -131,7 +129,7 @@ def open_or_upcoming_events(
 
 @router.get("/membres", response_model=list[ControlMembre])
 def directory(
-    user: Annotated[UserMe, Depends(require_control)],
+    user: Annotated[UserMe, Depends(require_permission("controle.controler"))],
     q: Annotated[str | None, Query(max_length=120)] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 1000,
 ) -> list[ControlMembre]:
@@ -198,7 +196,7 @@ def _mark_present_scan(membre_id: str, evenement_id: str, role: str) -> None:
 @router.post("/checkin-manuel", response_model=CheckinResult)
 def checkin_manuel(
     payload: ManualCheckinRequest,
-    user: Annotated[UserMe, Depends(require_control)],
+    user: Annotated[UserMe, Depends(require_permission("controle.controler"))],
 ) -> CheckinResult:
     """Manual check-in by member id, logged with the 'manuelle' method (offline fallback)."""
     membre = _lookup_membre(payload.membre_id, user.role)
@@ -247,7 +245,7 @@ def checkin_manuel(
 @router.post("/checkout", response_model=CheckoutResult)
 def checkout(
     payload: CheckinRequest,
-    user: Annotated[UserMe, Depends(require_control)],
+    user: Annotated[UserMe, Depends(require_permission("controle.controler"))],
 ) -> CheckoutResult:
     """Exit mode: a second scan records the member departure for the event."""
     result = verify_token(payload.token)
@@ -303,7 +301,7 @@ def checkout(
 @router.post("/verify", response_model=VerifyResult)
 def verify(
     payload: VerifyRequest,
-    user: Annotated[UserMe, Depends(require_control)],
+    user: Annotated[UserMe, Depends(require_permission("controle.controler"))],
 ) -> VerifyResult:
     result = verify_token(payload.token)
     membre_id = result.get("membre_id")
@@ -343,7 +341,7 @@ def verify(
 @router.post("/checkin", response_model=CheckinResult)
 def checkin(
     payload: CheckinRequest,
-    user: Annotated[UserMe, Depends(require_control)],
+    user: Annotated[UserMe, Depends(require_permission("controle.controler"))],
 ) -> CheckinResult:
     result = verify_token(payload.token)
     if not result["valid"]:

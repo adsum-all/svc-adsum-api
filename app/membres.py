@@ -105,6 +105,25 @@ def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> Memb
     return membre_row_to_profile(row, fonctions)
 
 
+@router.get("/me/permissions")
+def my_permissions(user: Annotated[UserMe, Depends(current_user)]) -> dict[str, object]:
+    """The atomic permissions the signed-in account effectively holds.
+
+    Powers the back office: the menu shows only what the account can do and the
+    login accepts an account (even role 'membre') that holds at least one back
+    office permission through a specialized group. This is a convenience mirror,
+    never a security barrier; every endpoint is still guarded server side by
+    ``require_permission``.
+    """
+    from .permissions_rbac import permissions_effectives
+
+    perms = sorted(permissions_effectives(user))
+    # 'membres.self' is the baseline every account holds; back-office reach means
+    # holding at least one permission beyond it.
+    back_office = [p for p in perms if p != "membres.self"]
+    return {"role": user.role, "permissions": perms, "acces_back_office": bool(back_office)}
+
+
 @router.put("/me/fuseau", status_code=status.HTTP_204_NO_CONTENT)
 def set_fuseau(payload: FuseauIn, ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> None:
     """Store the member's IANA time zone, detected by their device on app open.

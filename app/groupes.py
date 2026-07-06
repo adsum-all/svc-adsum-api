@@ -16,14 +16,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from . import audit, db
-from .deps import require_roles
 from .fields import ShortStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 from .security import hash_password
 
 router = APIRouter(prefix="/api/v1/admin", tags=["groupes"])
 
-require_admin = require_roles("super_admin", "admin")
 
 # Platform role hierarchy, to pick the highest role a member's groups grant.
 _ROLE_RANK = {"membre": 0, "controleur": 1, "gestionnaire": 2, "direction": 3, "admin": 4, "super_admin": 5}
@@ -39,6 +38,36 @@ _PORTEE_TABLES = {
     "commission": "commission",
     "tribu": "tribu",
 }
+
+
+def _super_admins_actifs(role: str) -> int:
+    """Count active super_admin login accounts (the availability floor)."""
+    r = db.fetch_one("SELECT count(*) AS n FROM utilisateur WHERE role = 'super_admin' AND actif = true", (), role=role)
+    return int((r or {}).get("n", 0))
+
+
+def _assert_super_admin_preserve(membre_id: str, role_accorde: str, actor: UserMe) -> None:
+    """Never let the system lose its last super_admin, nor let one self-demote.
+
+    Removing a super_administration membership is refused when it would drop this
+    member from super_admin AND either the actor is removing their own access, or
+    this is the last active super_admin account (availability floor, M1).
+    """
+    if role_accorde != "super_admin":
+        return
+    # Does the member keep super_admin via another active super_admin group?
+    autres = db.fetch_one(
+        "SELECT count(*) AS n FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "WHERE mg.membre_id = %s AND g.actif = true AND g.role_accorde = 'super_admin'",
+        (membre_id,),
+        role=actor.role,
+    )
+    if int((autres or {}).get("n", 0)) > 1:
+        return  # they stay super_admin through another group
+    if actor.membre_id and actor.membre_id == membre_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="vous ne pouvez pas retirer votre propre accès super-administration")
+    if _super_admins_actifs(actor.role) <= 1:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="impossible de retirer le dernier super-administrateur actif")
 
 
 def _assert_peut_gerer(actor: UserMe, role_accorde: str, membre_cible_id: str) -> None:
@@ -168,7 +197,7 @@ def _valider_portee(role_accorde: str, portee_type: str, portee_id: str | None, 
 
 
 @router.get("/groupes", response_model=list[GroupeOut])
-def list_groupes(user: Annotated[UserMe, Depends(require_admin)]) -> list[GroupeOut]:
+def list_groupes(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> list[GroupeOut]:
     """The access-group catalogue (built-in and custom)."""
     rows = db.fetch_all(
         "SELECT id, cle, libelle, description, role_accorde, systeme, actif FROM groupe_acces WHERE actif = true ORDER BY systeme DESC, libelle ASC",
@@ -185,7 +214,7 @@ def list_groupes(user: Annotated[UserMe, Depends(require_admin)]) -> list[Groupe
 
 
 @router.post("/groupes", response_model=GroupeOut, status_code=status.HTTP_201_CREATED)
-def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_roles("super_admin"))]) -> GroupeOut:
+def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> GroupeOut:
     """Create a custom access group (super_admin only). The granted role must be a
     known platform role."""
     if payload.role_accorde not in _ROLE_RANK:
@@ -203,7 +232,7 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_rol
 
 
 @router.get("/catalogue-acces")
-def catalogue_acces(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def catalogue_acces(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """The role -> capabilities catalogue with labels, descriptions and risk levels.
 
     Powers the pedagogical admin UI: it explains, for every platform role, exactly
@@ -215,8 +244,78 @@ def catalogue_acces(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str
     return {"roles": permissions.catalogue()}
 
 
+_ORDRE_ROLES = ("membre", "controleur", "gestionnaire", "direction", "admin", "super_admin")
+
+
+def _matrice_permissions() -> dict[str, object]:
+    """The atomic permission catalogue and the role -> permissions matrix.
+
+    Pure data (from :mod:`app.permissions_data`), so the read-only matrix shown in
+    the back office is derived from the very mapping the server enforces, never a
+    hand-kept copy that could drift. Permissions are grouped by domain and each
+    role lists exactly the keys it holds.
+    """
+    from . import permissions_data
+
+    permissions = [
+        {"cle": cle, "domaine": meta["domaine"], "libelle": meta["libelle"],
+         "risque": meta["risque"], "portee": meta["portee"]}
+        for cle, meta in sorted(permissions_data.CATALOGUE.items())
+    ]
+    domaines = sorted({meta["domaine"] for meta in permissions_data.CATALOGUE.values()})
+    roles = [
+        {"role": role, "permissions": sorted(permissions_data.permissions_du_role(role))}
+        for role in _ORDRE_ROLES
+    ]
+    return {"permissions": permissions, "domaines": domaines, "roles": roles}
+
+
+def _groupes_specialises(role: str) -> list[dict[str, object]]:
+    """The permission-mode access groups with the atomic permissions each grants.
+
+    Reads ``groupe_acces`` (mode = 'permissions') joined with ``groupe_permission``.
+    Both belong to migrations 0075/0076, the same hard dependency as
+    ``require_permission`` itself, so the code and the schema always deploy
+    together and no failure is masked here.
+    """
+    rows = db.fetch_all(
+        "SELECT g.id, g.cle, g.libelle, g.description, g.actif, "
+        "COALESCE(array_agg(gp.permission ORDER BY gp.permission) "
+        "FILTER (WHERE gp.permission IS NOT NULL), '{}') AS permissions "
+        "FROM groupe_acces g "
+        "LEFT JOIN groupe_permission gp ON gp.groupe_id = g.id "
+        "WHERE g.mode = 'permissions' "
+        "GROUP BY g.id, g.cle, g.libelle, g.description, g.actif "
+        "ORDER BY g.libelle ASC",
+        (),
+        role=role,
+    )
+    return [
+        {"id": str(r["id"]), "cle": r["cle"], "libelle": r["libelle"],
+         "description": r.get("description"), "actif": bool(r["actif"]),
+         "permissions": list(r.get("permissions") or [])}
+        for r in rows
+    ]
+
+
+@router.get("/catalogue-permissions")
+def catalogue_permissions(
+    user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]
+) -> dict[str, object]:
+    """The granular permission catalogue, the role matrix and the specialized groups.
+
+    Powers the read-only access matrix in the back office: which atomic permission
+    each role holds, and which permissions each specialized (permission-mode) group
+    grants. The UI is a mirror; the server dependency ``require_permission`` remains
+    the only enforcement.
+    """
+    matrice = _matrice_permissions()
+    matrice["groupes_specialises"] = _groupes_specialises(user.role)
+    return matrice
+
+
 @router.get("/membres/{membre_id}/acces-effectif")
-def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """A reviewable explanation of a member's effective access, with warnings.
 
     Lists the global role, every scoped membership with its perimeter, the atomic
@@ -269,7 +368,7 @@ def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_admin
 
 
 @router.get("/perimetres-disponibles")
-def perimetres_disponibles(user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def perimetres_disponibles(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """The organisational units that a scoped group can be attached to."""
     out: dict[str, object] = {}
     for cle, table in _PORTEE_TABLES.items():
@@ -279,7 +378,7 @@ def perimetres_disponibles(user: Annotated[UserMe, Depends(require_admin)]) -> d
 
 
 @router.get("/membres/{membre_id}/groupes")
-def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """The scoped group memberships of a member, with who granted each and when, and the effective global role."""
     rows = db.fetch_all(
         "SELECT mg.id AS appartenance_id, g.id AS groupe_id, g.cle, g.libelle, g.role_accorde, "
@@ -320,7 +419,7 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_admin
 
 
 @router.post("/membres/{membre_id}/groupes")
-def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """Add a member to an access group, on a global or scoped perimeter.
 
     A global membership elevates the account's back-office role; a scoped one
@@ -350,7 +449,7 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
 
 
 @router.delete("/membres/{membre_id}/groupes/{appartenance_id}", status_code=status.HTTP_200_OK)
-def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """Remove ONE membership (a group on a given perimeter) and re-sync the role.
 
     Targets a single ``membre_groupe`` row so multi-membership is respected. The
@@ -366,6 +465,7 @@ def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[User
         # Same hierarchy guard as granting: an admin cannot demote a super_admin by
         # pulling them out of the super_administration group (F1 reverse path).
         _assert_peut_gerer(user, str(row["role_accorde"]), membre_id)
+        _assert_super_admin_preserve(membre_id, str(row["role_accorde"]), user)
         db.execute("DELETE FROM membre_groupe WHERE id = %s AND membre_id = %s", (appartenance_id, membre_id), role=user.role)
     eff, _ = _sync_account_role(membre_id, user)
     audit.log(user.id, user.role, "retrait_groupe_acces", "membre", membre_id, {"appartenance_id": appartenance_id, "effective_role": eff})

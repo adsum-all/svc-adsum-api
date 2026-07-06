@@ -15,13 +15,15 @@ from pydantic import BaseModel, Field
 
 from . import audit, db
 from .auth import current_user
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["niveaux"])
 
-require_writer = require_roles("super_admin", "admin", "gestionnaire")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
+# Fine-grained enforcement (iso-behaviour proven by the conformity test):
+# consulter = the former STAFF read, gerer = the former writer set.
+require_niveaux_lecture = require_permission("niveaux-engagement.consulter")
+require_niveaux_gestion = require_permission("niveaux-engagement.gerer")
 
 
 class NiveauIn(BaseModel):
@@ -52,7 +54,7 @@ def catalogue_actif(user: Annotated[UserMe, Depends(current_user)]) -> list[dict
 
 
 @router.get("/admin/niveaux-engagement")
-def list_niveaux(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_niveaux(user: Annotated[UserMe, Depends(require_niveaux_lecture)]) -> list[dict[str, object]]:
     rows = db.fetch_all(
         "SELECT cle, libelle, ordre, actif FROM niveau_engagement ORDER BY ordre, libelle", (), role=user.role
     )
@@ -60,7 +62,7 @@ def list_niveaux(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[s
 
 
 @router.post("/admin/niveaux-engagement", status_code=status.HTTP_201_CREATED)
-def create_niveau(payload: NiveauIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def create_niveau(payload: NiveauIn, user: Annotated[UserMe, Depends(require_niveaux_gestion)]) -> dict[str, object]:
     exists = db.fetch_one("SELECT cle FROM niveau_engagement WHERE cle = %s", (payload.cle,), role=user.role)
     if exists:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="level already exists")
@@ -74,7 +76,7 @@ def create_niveau(payload: NiveauIn, user: Annotated[UserMe, Depends(require_wri
 
 
 @router.put("/admin/niveaux-engagement/{cle}")
-def update_niveau(cle: str, payload: NiveauPatch, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def update_niveau(cle: str, payload: NiveauPatch, user: Annotated[UserMe, Depends(require_niveaux_gestion)]) -> dict[str, object]:
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
@@ -91,7 +93,7 @@ def update_niveau(cle: str, payload: NiveauPatch, user: Annotated[UserMe, Depend
 
 
 @router.delete("/admin/niveaux-engagement/{cle}")
-def deactivate_niveau(cle: str, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def deactivate_niveau(cle: str, user: Annotated[UserMe, Depends(require_niveaux_gestion)]) -> dict[str, object]:
     """Soft delete: keep the row so members already on this level keep a label."""
     row = db.execute(
         "UPDATE niveau_engagement SET actif = false WHERE cle = %s RETURNING cle", (cle,), role=user.role

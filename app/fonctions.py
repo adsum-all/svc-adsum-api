@@ -15,13 +15,11 @@ from pydantic import BaseModel, Field
 
 from . import audit, db, fonctions_membre
 from .auth import current_user
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["fonctions"])
 
-require_writer = require_roles("super_admin", "admin", "gestionnaire")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 
 class FonctionIn(BaseModel):
@@ -68,7 +66,7 @@ def catalogue_actif(user: Annotated[UserMe, Depends(current_user)]) -> list[dict
 
 
 @router.get("/admin/fonctions")
-def list_fonctions(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_fonctions(user: Annotated[UserMe, Depends(require_permission("fonctions.consulter"))]) -> list[dict[str, object]]:
     rows = db.fetch_all(
         "SELECT cle, libelle_h, libelle_f, libelle_n, est_vip, ordre, actif "
         "FROM fonction_honorifique ORDER BY ordre, cle",
@@ -79,7 +77,7 @@ def list_fonctions(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict
 
 
 @router.post("/admin/fonctions")
-def create_fonction(payload: FonctionIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def create_fonction(payload: FonctionIn, user: Annotated[UserMe, Depends(require_permission("fonctions.gerer"))]) -> dict[str, object]:
     exists = db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (payload.cle,), role=user.role)
     if exists:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="function already exists")
@@ -94,7 +92,7 @@ def create_fonction(payload: FonctionIn, user: Annotated[UserMe, Depends(require
 
 
 @router.put("/admin/fonctions/{cle}")
-def update_fonction(cle: str, payload: FonctionPatch, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def update_fonction(cle: str, payload: FonctionPatch, user: Annotated[UserMe, Depends(require_permission("fonctions.gerer"))]) -> dict[str, object]:
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
@@ -111,7 +109,7 @@ def update_fonction(cle: str, payload: FonctionPatch, user: Annotated[UserMe, De
 
 
 @router.delete("/admin/fonctions/{cle}")
-def retire_fonction(cle: str, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def retire_fonction(cle: str, user: Annotated[UserMe, Depends(require_permission("fonctions.gerer"))]) -> dict[str, object]:
     """Soft delete: keep the row so members already linked are not broken."""
     row = db.execute(
         "UPDATE fonction_honorifique SET actif = false, maj_par = %s, maj_le = now() WHERE cle = %s RETURNING cle",
@@ -126,7 +124,7 @@ def retire_fonction(cle: str, user: Annotated[UserMe, Depends(require_writer)]) 
 
 @router.put("/admin/membres/{membre_id}/fonction")
 def valider_fonction_membre(
-    membre_id: str, payload: MembreFonctionIn, user: Annotated[UserMe, Depends(require_writer)]
+    membre_id: str, payload: MembreFonctionIn, user: Annotated[UserMe, Depends(require_permission("membres.gerer"))]
 ) -> dict[str, object]:
     """Assign and/or confirm a member's primary function (admin validation).
 
@@ -200,7 +198,7 @@ def _genre(membre_id: str, role: str) -> object:
 
 
 @router.get("/admin/membres/{membre_id}/fonctions")
-def list_membre_fonctions(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_membre_fonctions(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.consulter"))]) -> list[dict[str, object]]:
     """All functions held by a member (active or ended, confirmed or not)."""
     genre = _genre(membre_id, user.role)
     return fonctions_membre.fonctions_admin(membre_id, genre, user.role)
@@ -208,7 +206,7 @@ def list_membre_fonctions(membre_id: str, user: Annotated[UserMe, Depends(requir
 
 @router.post("/admin/membres/{membre_id}/fonctions", status_code=status.HTTP_201_CREATED)
 def add_membre_fonction(
-    membre_id: str, payload: MembreFonctionCreate, user: Annotated[UserMe, Depends(require_writer)]
+    membre_id: str, payload: MembreFonctionCreate, user: Annotated[UserMe, Depends(require_permission("membres.gerer"))]
 ) -> dict[str, object]:
     """Add a function to a member (a member may hold several). Berger/Bergere is a
     consecration title and is refused here."""
@@ -236,7 +234,7 @@ def add_membre_fonction(
 @router.patch("/admin/membres/{membre_id}/fonctions/{fonction_id}")
 def update_membre_fonction(
     membre_id: str, fonction_id: str, payload: MembreFonctionUpdate,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("membres.gerer"))],
 ) -> dict[str, object]:
     """Change a member's function (scope, confirmation, active state, primary, order)."""
     fields = payload.model_dump(exclude_unset=True)
@@ -268,7 +266,7 @@ def update_membre_fonction(
 
 @router.delete("/admin/membres/{membre_id}/fonctions/{fonction_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_membre_fonction(
-    membre_id: str, fonction_id: str, user: Annotated[UserMe, Depends(require_writer)]
+    membre_id: str, fonction_id: str, user: Annotated[UserMe, Depends(require_permission("membres.gerer"))]
 ) -> None:
     """Remove a function from a member."""
     row = db.execute(

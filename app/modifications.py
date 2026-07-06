@@ -23,8 +23,9 @@ from pydantic import BaseModel, Field
 
 from . import db, identite
 from .auth import current_user
-from .demandes import _notify_ticket, _system_message, require_lecture, require_staff
+from .demandes import _notify_ticket, _system_message
 from .fields import LineStr, ShortStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["modifications"])
@@ -177,7 +178,7 @@ class ModifDecision(BaseModel):
 
 @router.get("/admin/demandes/{demande_id}/modifications")
 def admin_demande_modifications(
-    demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]
+    demande_id: str, user: Annotated[UserMe, Depends(require_permission("demandes.superviser"))]
 ) -> list[dict[str, object]]:
     """Pending and past member modifications attached to this request, as a diff."""
     rows = db.fetch_all(
@@ -204,7 +205,9 @@ def admin_demande_modifications(
 
 
 @router.get("/admin/demandes/{demande_id}/photo-pending")
-def admin_photo_pending(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> dict[str, object]:
+def admin_photo_pending(
+    demande_id: str, user: Annotated[UserMe, Depends(require_permission("demandes.superviser"))]
+) -> dict[str, object]:
     """Signed preview of a replacement photo the member staged on this request,
     with its focal point, so the administration reviews the actual new photo,
     framed the way it will be shown, before validating."""
@@ -229,7 +232,7 @@ def admin_photo_pending(demande_id: str, user: Annotated[UserMe, Depends(require
 
 @router.post("/admin/demandes/{demande_id}/modifications/decision")
 def admin_decide_modification(
-    demande_id: str, payload: ModifDecision, user: Annotated[UserMe, Depends(require_staff)]
+    demande_id: str, payload: ModifDecision, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]
 ) -> dict[str, object]:
     """Final validation of the member's single modification submission.
 

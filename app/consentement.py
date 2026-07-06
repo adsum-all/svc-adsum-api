@@ -24,10 +24,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from . import audit, db
-from .deps import require_roles
 from .email_gateway import consume_code, generate_code, send_code, verify_code
 from .inscription import _membre_ctx
 from .notifications import notifier
+from .permissions_rbac import require_permission
 from .schemas import (
     ConsentDocOut,
     ConsentDocPublishIn,
@@ -38,8 +38,6 @@ from .schemas import (
 
 router = APIRouter(prefix="/api/v1", tags=["consentement"])
 
-require_admin = require_roles("super_admin", "admin")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 SIGNATURE_PURPOSE = "engagement"
 
@@ -118,7 +116,7 @@ def get_consentement(cle: str, ctx: Annotated[tuple[str, str], Depends(_membre_c
 # --- Admin: read and publish -------------------------------------------------
 
 @router.get("/admin/consentements")
-def admin_list_consentements(user: Annotated[object, Depends(require_staff)]) -> list[dict[str, object]]:
+def admin_list_consentements(user: Annotated[object, Depends(require_permission("consentements.consulter"))]) -> list[dict[str, object]]:
     """Active documents in both languages, for the administration."""
     role = user.role  # type: ignore[attr-defined]
     rows = db.fetch_all(
@@ -144,7 +142,7 @@ def admin_list_consentements(user: Annotated[object, Depends(require_staff)]) ->
 
 
 @router.get("/admin/consentements/{cle}")
-def admin_get_consentement(cle: str, user: Annotated[object, Depends(require_staff)]) -> dict[str, object]:
+def admin_get_consentement(cle: str, user: Annotated[object, Depends(require_permission("consentements.consulter"))]) -> dict[str, object]:
     """Full active document in both languages, for the administration."""
     role = user.role  # type: ignore[attr-defined]
     row = db.fetch_one(
@@ -169,7 +167,7 @@ def admin_get_consentement(cle: str, user: Annotated[object, Depends(require_sta
 
 
 @router.post("/admin/consentements/{cle}")
-def publish_consentement(cle: str, payload: ConsentDocPublishIn, user: Annotated[object, Depends(require_admin)]) -> dict[str, object]:
+def publish_consentement(cle: str, payload: ConsentDocPublishIn, user: Annotated[object, Depends(require_permission("consentements.administrer"))]) -> dict[str, object]:
     """Publish a new version of a document: it supersedes the active one.
 
     The previous active version is kept (actif = false) for the evidence trail,

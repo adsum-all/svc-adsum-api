@@ -11,17 +11,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from . import db
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import StatistiquesOut, UserMe
 
 router = APIRouter(prefix="/api/v1/admin", tags=["analytics"])
 
-STAFF = ("super_admin", "admin", "gestionnaire", "controleur", "direction")
-require_staff = require_roles(*STAFF)
 
 
 @router.get("/statistiques", response_model=StatistiquesOut)
-def statistiques(user: Annotated[UserMe, Depends(require_staff)]) -> StatistiquesOut:
+def statistiques(user: Annotated[UserMe, Depends(require_permission("statistiques.consulter"))]) -> StatistiquesOut:
     role = user.role
     membres = db.fetch_one(
         """
