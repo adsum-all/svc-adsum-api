@@ -451,6 +451,10 @@ def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(require_perm
         return {"url": None, "chiffre": True, "content_path": f"/api/v1/admin/documents/{document_id}/content"}
     try:
         url = storage.signed_download_url(str(row["bucket"] or settings.storage_bucket_documents), str(row["chemin_stockage"]))
+        # Trace every admin access to a member document (HDS/RGPD), even non-encrypted.
+        from . import audit
+
+        audit.log(user.id, user.role, "consultation_document", "document", document_id, {"chiffre": False})
         return {"url": url, "chiffre": False}
     except storage.StorageError:
         return {"url": None, "chiffre": False}

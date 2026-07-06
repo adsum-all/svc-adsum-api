@@ -559,6 +559,14 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
             (payload.statut, closing, payload.motif, closing, demande_id),
             role=user.role,
         )
+        if closing:
+            # A closed correction re-locks the member's fields: what was unlocked for
+            # a now resolved/refused request must no longer be self-editable.
+            db.execute(
+                "UPDATE membre SET champs_deverrouilles = NULL WHERE id = (SELECT membre_id FROM demande WHERE id = %s)",
+                (demande_id,),
+                role=user.role,
+            )
         libelle = STATUTS_LISIBLES.get(payload.statut, payload.statut)
         _system_message(demande_id, user.role, f"Statut : {libelle}." + (f" Motif : {payload.motif}" if closing and payload.motif else ""))
         # A ticket linked to an attestation task carries the same truth: closing
