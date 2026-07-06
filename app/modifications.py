@@ -31,12 +31,15 @@ from .schemas import UserMe
 router = APIRouter(prefix="/api/v1", tags=["modifications"])
 
 # Fields a member may self-edit once the administration unlocks them.
+# fonction_cle (a member's governance function) is deliberately NOT here: it is set
+# by the administration only, so a member can never grant themselves a function
+# during a correction cycle.
 _EDITABLE_FIELDS = {
     "prenoms", "nom", "telephone", "indicatif_telephone", "date_naissance",
     "naissance_annee_visible", "genre", "pays", "region", "ville", "adresse",
     "adresse_complement", "commission_id", "intendance_id", "tribu_id", "groupe",
     "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage",
-    "baptise", "confirme", "premiere_communion", "type_membre", "fonction_cle",
+    "baptise", "confirme", "premiere_communion", "type_membre",
 }
 
 # Defense-in-depth whitelist: only these member columns can be committed from a

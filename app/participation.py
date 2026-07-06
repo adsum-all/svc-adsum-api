@@ -327,7 +327,7 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'present') AS presents,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source = 'scan') AS presents_presentiel,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite = 'presentiel') AS presents_presentiel_declare,
-          count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND modalite = 'en_ligne') AS presents_enligne,
+          count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite = 'en_ligne') AS presents_enligne,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite IS NULL) AS presents_modalite_inconnue,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'partiel') AS partiels,
           count(*) FILTER (WHERE {_COMPTE} AND statut = 'absent') AS absents,
@@ -470,7 +470,7 @@ def participation_global(user: Annotated[UserMe, Depends(require_permission("par
                count(*) FILTER (WHERE {_COMPTE} AND statut = 'absent') AS absents,
                count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source = 'scan') AS presentiel,
                count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite = 'presentiel') AS presentiel_declare,
-               count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND modalite = 'en_ligne') AS en_ligne,
+               count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite = 'en_ligne') AS en_ligne,
                count(*) FILTER (WHERE {_COMPTE} AND statut = 'present' AND source <> 'scan' AND modalite IS NULL) AS modalite_inconnue
         FROM participation
         """,
@@ -596,7 +596,7 @@ def participation_membre(membre_id: str, user: Annotated[UserMe, Depends(require
                (SELECT count(*) FROM fen WHERE debut >= now() - make_interval(days => %s)) AS evenements_recents,
                count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present') AS presents,
                count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present' AND p.source = 'scan') AS presents_prouves,
-               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present' AND p.modalite = 'en_ligne') AS presents_en_ligne,
+               count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'present' AND p.source <> 'scan' AND p.modalite = 'en_ligne') AS presents_en_ligne,
                count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'partiel') AS partiels,
                count(*) FILTER (WHERE {_COMPTE} AND p.statut = 'absent') AS absents,
                count(*) FILTER (WHERE {_COMPTE} AND p.statut IN ('present', 'partiel')
