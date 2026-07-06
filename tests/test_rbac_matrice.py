@@ -5,7 +5,7 @@ enforces, so these tests assert the builder mirrors app.permissions_data exactly
 """
 from __future__ import annotations
 
-from app import groupes
+from app import groupes_lecture as groupes
 from app.permissions_data import CATALOGUE, permissions_du_role
 
 

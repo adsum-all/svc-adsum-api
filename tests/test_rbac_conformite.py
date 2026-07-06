@@ -105,6 +105,8 @@ REAL_ROLESET: dict[str, list[str]] = {
     'POST /api/v1/admin/evenements/{evenement_id}/test-diffusion': ['admin', 'gestionnaire', 'super_admin'],
     'POST /api/v1/admin/fonctions': ['admin', 'gestionnaire', 'super_admin'],
     'POST /api/v1/admin/groupes': ['super_admin'],
+    'PATCH /api/v1/admin/groupes/{groupe_id}': ['super_admin'],
+    'DELETE /api/v1/admin/groupes/{groupe_id}': ['super_admin'],
     'POST /api/v1/admin/inscriptions/membre': ['admin', 'super_admin'],
     'POST /api/v1/admin/inscriptions/{membre_id}/decision': ['admin', 'gestionnaire', 'super_admin'],
     'POST /api/v1/admin/inscriptions/{membre_id}/relancer-mdp': ['admin', 'super_admin'],

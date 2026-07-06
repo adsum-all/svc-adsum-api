@@ -157,6 +157,9 @@ class GroupeOut(BaseModel):
     libelle: str
     description: str | None = None
     role_accorde: str
+    mode: str = "role"
+    permissions: list[str] = []
+    membres_count: int = 0
     systeme: bool = False
     actif: bool = True
 
@@ -165,13 +168,60 @@ class GroupeIn(BaseModel):
     cle: ShortStr
     libelle: ShortStr
     description: str | None = None
-    role_accorde: ShortStr
+    # 'role': the group grants a platform role; 'permissions': it grants a set of
+    # atomic permissions (the account role stays 'membre'). Default keeps the
+    # historical behaviour for callers that only send role_accorde.
+    mode: str = "role"
+    role_accorde: str | None = None
+    permissions: list[str] = []
+
+
+class UpdateGroupeIn(BaseModel):
+    libelle: ShortStr | None = None
+    description: str | None = None
+    actif: bool | None = None
+    # For a 'permissions' group, replace the whole granted permission set.
+    permissions: list[str] | None = None
 
 
 class MembreGroupeIn(BaseModel):
     groupe_id: ShortStr
     portee_type: str = "global"
     portee_id: str | None = None
+
+
+def _permissions_du_groupe(groupe_id: str, role: str) -> list[str]:
+    """The atomic permissions a 'permissions' group grants (sorted, empty otherwise)."""
+    rows = db.fetch_all(
+        "SELECT permission FROM groupe_permission WHERE groupe_id = %s ORDER BY permission",
+        (groupe_id,),
+        role=role,
+    )
+    return [str(r["permission"]) for r in rows]
+
+
+def _assert_peut_accorder_permissions(perms: list[str], actor: UserMe) -> None:
+    """Guard the permission set of a 'permissions' group (least privilege, F2).
+
+    super_admin may grant anything. Anyone else may only put in the group a
+    permission they themselves hold, and never a 'critique' permission: this stops
+    an admin from minting a group that exceeds their own reach or hands out system
+    powers. Unknown keys are rejected so a typo never becomes a silent no-op.
+    """
+    from .permissions_data import CATALOGUE
+    from .permissions_rbac import permissions_effectives
+
+    inconnues = [p for p in perms if p not in CATALOGUE]
+    if inconnues:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"permission(s) inconnue(s): {', '.join(inconnues)}")
+    if actor.role == "super_admin":
+        return
+    held = permissions_effectives(actor)
+    for p in perms:
+        if CATALOGUE[p].get("risque") == "critique":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"seule la super-administration peut accorder la permission critique {p}")
+        if p not in held:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"vous ne pouvez pas accorder une permission que vous ne détenez pas: {p}")
 
 
 def _valider_portee(role_accorde: str, portee_type: str, portee_id: str | None, actor_role: str) -> None:
@@ -196,185 +246,142 @@ def _valider_portee(role_accorde: str, portee_type: str, portee_id: str | None, 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unité de portée introuvable")
 
 
+def _groupe_out(r: dict[str, object], role: str) -> GroupeOut:
+    gid = str(r["id"])
+    mode = str(r.get("mode") or "role")
+    return GroupeOut(
+        id=gid, cle=r["cle"], libelle=r["libelle"], description=r.get("description"),
+        role_accorde=r["role_accorde"], mode=mode,
+        permissions=_permissions_du_groupe(gid, role) if mode == "permissions" else [],
+        membres_count=int(r.get("membres_count") or 0),
+        systeme=bool(r["systeme"]), actif=bool(r["actif"]),
+    )
+
+
 @router.get("/groupes", response_model=list[GroupeOut])
-def list_groupes(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> list[GroupeOut]:
-    """The access-group catalogue (built-in and custom)."""
+def list_groupes(
+    user: Annotated[UserMe, Depends(require_permission("acces.administrer"))],
+    inclure_inactifs: bool = False,
+) -> list[GroupeOut]:
+    """The access-group catalogue (built-in and custom), with mode, permissions and
+    member count so the admin can browse and manage without extra round-trips.
+
+    Inactive groups are hidden by default (assignment picker) and shown on demand
+    (management view), so a deactivated group can be reviewed and reactivated.
+    """
+    where = "" if inclure_inactifs else "WHERE g.actif = true"
     rows = db.fetch_all(
-        "SELECT id, cle, libelle, description, role_accorde, systeme, actif FROM groupe_acces WHERE actif = true ORDER BY systeme DESC, libelle ASC",
+        "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
+        "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id) AS membres_count "
+        f"FROM groupe_acces g {where} ORDER BY g.systeme DESC, g.libelle ASC",
         (),
         role=user.role,
     )
-    return [
-        GroupeOut(
-            id=str(r["id"]), cle=r["cle"], libelle=r["libelle"], description=r.get("description"),
-            role_accorde=r["role_accorde"], systeme=bool(r["systeme"]), actif=bool(r["actif"]),
+    return [_groupe_out(r, user.role) for r in rows]
+
+
+def _remplacer_permissions_groupe(groupe_id: str, perms: list[str], role: str) -> None:
+    """Set a 'permissions' group's granted set to exactly ``perms`` (idempotent)."""
+    db.execute("DELETE FROM groupe_permission WHERE groupe_id = %s", (groupe_id,), role=role)
+    for p in sorted(set(perms)):
+        db.execute(
+            "INSERT INTO groupe_permission (groupe_id, permission) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (groupe_id, p),
+            role=role,
         )
-        for r in rows
-    ]
 
 
 @router.post("/groupes", response_model=GroupeOut, status_code=status.HTTP_201_CREATED)
 def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> GroupeOut:
-    """Create a custom access group (super_admin only). The granted role must be a
-    known platform role."""
-    if payload.role_accorde not in _ROLE_RANK:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_accorde invalide")
+    """Create a custom access group.
+
+    Two modes. A 'role' group grants a known platform role (an admin cannot create
+    a group above their own rank). A 'permissions' group grants an explicit set of
+    atomic permissions, keeps role_accorde='membre', and is bound by the least
+    privilege guard (no critical permission, nothing the actor does not hold).
+    """
+    mode = payload.mode if payload.mode in ("role", "permissions") else "role"
+    if mode == "permissions":
+        if not payload.permissions:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un groupe de permissions doit accorder au moins une permission")
+        _assert_peut_accorder_permissions(payload.permissions, user)
+        role_accorde = "membre"
+    else:
+        role_accorde = payload.role_accorde or ""
+        if role_accorde not in _ROLE_RANK:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_accorde invalide")
+        # An admin cannot mint a group that grants a role above their own rank.
+        _assert_peut_gerer(user, role_accorde, "")
     created = db.execute(
-        "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme) VALUES (%s, %s, %s, %s, false) "
+        "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme, mode) VALUES (%s, %s, %s, %s, false, %s) "
         "ON CONFLICT (cle) DO NOTHING RETURNING id",
-        (payload.cle.strip().lower(), payload.libelle, payload.description, payload.role_accorde),
+        (payload.cle.strip().lower(), payload.libelle, payload.description, role_accorde, mode),
         role=user.role,
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="clé déjà utilisée")
-    audit.log(user.id, user.role, "creation_groupe_acces", "groupe_acces", str(created["id"]), {"cle": payload.cle})
-    return GroupeOut(id=str(created["id"]), cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=payload.role_accorde, systeme=False, actif=True)
+    gid = str(created["id"])
+    if mode == "permissions":
+        _remplacer_permissions_groupe(gid, payload.permissions, user.role)
+    audit.log(user.id, user.role, "creation_groupe_acces", "groupe_acces", gid, {"cle": payload.cle, "mode": mode, "role_accorde": role_accorde, "permissions": payload.permissions if mode == "permissions" else None})
+    return GroupeOut(id=gid, cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=role_accorde, mode=mode, permissions=sorted(set(payload.permissions)) if mode == "permissions" else [], membres_count=0, systeme=False, actif=True)
 
 
-@router.get("/catalogue-acces")
-def catalogue_acces(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
-    """The role -> capabilities catalogue with labels, descriptions and risk levels.
-
-    Powers the pedagogical admin UI: it explains, for every platform role, exactly
-    what it lets a person do, on which scope, and how sensitive it is, so access is
-    granted knowingly and never by broad guesswork.
-    """
-    from . import permissions
-
-    return {"roles": permissions.catalogue()}
-
-
-_ORDRE_ROLES = ("membre", "controleur", "gestionnaire", "direction", "admin", "super_admin")
-
-
-def _matrice_permissions() -> dict[str, object]:
-    """The atomic permission catalogue and the role -> permissions matrix.
-
-    Pure data (from :mod:`app.permissions_data`), so the read-only matrix shown in
-    the back office is derived from the very mapping the server enforces, never a
-    hand-kept copy that could drift. Permissions are grouped by domain and each
-    role lists exactly the keys it holds.
-    """
-    from . import permissions_data
-
-    permissions = [
-        {"cle": cle, "domaine": meta["domaine"], "libelle": meta["libelle"],
-         "risque": meta["risque"], "portee": meta["portee"]}
-        for cle, meta in sorted(permissions_data.CATALOGUE.items())
-    ]
-    domaines = sorted({meta["domaine"] for meta in permissions_data.CATALOGUE.values()})
-    roles = [
-        {"role": role, "permissions": sorted(permissions_data.permissions_du_role(role))}
-        for role in _ORDRE_ROLES
-    ]
-    return {"permissions": permissions, "domaines": domaines, "roles": roles}
-
-
-def _groupes_specialises(role: str) -> list[dict[str, object]]:
-    """The permission-mode access groups with the atomic permissions each grants.
-
-    Reads ``groupe_acces`` (mode = 'permissions') joined with ``groupe_permission``.
-    Both belong to migrations 0075/0076, the same hard dependency as
-    ``require_permission`` itself, so the code and the schema always deploy
-    together and no failure is masked here.
-    """
-    rows = db.fetch_all(
-        "SELECT g.id, g.cle, g.libelle, g.description, g.actif, "
-        "COALESCE(array_agg(gp.permission ORDER BY gp.permission) "
-        "FILTER (WHERE gp.permission IS NOT NULL), '{}') AS permissions "
-        "FROM groupe_acces g "
-        "LEFT JOIN groupe_permission gp ON gp.groupe_id = g.id "
-        "WHERE g.mode = 'permissions' "
-        "GROUP BY g.id, g.cle, g.libelle, g.description, g.actif "
-        "ORDER BY g.libelle ASC",
-        (),
-        role=role,
-    )
-    return [
-        {"id": str(r["id"]), "cle": r["cle"], "libelle": r["libelle"],
-         "description": r.get("description"), "actif": bool(r["actif"]),
-         "permissions": list(r.get("permissions") or [])}
-        for r in rows
-    ]
-
-
-@router.get("/catalogue-permissions")
-def catalogue_permissions(
-    user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]
-) -> dict[str, object]:
-    """The granular permission catalogue, the role matrix and the specialized groups.
-
-    Powers the read-only access matrix in the back office: which atomic permission
-    each role holds, and which permissions each specialized (permission-mode) group
-    grants. The UI is a mirror; the server dependency ``require_permission`` remains
-    the only enforcement.
-    """
-    matrice = _matrice_permissions()
-    matrice["groupes_specialises"] = _groupes_specialises(user.role)
-    return matrice
-
-
-@router.get("/membres/{membre_id}/acces-effectif")
-def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
-    """A reviewable explanation of a member's effective access, with warnings.
-
-    Lists the global role, every scoped membership with its perimeter, the atomic
-    capabilities each grants, and safety warnings (broad global power, sensitive
-    capabilities), so an admin can review who can see and do what, and where.
-    """
-    from . import permissions
-
-    eff = _effective_role(membre_id, user.role)
-    rows = db.fetch_all(
-        "SELECT g.role_accorde, mg.portee_type, mg.portee_id, "
-        "COALESCE(pc.nom, pin.nom, pk.nom, pt.nom) AS portee_libelle "
-        "FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "LEFT JOIN coordination pc ON mg.portee_type = 'coordination' AND pc.id = mg.portee_id "
-        "LEFT JOIN intendance pin ON mg.portee_type = 'intendance' AND pin.id = mg.portee_id "
-        "LEFT JOIN commission pk ON mg.portee_type = 'commission' AND pk.id = mg.portee_id "
-        "LEFT JOIN tribu pt ON mg.portee_type = 'tribu' AND pt.id = mg.portee_id "
-        "WHERE mg.membre_id = %s AND g.actif = true ORDER BY g.role_accorde DESC",
-        (membre_id,),
+@router.patch("/groupes/{groupe_id}", response_model=GroupeOut)
+def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> GroupeOut:
+    """Edit a custom group: label, description, active state, and for a permissions
+    group its granted set. System groups are read-only (their behaviour is relied
+    upon platform-wide); attempting to edit one is refused."""
+    g = db.fetch_one("SELECT id, cle, libelle, description, role_accorde, mode, systeme, actif FROM groupe_acces WHERE id = %s", (groupe_id,), role=user.role)
+    if not g:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="groupe introuvable")
+    if bool(g["systeme"]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="un groupe système ne peut pas être modifié")
+    fields: dict[str, object] = {}
+    if payload.libelle is not None:
+        fields["libelle"] = payload.libelle
+    if payload.description is not None:
+        fields["description"] = payload.description
+    if payload.actif is not None:
+        fields["actif"] = payload.actif
+    if fields:
+        cols = ", ".join(f"{k} = %s" for k in fields)
+        db.execute(f"UPDATE groupe_acces SET {cols} WHERE id = %s", (*fields.values(), groupe_id), role=user.role)
+    if payload.permissions is not None:
+        if str(g["mode"]) != "permissions":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="seul un groupe de permissions porte des permissions")
+        if not payload.permissions:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un groupe de permissions doit accorder au moins une permission")
+        _assert_peut_accorder_permissions(payload.permissions, user)
+        _remplacer_permissions_groupe(groupe_id, payload.permissions, user.role)
+    audit.log(user.id, user.role, "modification_groupe_acces", "groupe_acces", groupe_id, {"champs": list(fields), "permissions": payload.permissions})
+    row = db.fetch_one(
+        "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
+        "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id) AS membres_count "
+        "FROM groupe_acces g WHERE g.id = %s",
+        (groupe_id,),
         role=user.role,
     )
-    acces = []
-    warnings: list[str] = []
-    for r in rows:
-        role_accorde = str(r["role_accorde"])
-        portee_type = str(r["portee_type"])
-        explication = permissions.expliquer_role(role_accorde)
-        acces.append({
-            "role": role_accorde,
-            "role_libelle": explication["libelle"],
-            "risque": explication["risque"],
-            "portee_type": portee_type,
-            "portee_libelle": r.get("portee_libelle"),
-            "portee_texte": "toute la base" if portee_type == "global" else (r.get("portee_libelle") or portee_type),
-            "capabilities": explication["capabilities"],
-        })
-        if portee_type == "global" and role_accorde in ("admin", "super_admin"):
-            warnings.append(f"Accès {explication['libelle']} GLOBAL : pouvoir très large sur toute la base. À réserver au strict nécessaire.")
-        if role_accorde == "super_admin":
-            warnings.append("Rôle super-administration : tous les pouvoirs système. Séparation des tâches recommandée.")
-    if eff == "membre" and acces:
-        warnings.append("Accès uniquement scopés : aucune visibilité globale (comportement attendu, hermétique).")
-    return {
-        "membre_id": membre_id,
-        "role_global_effectif": eff,
-        "risque_global": permissions.role_risque(eff),
-        "acces": acces,
-        "avertissements": warnings,
-    }
+    return _groupe_out(row, user.role)
 
 
-@router.get("/perimetres-disponibles")
-def perimetres_disponibles(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
-    """The organisational units that a scoped group can be attached to."""
-    out: dict[str, object] = {}
-    for cle, table in _PORTEE_TABLES.items():
-        rows = db.fetch_all(f"SELECT id, nom FROM {table} ORDER BY nom ASC", (), role=user.role)
-        out[cle] = [{"id": str(r["id"]), "nom": r["nom"]} for r in rows]
-    return out
+@router.delete("/groupes/{groupe_id}", status_code=status.HTTP_200_OK)
+def delete_groupe(groupe_id: str, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> dict[str, object]:
+    """Delete a custom group. A system group is never deleted; a group that still
+    has members is refused (409) so nobody silently loses access: remove the
+    members first. Deletion is audited."""
+    g = db.fetch_one("SELECT id, cle, systeme FROM groupe_acces WHERE id = %s", (groupe_id,), role=user.role)
+    if not g:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="groupe introuvable")
+    if bool(g["systeme"]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="un groupe système ne peut pas être supprimé")
+    n = db.fetch_one("SELECT count(*) AS n FROM membre_groupe WHERE groupe_id = %s", (groupe_id,), role=user.role)
+    if int((n or {}).get("n", 0)) > 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="retirez d'abord les membres de ce groupe avant de le supprimer")
+    db.execute("DELETE FROM groupe_permission WHERE groupe_id = %s", (groupe_id,), role=user.role)
+    db.execute("DELETE FROM groupe_acces WHERE id = %s", (groupe_id,), role=user.role)
+    audit.log(user.id, user.role, "suppression_groupe_acces", "groupe_acces", groupe_id, {"cle": g["cle"]})
+    return {"supprime": True, "id": groupe_id}
 
 
 @router.get("/membres/{membre_id}/groupes")
@@ -429,10 +436,14 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
     on the member's e-mail with a temporary password (returned once)."""
     if not db.fetch_one("SELECT id FROM membre WHERE id = %s", (membre_id,), role=user.role):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membre introuvable")
-    groupe = db.fetch_one("SELECT id, role_accorde FROM groupe_acces WHERE id = %s AND actif = true", (payload.groupe_id,), role=user.role)
+    groupe = db.fetch_one("SELECT id, role_accorde, mode FROM groupe_acces WHERE id = %s AND actif = true", (payload.groupe_id,), role=user.role)
     if not groupe:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="groupe introuvable")
     _assert_peut_gerer(user, str(groupe["role_accorde"]), membre_id)
+    # A 'permissions' group grants global permissions (permissions_effectives only
+    # counts global memberships); a scoped grant would be a silent no-op, so refuse it.
+    if str(groupe.get("mode") or "role") == "permissions" and payload.portee_type != "global":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un groupe de permissions ne s'accorde qu'en portée globale")
     _valider_portee(str(groupe["role_accorde"]), payload.portee_type, payload.portee_id, user.role)
     db.execute(
         "INSERT INTO membre_groupe (membre_id, groupe_id, portee_type, portee_id, ajoute_par) "
