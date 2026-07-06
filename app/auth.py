@@ -185,6 +185,9 @@ def premiere_connexion(payload: PremiereConnexion, request: Request) -> TokenRes
     # invalidate this first-login token before its natural 14-day expiry.
     sid = _record_session(str(user["id"]), user["role"], request)
     token = create_access_token(subject=str(user["id"]), role=user["role"], sid=sid)
+    from . import audit
+
+    audit.log(str(user["id"]), user["role"], "premiere_connexion", "utilisateur", str(user["id"]), {"activation": True})
     return TokenResponse(access_token=token, role=user["role"], doit_changer_mdp=False)
 
 

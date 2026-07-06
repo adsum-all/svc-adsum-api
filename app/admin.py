@@ -116,7 +116,10 @@ def list_membres(
             "WHERE m.nom ILIKE %s OR m.prenoms ILIKE %s "
             "OR m.matricule ILIKE %s OR m.email ILIKE %s"
         )
-        like = f"%{q}%"
+        # Escape LIKE metacharacters so a literal % or _ typed in the search is not
+        # treated as a wildcard (default backslash escape).
+        q_esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{q_esc}%"
         params.extend([like, like, like, like])
     params.extend([limit, offset])
     rows = db.fetch_all(

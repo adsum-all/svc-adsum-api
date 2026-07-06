@@ -58,9 +58,16 @@ def envoyer_sondage(
             role=user.role,
         )
     else:
+        # Default reach is the event's AUDIENCE, not the whole base: a restricted
+        # activity's survey never leaks its title and link to every member.
+        from .visibilite import CIBLE_PREDICATE
+
         rows = db.fetch_all(
-            "SELECT id, prenoms, fuseau_horaire FROM membre WHERE statut = 'actif'",
-            (),
+            "SELECT m.id, m.prenoms, m.fuseau_horaire FROM membre m "
+            "LEFT JOIN intendance mi ON mi.id = m.intendance_id "
+            "JOIN evenement e ON e.id = %s "
+            f"WHERE m.statut = 'actif' AND {CIBLE_PREDICATE}",
+            (evenement_id,),
             role=user.role,
         )
 
@@ -76,4 +83,8 @@ def envoyer_sondage(
             canaux.update(used)
         else:
             sans_canal += 1
+    from . import audit
+
+    audit.log(user.id, user.role, "envoi_sondage", "evenement", str(evenement_id),
+              {"cibles": len(rows), "envoyes": envoyes, "cible": "liste" if payload.membre_ids else "audience"})
     return {"cibles": len(rows), "envoyes": envoyes, "canaux": sorted(canaux), "sans_canal": sans_canal, "lien": lien}
