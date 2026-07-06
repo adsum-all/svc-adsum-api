@@ -173,3 +173,45 @@ def test_role_permissions_within_catalogue() -> None:
     for role, perms in ROLE_PERMISSIONS.items():
         inconnues = [p for p in perms if p not in CATALOGUE]
         assert not inconnues, f"{role} refere hors catalogue: {inconnues}"
+
+
+# --- Live-code conformity: scan the actual backend, not just the seed data. ---
+
+def test_live_code_admits_exactly_the_phase_a_roles() -> None:
+    """Every role-gated endpoint, switched or not, must admit its Phase A role-set.
+
+    Switchover safety net: a wrong permission on a switched endpoint or a lost gate
+    makes the live-scanned admitted roles diverge from the frozen matrix.
+    """
+    from tests.rbac_live_scan import scan
+
+    live = scan()
+    ecarts = []
+    for ep, roles in REAL_ROLESET.items():
+        entry = live.get(ep)
+        if entry is None:
+            ecarts.append((ep, "ABSENT du code live", sorted(roles), None))
+        elif entry["admis"] != sorted(roles):
+            ecarts.append((ep, entry["kind"], sorted(roles), entry["admis"]))
+    assert not ecarts, f"ecarts code-live vs matrice Phase A: {ecarts}"
+
+
+def test_switched_endpoints_use_the_mapped_permission() -> None:
+    """A switched endpoint must carry EXACTLY the permission the mapping assigns."""
+    from tests.rbac_live_scan import scan
+
+    mauvais = []
+    for ep, entry in scan().items():
+        if entry["kind"] == "perm":
+            attendu = ENDPOINT_PERMISSION.get(ep)
+            if entry["cle"] != attendu:
+                mauvais.append((ep, entry["cle"], attendu))
+    assert not mauvais, f"permission erronee sur endpoint bascule (endpoint, mis, attendu): {mauvais}"
+
+
+def test_no_unresolved_gate_in_live_code() -> None:
+    """No endpoint should end up with an unresolved authorization dependency."""
+    from tests.rbac_live_scan import scan
+
+    unresolved = [ep for ep, e in scan().items() if str(e["kind"]).startswith("alias:") or e["kind"] == "?"]
+    assert not unresolved, f"gates non resolues dans le code live: {unresolved}"
