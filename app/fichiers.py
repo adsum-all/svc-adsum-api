@@ -231,6 +231,29 @@ def _mime_for(path: str, declared: str | None) -> str:
     return _EXT_MIME.get(ext, "image/jpeg")
 
 
+def _contenu_document_autorise(data: bytes) -> bool:
+    """True if the bytes really are an image or a PDF (magic-byte sniffing).
+
+    Trusts the file content, never the client-declared type. Covers the formats a
+    member could legitimately upload for an identity document or a photo.
+    """
+    if len(data) < 12:
+        return False
+    if data[:3] == b"\xff\xd8\xff":  # JPEG
+        return True
+    if data[:8] == b"\x89PNG\r\n\x1a\n":  # PNG
+        return True
+    if data[:4] == b"%PDF":  # PDF
+        return True
+    if data[:6] in (b"GIF87a", b"GIF89a"):  # GIF
+        return True
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":  # WEBP
+        return True
+    if data[4:12] in (b"ftypheic", b"ftypheif", b"ftypmif1", b"ftypavif"):  # HEIC/HEIF/AVIF
+        return True
+    return False
+
+
 def _encrypt_document_at_rest(path: str, declared_mime: str | None) -> tuple[str, bool]:
     """Encrypt a just-uploaded plaintext object and return (stored_path, chiffre).
 
@@ -250,6 +273,17 @@ def _encrypt_document_at_rest(path: str, declared_mime: str | None) -> tuple[str
     bucket = settings.storage_bucket_documents
     try:
         plaintext = storage.download_bytes(bucket, path)
+    except storage.StorageError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="document unavailable, please retry") from exc
+    # Verify the REAL content (magic bytes), never the client-declared type: only an
+    # image or a PDF is accepted. A mismatch purges the object and refuses the upload.
+    if not _contenu_document_autorise(plaintext):
+        try:
+            storage.delete_object(bucket, path)
+        except storage.StorageError:
+            pass
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type de fichier non autorisé (image ou PDF attendu)")
+    try:
         ciphertext = crypto.encrypt_bytes(plaintext)
         enc_path = f"{path}.enc"
         storage.upload_bytes(bucket, enc_path, ciphertext, content_type=_mime_for(path, declared_mime))
