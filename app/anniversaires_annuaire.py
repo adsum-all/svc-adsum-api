@@ -101,15 +101,20 @@ def _categorie_where(categorie: str, membre_id: str) -> tuple[str, list[object]]
     category keeps the visibility clause (opt-out members stay hidden from peers)."""
     if categorie == "moi":
         return " AND m.id = %s", [membre_id]
+    # Every function-based category is ADDITIVE: the legacy primary-function check
+    # (which already worked) OR the full membre_fonction set (which adds secondary
+    # functions). This never removes anyone the previous query matched.
     if categorie == "vip":
-        return _VISIBLE_CLAUSE + " AND " + _MF_VIP, []
+        return _VISIBLE_CLAUSE + " AND ((fh.est_vip = true AND m.fonction_confirmee = true) OR " + _MF_VIP + ")", []
     if categorie == "responsables":
-        return _VISIBLE_CLAUSE + " AND (m.type_membre = 'responsable' OR " + _MF_FAMILLE + ")", ["responsables"]
+        return _VISIBLE_CLAUSE + " AND (m.fonction_cle = 'responsable' OR m.type_membre = 'responsable' OR " + _MF_FAMILLE + ")", ["responsables"]
     if categorie == "bergers":
-        # Berger/Bergere is a consecration title (est_berger), never a function.
-        return _VISIBLE_CLAUSE + " AND m.est_berger = true", []
+        # Berger/Bergere is a consecration title (est_berger); keep the legacy
+        # function match too so nothing that showed before disappears.
+        return _VISIBLE_CLAUSE + " AND (m.est_berger = true OR (fh.famille = 'bergers' AND m.fonction_confirmee = true))", []
     if categorie in _FAMILLE_CATEGORIE:  # direction, coordinateurs (-> coordination), patriarches
-        return _VISIBLE_CLAUSE + " AND " + _MF_FAMILLE, [_FAMILLE_CATEGORIE[categorie]]
+        fam = _FAMILLE_CATEGORIE[categorie]
+        return _VISIBLE_CLAUSE + " AND ((fh.famille = %s AND m.fonction_confirmee = true) OR " + _MF_FAMILLE + ")", [fam, fam]
     return None
 
 
