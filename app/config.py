@@ -69,6 +69,18 @@ class Settings(BaseSettings):
     sms_provider: str = ""
     # Daily cron shared secret (Vercel sends it as an Authorization bearer header).
     cron_secret: str = ""
+    # Two-factor authentication. mfa_trust_days is how long a member's "trust this
+    # device" choice skips the login code. mfa_baseline_enforced, when true, makes
+    # the 30-day / new-device verification mandatory for EVERY member even without
+    # opting in; it is off by default so 2FA is opt-in first and no member is locked
+    # out on rollout, and can be switched on (ADSUM_MFA_BASELINE_ENFORCED=true) once
+    # code delivery is confirmed reliable for everyone.
+    mfa_trust_days: int = 30
+    # Reinforced mode (member opted in via mfa_actif): a shorter trust window, so a
+    # trusted device is re-verified more often. 2FA itself is always on when the
+    # baseline is enforced; this is a real, honest strengthening the member controls.
+    mfa_trust_days_strict: int = 7
+    mfa_baseline_enforced: bool = False
 
     @property
     def is_production(self) -> bool:

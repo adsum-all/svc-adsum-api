@@ -223,23 +223,22 @@ def tableau_de_bord(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]
 
 @router.get("/assiduite")
 def assiduite(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]) -> dict[str, object]:
-    """Attendance follow-up over a 90-day window, scope-bounded: presences per
-    member and the members to reach out to (no presence in the window)."""
+    """Attendance follow-up over the admin window, scope-bounded. Presences are the
+    CONSOLIDATED attendance (presence + counted participation) from the single canonical
+    layer, so it matches the back-office assiduity and never flags an online-only
+    participant as absent. Cancelled activities are excluded and the window is the same
+    admin parameter (fenetre_assiduite_jours, default 90) used everywhere else."""
+    from . import stats_core
+
     where, params = ctx.scope.membre_predicate("m")
-    fen = db.fetch_one(
-        "SELECT count(*) AS n FROM evenement WHERE debut >= now() - interval '90 days' AND debut <= now()",
+    jours_row = db.fetch_one(
+        "SELECT coalesce((SELECT (valeur #>> '{}')::int FROM parametre WHERE cle = 'fenetre_assiduite_jours'), 90) AS j",
         (),
         role=ctx.user.role,
-    ) or {}
-    rows = db.fetch_all(
-        f"SELECT m.id, m.matricule, m.prenoms, m.nom, "
-        f"count(p.id) FILTER (WHERE e.debut >= now() - interval '90 days' AND e.debut <= now()) AS presences "
-        f"FROM membre m LEFT JOIN presence p ON p.membre_id = m.id LEFT JOIN evenement e ON e.id = p.evenement_id "
-        f"WHERE {where} GROUP BY m.id, m.matricule, m.prenoms, m.nom "
-        f"ORDER BY presences ASC, m.nom ASC LIMIT 500",
-        tuple(params),
-        role=ctx.user.role,
     )
+    jours = int((jours_row or {}).get("j") or 90)
+    ev_where, ev_params = _agenda_predicate(ctx.scope)
+    nb_evenements, rows = stats_core.assiduite_perimetre(where, tuple(params), ev_where, tuple(ev_params), jours, ctx.user.role)
     membres = [
         {
             "id": str(r["id"]),
@@ -250,7 +249,7 @@ def assiduite(ctx: Annotated[PerimetreContext, Depends(require_perimetre)]) -> d
         for r in rows
     ]
     a_relancer = [m for m in membres if m["presences"] == 0]
-    return {"fenetre_jours": 90, "evenements": int(fen.get("n") or 0), "a_relancer": len(a_relancer), "membres": membres}
+    return {"fenetre_jours": jours, "evenements": nb_evenements, "a_relancer": len(a_relancer), "membres": membres}
 
 
 @router.get("/export/membres.csv")

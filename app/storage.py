@@ -20,6 +20,12 @@ class StorageError(RuntimeError):
     pass
 
 
+class FileTooLargeError(StorageError):
+    """An object exceeds the download size cap. Distinct from a transient storage
+    failure so callers can tell the member the file is too big (retrying the same
+    oversized file would loop forever) instead of a generic 'retry later'."""
+
+
 def _request(
     method: str, path: str, body: dict[str, object] | None = None, headers: dict[str, str] | None = None
 ) -> dict[str, object]:
@@ -113,12 +119,12 @@ def download_bytes(bucket: str, path: str, max_bytes: int = _MAX_DOWNLOAD_BYTES)
         with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted Supabase URL)
             declared = resp.headers.get("Content-Length")
             if declared and declared.isdigit() and int(declared) > max_bytes:
-                raise StorageError(f"storage object {bucket}/{path} too large: {declared} bytes")
+                raise FileTooLargeError(f"storage object {bucket}/{path} too large: {declared} bytes")
             # Read one byte past the cap so an under-declared / chunked body is
             # still caught rather than buffered whole.
             data = resp.read(max_bytes + 1)
             if len(data) > max_bytes:
-                raise StorageError(f"storage object {bucket}/{path} exceeds {max_bytes} bytes")
+                raise FileTooLargeError(f"storage object {bucket}/{path} exceeds {max_bytes} bytes")
             return data
     except urllib.error.HTTPError as exc:  # pragma: no cover - network error path
         raise StorageError(f"storage download {bucket}/{path} failed: {exc.code}") from exc

@@ -22,6 +22,22 @@ class TokenResponse(BaseModel):
     doit_changer_mdp: bool = False
 
 
+class LoginResponse(BaseModel):
+    """Login outcome. When the second factor is required, otp_required is true and
+    the token fields stay empty; the caller then verifies the code at /login-verify.
+    When no code is needed (trusted device or 2FA off) the token is returned
+    directly, so an admin/back-office client that only reads access_token keeps
+    working unchanged."""
+
+    otp_required: bool = False
+    access_token: str | None = None
+    token_type: str = "bearer"
+    role: str | None = None
+    doit_changer_mdp: bool = False
+    # Which channel the code was sent on (telegram / email), for a clear message.
+    canal: str | None = None
+
+
 class UserMe(BaseModel):
     id: str
     email: EmailStr
@@ -105,6 +121,7 @@ class MembreProfile(BaseModel):
     intendant_titre: str | None = None
     champs_deverrouilles: list[str] = []
     langue: str = "fr"
+    theme: str = "light"
     commission_id: str | None = None
     anniversaire_visible_annuaire: bool = True
     fonction_cle: str | None = None
@@ -133,6 +150,18 @@ class EvenementOut(BaseModel):
     cible_type: str = "general"
     cible_id: str | None = None
     cible_libelle: str | None = None
+    cible_genre: str | None = None
+    cible_age_min: int | None = None
+    cible_age_max: int | None = None
+    cible_emails: list[str] = []
+    tags: list[dict[str, str]] = []  # catalogue tags, so members can filter the agenda
+    annule: bool = False  # a cancelled activity is kept for history but never runs
+    annule_motif: str | None = None
+    fuseau_horaire: str = "Africa/Abidjan"  # the activity's own zone, for editing
+    serie_id: str | None = None  # set when the activity belongs to a recurring series
+    # Per-activity response-window override (hours after end); None = global default.
+    # Surfaced so the edit form preserves it instead of silently resetting it.
+    fenetre_reponse_heures: int | None = None
     # Server-computed lifecycle (source of truth for time-gated UI actions).
     phase: str = "a_venir"  # a_venir | bientot | en_cours | termine
     joignable: bool = False  # the join button may show (in window and a link is available)
@@ -530,6 +559,7 @@ class ComptageResume(BaseModel):
     evenement_id: str
     titre: str | None = None
     membres_scannes: int
+    membres_comptes_manuellement: int = 0
     non_membres: int
     total_participants: int
     lignes: list[ComptageLigne]
@@ -617,6 +647,18 @@ class CreateCommission(BaseModel):
     type_organisation: str = Field(default="commission", pattern="^[a-z][a-z_]{1,29}$")
 
 
+class OccurrenceIn(BaseModel):
+    """One additional occurrence of a recurring activity (absolute instants).
+
+    ``mode`` lets an intermittent series vary the mode per date (e.g. some days in
+    person, some online); when omitted the series' base mode applies.
+    """
+
+    debut: datetime
+    fin: datetime | None = None
+    mode: str | None = Field(default=None, pattern="^(presentiel|en_ligne|hybride)$")
+
+
 class CreateEvenement(BaseModel):
     """Payload to create an event."""
 
@@ -631,16 +673,29 @@ class CreateEvenement(BaseModel):
     liens: list[str] = []
     type_diffusion: str = Field(default="aucun", pattern="^(embed|externe|aucun)$")
     visibilite: str = Field(default="membres", pattern="^(public|membres|prive)$")
-    # Targeting: 'general' reaches everyone; any other value must be paired with
-    # cible_id (the id of the aimed coordination/commission/intendance/tribu).
-    cible_type: str = Field(default="general", pattern="^(general|coordination|commission|intendance|tribu)$")
+    # Targeting has a primary audience and optional refinements that combine (AND).
+    # Primary: 'general' (everyone), an organisational unit (needs cible_id), the
+    # 'bergers', the 'responsables', or a 'liste' of e-mails (needs cible_emails).
+    cible_type: str = Field(default="general", pattern="^(general|coordination|commission|intendance|tribu|bergers|responsables|liste)$")  # noqa: E501
     cible_id: str | None = Field(default=None, pattern=_UUID_RE)
+    # Refinements: restrict the primary audience by gender and/or age range.
+    cible_genre: str | None = Field(default=None, pattern="^(homme|femme)$")
+    cible_age_min: int | None = Field(default=None, ge=0, le=120)
+    cible_age_max: int | None = Field(default=None, ge=0, le=120)
+    # Ad-hoc audience for cible_type = 'liste': the e-mail addresses to reach.
+    cible_emails: list[str] = Field(default_factory=list, max_length=500)
     # Response-window override in hours after the session end; when empty the
     # global admin parameter applies (questionnaire_fenetre_heures, default 6h).
     fenetre_reponse_heures: int | None = Field(default=None, ge=1, le=336)
     # The activity's reference IANA time zone (the zone the start/end were entered
     # in). Default is the base's home GMT zone; members still see their own time.
     fuseau_horaire: str = Field(default="Africa/Abidjan", max_length=64)
+    # Recurrence: when `occurrences` is non-empty, the event becomes a SERIES. The
+    # first occurrence is (debut, fin); each extra occurrence is one more real
+    # activity row sharing a serie_id, so participation/questionnaire/survey keep
+    # working per date. `recurrence` records the rule for display, no computation.
+    occurrences: list[OccurrenceIn] = Field(default_factory=list, max_length=103)
+    recurrence: dict[str, object] | None = None
 
 
 class VerifyResult(BaseModel):

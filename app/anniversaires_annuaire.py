@@ -53,10 +53,30 @@ def _row_to_out(r: dict[str, object]) -> dict[str, object]:
     }
 
 
+# Own-unit overlay categories: each surfaces the birthdays of members sharing the
+# caller's own organizational unit. The column on membre carrying that unit.
+_UNIT_COLUMN = {
+    "commission": "commission_id",
+    "tribu": "tribu_id",
+    "coordination": "coordination_id",
+    "intendance": "intendance_id",
+}
+
+# Function-family overlay categories: birthdays of members whose confirmed
+# honorific function belongs to a given family of the taxonomy (0092). The map
+# turns the member-facing category into the stored fonction_honorifique.famille.
+_FAMILLE_CATEGORIE = {
+    "direction": "direction",
+    "coordinateurs": "coordination",
+    "bergers": "bergers",
+    "patriarches": "patriarches",
+}
+
+
 @router.get("/membres/anniversaires")
 def anniversaires_annuaire(
     membre_id: Annotated[str, Depends(_membre)],
-    categorie: Annotated[str, Query(pattern="^(vip|responsables|commission)$")] = "vip",
+    categorie: Annotated[str, Query(pattern="^(vip|responsables|commission|tribu|coordination|intendance|direction|coordinateurs|bergers|patriarches)$")] = "vip",
     mois: Annotated[int | None, Query(ge=1, le=12)] = None,
 ) -> list[dict[str, object]]:
     """Peer birthdays for one overlay category. Never exposes the birth year."""
@@ -66,13 +86,17 @@ def anniversaires_annuaire(
         where = " AND fh.est_vip = true AND m.fonction_confirmee = true"
     elif categorie == "responsables":
         where = " AND (m.fonction_cle = 'responsable' OR m.type_membre = 'responsable')"
-    else:  # commission: only the caller's own commission
-        own = db.fetch_one("SELECT commission_id FROM membre WHERE id = %s", (membre_id,), role=None)
-        commission_id = own["commission_id"] if own else None
-        if not commission_id:
+    elif categorie in _FAMILLE_CATEGORIE:
+        where = " AND fh.famille = %s AND m.fonction_confirmee = true"
+        params.append(_FAMILLE_CATEGORIE[categorie])
+    else:  # own-unit categories: only members sharing the caller's own unit
+        col = _UNIT_COLUMN[categorie]
+        own = db.fetch_one(f"SELECT {col} AS unite FROM membre WHERE id = %s", (membre_id,), role=None)
+        unite_id = own["unite"] if own else None
+        if not unite_id:
             return []
-        where = " AND m.commission_id = %s"
-        params.append(commission_id)
+        where = f" AND m.{col} = %s"
+        params.append(unite_id)
     if mois is not None:
         where += " AND extract(month from m.date_naissance) = %s"
         params.append(mois)

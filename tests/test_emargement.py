@@ -6,9 +6,8 @@ member to one event so the submit cannot mark anyone else.
 """
 from __future__ import annotations
 
-import time
-
 import pytest
+from fastapi import HTTPException
 
 from app import emargement
 
@@ -84,7 +83,7 @@ def test_resolve_absent_clears_modality() -> None:
 
 
 def test_resolve_present_requires_modality() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         emargement._resoudre_statut_modalite(None, _Payload("present", None))
 
 

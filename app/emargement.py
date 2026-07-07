@@ -347,11 +347,15 @@ def emarger(evenement_id: str, payload: EmargementIn, request: Request) -> dict[
         statut=statut,
         source="declaration",
         valide=True,
-        avis=payload.avis,
-        note=payload.note,
         modalite=modalite,
         role=None,
     )
+    # Presence (above) is identifiable; the rating/comment go to the ANONYMOUS
+    # evaluation table with no member link. The audit trail below records the
+    # presence only, never the evaluation content, so nothing there can attribute it.
+    from .participation import soumettre_evaluation
+
+    evalue = soumettre_evaluation(evenement_id, membre_id, note=payload.note, avis=payload.avis, role=None)
     audit.log(
         None,
         "emargement_externe",
@@ -360,4 +364,4 @@ def emarger(evenement_id: str, payload: EmargementIn, request: Request) -> dict[
         evenement_id,
         {"membre_id": membre_id, "statut": statut, "modalite": modalite, "ip": request.client.host if request.client else None},
     )
-    return {"ok": True, "statut": statut, "valide": True, "modalite": modalite}
+    return {"ok": True, "statut": statut, "valide": True, "modalite": modalite, "evaluation_enregistree": evalue}

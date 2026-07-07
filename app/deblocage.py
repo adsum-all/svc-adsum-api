@@ -15,13 +15,33 @@ ELEMENTS: dict[str, dict[str, str]] = {
     "nom": {"libelle": "Nom", "type": "champ", "sensibilite": "haute"},
     "prenoms": {"libelle": "Prénoms", "type": "champ", "sensibilite": "haute"},
     "date_naissance": {"libelle": "Date de naissance", "type": "champ", "sensibilite": "haute"},
+    "naissance_annee_visible": {"libelle": "Afficher l'année de naissance", "type": "champ", "sensibilite": "normale"},
+    "genre": {"libelle": "Genre", "type": "champ", "sensibilite": "haute"},
+    # Member code (external organisation code, distinct from the ADSUM matricule)
+    "code_membre": {"libelle": "Code membre", "type": "champ", "sensibilite": "normale"},
     # Contact and administrative fields
     "telephone": {"libelle": "Téléphone", "type": "champ", "sensibilite": "normale"},
+    "indicatif_telephone": {"libelle": "Indicatif téléphonique", "type": "champ", "sensibilite": "normale"},
     "ville": {"libelle": "Ville", "type": "champ", "sensibilite": "normale"},
+    "region": {"libelle": "Région / État", "type": "champ", "sensibilite": "normale"},
     "pays": {"libelle": "Pays", "type": "champ", "sensibilite": "normale"},
+    "adresse": {"libelle": "Adresse (générale)", "type": "champ", "sensibilite": "normale"},
+    "adresse_complement": {"libelle": "Complément d'adresse", "type": "champ", "sensibilite": "normale"},
+    # Community structure
+    "commission_id": {"libelle": "Commission / Mission", "type": "champ", "sensibilite": "normale"},
+    "intendance_id": {"libelle": "Intendance", "type": "champ", "sensibilite": "normale"},
+    "coordination_id": {"libelle": "Coordination", "type": "champ", "sensibilite": "normale"},
+    "tribu_id": {"libelle": "Tribu", "type": "champ", "sensibilite": "normale"},
+    "groupe": {"libelle": "Sous-commission", "type": "champ", "sensibilite": "normale"},
+    # Personal life and pastoral path
     "situation_matrimoniale": {"libelle": "Situation matrimoniale", "type": "champ", "sensibilite": "normale"},
+    "type_mariage": {"libelle": "Type de mariage", "type": "champ", "sensibilite": "normale"},
+    "type_membre": {"libelle": "Statut de membre", "type": "champ", "sensibilite": "normale"},
     "profession": {"libelle": "Profession", "type": "champ", "sensibilite": "normale"},
     "niveau_etudes": {"libelle": "Niveau d'études", "type": "champ", "sensibilite": "normale"},
+    "baptise": {"libelle": "Baptisé", "type": "champ", "sensibilite": "normale"},
+    "confirme": {"libelle": "Confirmé", "type": "champ", "sensibilite": "normale"},
+    "premiere_communion": {"libelle": "Première communion", "type": "champ", "sensibilite": "normale"},
     # Identity artifacts
     "photo_identite": {"libelle": "Photo d'identité", "type": "photo", "sensibilite": "haute"},
     "piece_identite": {"libelle": "Pièce d'identité officielle", "type": "document", "sensibilite": "haute"},

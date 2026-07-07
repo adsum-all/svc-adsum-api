@@ -1,0 +1,437 @@
+"""Single source of truth for attendance statistics.
+
+Two tables record attendance and NEITHER is complete on its own:
+
+* ``presence`` receives QR/manual check-ins (mode ``presentiel``, method ``qr`` or
+  ``manuelle``) and online-session participations declared from the member app
+  (mode ``en_ligne``, method ``lien``). It never receives a present/absent
+  self-declaration.
+* ``participation`` receives QR check-ins (``source = 'scan'``) and self-declared
+  present/partial/absent (``source = 'declaration'``, counted only once validated).
+  It never receives the online-session participations written straight to
+  ``presence``.
+
+Counting either table alone diverges; summing both double counts (a scan writes to
+both). This module consolidates the two into ONE deduplicated attendance per member
+(a member is counted once, even hybrid: present on site AND connected online), and
+bounds every numerator to the event's TARGETED active population (the same
+``CIBLE_PREDICATE`` used by the agenda, the reminders and the survey audience), so a
+rate can never exceed 100 % and every derived figure reconciles by construction.
+
+Every screen, endpoint, preview and export MUST read its per-event attendance figures
+from :func:`stats_evenement` (or the SQL fragments below) so the same indicator always
+yields the same number.
+"""
+# ruff: noqa: E501 - long, readable SQL lines
+from __future__ import annotations
+
+from . import db
+from .visibilite import CIBLE_PREDICATE
+
+# A self-declared participation is counted only when scanned or validated. Kept
+# identical to app.participation._COMPTE so the two modules never diverge.
+COMPTE = "(source = 'scan' OR valide)"
+
+# The targeted active population of an event: the denominator of every rate. It is
+# the SAME population the event actually reaches (agenda visibility, J-1 reminders,
+# survey audience), so a targeted activity is measured against the members it aims
+# at, not the whole base. Requires the outer query to bind %(ev)s to the event id.
+POPULATION_CIBLE_CTE = f"""
+cible AS (
+    SELECT m.id AS membre_id
+    FROM membre m
+    LEFT JOIN intendance mi ON mi.id = m.intendance_id
+    JOIN evenement e ON e.id = %(ev)s
+    WHERE m.statut = 'actif' AND {CIBLE_PREDICATE}
+)
+"""
+
+# Consolidated, deduplicated attendance for one event: one row per member across
+# BOTH tables, with the strongest status kept and the modality resolved. A scan is
+# on-site proof; an online-link participation is online; a declaration carries its
+# own modality (or unknown). ``dans_cible`` flags whether the member belongs to the
+# targeted active population, so the caller can bound numerators to it.
+_CONSO_CTES = f"""
+{POPULATION_CIBLE_CTE},
+brut AS (
+    SELECT pr.membre_id,
+           CASE WHEN pr.mode = 'en_ligne' THEN 'en_ligne' ELSE 'presentiel' END AS modalite,
+           'present'::text AS statut,
+           (pr.methode IN ('qr', 'manuelle')) AS scanne
+    FROM presence pr
+    WHERE pr.evenement_id = %(ev)s
+    UNION ALL
+    SELECT pa.membre_id,
+           CASE WHEN pa.source = 'scan' THEN 'presentiel'
+                WHEN pa.modalite IN ('presentiel', 'en_ligne') THEN pa.modalite
+                ELSE NULL END AS modalite,
+           pa.statut,
+           (pa.source = 'scan') AS scanne
+    FROM participation pa
+    WHERE pa.evenement_id = %(ev)s AND {COMPTE}
+      AND pa.statut IN ('present', 'partiel', 'absent')
+),
+conso AS (
+    SELECT membre_id,
+           bool_or(statut = 'present') AS present,
+           bool_or(statut = 'partiel') AS partiel,
+           bool_or(statut = 'absent') AS absent,
+           coalesce(bool_or(scanne), false) AS scanne,
+           -- coalesce to false: a member whose only record has an unknown modality
+           -- (NULL) would otherwise yield NULL and fall into no modality bucket, so
+           -- the split would not sum back to the present total. NULL means "unknown",
+           -- which is the "modalite_inconnue" bucket, i.e. a_presentiel = a_enligne = false.
+           coalesce(bool_or(modalite = 'presentiel'), false) AS a_presentiel,
+           coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne
+    FROM brut
+    GROUP BY membre_id
+),
+conso_cible AS (
+    SELECT c.*, (ci.membre_id IS NOT NULL) AS dans_cible
+    FROM conso c
+    LEFT JOIN cible ci ON ci.membre_id = c.membre_id
+)
+"""
+
+_STATS_EVENEMENT_SQL = f"""
+WITH {_CONSO_CTES}
+SELECT
+    (SELECT count(*) FROM cible) AS effectif_attendu,
+    count(*) FILTER (WHERE dans_cible AND present) AS presents,
+    count(*) FILTER (WHERE dans_cible AND partiel AND NOT present) AS partiels,
+    count(*) FILTER (WHERE dans_cible AND absent AND NOT present AND NOT partiel) AS absents,
+    count(*) FILTER (WHERE dans_cible) AS repondants,
+    count(*) FILTER (WHERE dans_cible AND present AND a_presentiel) AS presents_presentiel,
+    count(*) FILTER (WHERE dans_cible AND present AND a_enligne AND NOT a_presentiel) AS presents_enligne,
+    count(*) FILTER (WHERE dans_cible AND present AND NOT a_presentiel AND NOT a_enligne) AS presents_modalite_inconnue,
+    count(*) FILTER (WHERE dans_cible AND present AND scanne) AS presents_scan,
+    count(*) FILTER (WHERE NOT dans_cible) AS hors_cible
+FROM conso_cible
+"""
+
+
+def _taux(n: int, base: int) -> float:
+    """Rate in percent, one decimal, 0.0 when the base is empty. The numerators
+    passed here are always bounded to the base, so the result is always in [0, 100]."""
+    return round(100.0 * n / base, 1) if base else 0.0
+
+
+def stats_evenement(evenement_id: str, role: str | None) -> dict[str, object]:
+    """Canonical, reconciled attendance figures for one event.
+
+    Parameters
+    ----------
+    evenement_id : str
+        The event identifier.
+    role : str or None
+        Database access scope of the caller.
+
+    Returns
+    -------
+    dict
+        ``effectif_attendu`` (targeted active population), ``presents``,
+        ``partiels``, ``absents``, ``repondants``, ``non_repondants``, the modality
+        split of the present members, ``hors_cible`` (attended but outside the
+        targeted active population, for transparency) and every derived rate in
+        percent. By construction ``presents + partiels + absents == repondants``,
+        ``repondants + non_repondants == effectif_attendu``,
+        ``presents_presentiel + presents_enligne + presents_modalite_inconnue == presents``
+        and every rate is in [0, 100].
+    """
+    row = db.fetch_one(_STATS_EVENEMENT_SQL, {"ev": evenement_id}, role=role) or {}
+    effectif = int(row.get("effectif_attendu") or 0)
+    presents = int(row.get("presents") or 0)
+    partiels = int(row.get("partiels") or 0)
+    absents = int(row.get("absents") or 0)
+    repondants = int(row.get("repondants") or 0)
+    non_repondants = max(0, effectif - repondants)
+    presentiel = int(row.get("presents_presentiel") or 0)
+    enligne = int(row.get("presents_enligne") or 0)
+    modalite_inconnue = int(row.get("presents_modalite_inconnue") or 0)
+    return {
+        "effectif_attendu": effectif,
+        "presents": presents,
+        "partiels": partiels,
+        "absents": absents,
+        "repondants": repondants,
+        "non_repondants": non_repondants,
+        "presents_presentiel": presentiel,
+        "presents_enligne": enligne,
+        "presents_modalite_inconnue": modalite_inconnue,
+        "presents_scan": int(row.get("presents_scan") or 0),
+        "hors_cible": int(row.get("hors_cible") or 0),
+        "taux_presence": _taux(presents, effectif),
+        "taux_participation": _taux(presents + partiels, effectif),
+        "taux_reponse": _taux(repondants, effectif),
+        "taux_non_reponse": _taux(non_repondants, effectif),
+        "taux_absence": _taux(absents, effectif),
+        "taux_partiel": _taux(partiels, effectif),
+        "part_presentiel": _taux(presentiel, presents),
+        "part_en_ligne": _taux(enligne, presents),
+    }
+
+
+# Member joins for the breakdown dimensions. The coordination is resolved from BOTH
+# the member's intendance AND a direct coordination membership, so a member attached
+# straight to a coordination (no intendance) is no longer classed "Sans coordination".
+_REPARTITION_JOINS = (
+    "JOIN membre m ON m.id = cc.membre_id "
+    "LEFT JOIN commission c ON c.id = m.commission_id "
+    "LEFT JOIN intendance i ON i.id = m.intendance_id "
+    "LEFT JOIN coordination co ON co.id = i.coordination_id "
+    "LEFT JOIN coordination cod ON cod.id = m.coordination_id "
+    "LEFT JOIN tribu t ON t.id = m.tribu_id"
+)
+
+_AGE_EXPR = (
+    "CASE WHEN m.date_naissance IS NULL THEN 'Non renseigne' "
+    "WHEN extract(year FROM age(m.date_naissance)) < 18 THEN 'moins de 18' "
+    "WHEN extract(year FROM age(m.date_naissance)) < 26 THEN '18-25' "
+    "WHEN extract(year FROM age(m.date_naissance)) < 36 THEN '26-35' "
+    "WHEN extract(year FROM age(m.date_naissance)) < 51 THEN '36-50' "
+    "ELSE '51 et plus' END"
+)
+
+REPARTITION_DIMENSIONS: dict[str, str] = {
+    "genre": "coalesce(m.genre, 'Non renseigne')",
+    "tranche_age": _AGE_EXPR,
+    "commission": "coalesce(c.nom, 'Sans commission')",
+    "intendance": "coalesce(i.nom, 'Sans intendance')",
+    "coordination": "coalesce(co.nom, cod.nom, 'Sans coordination')",
+    "tribu": "coalesce(t.nom, 'Sans tribu')",
+    "pays": "coalesce(m.pays, 'Non renseigne')",
+    "region": "coalesce(m.region, 'Non renseigne')",
+    "type_membre": "coalesce(m.type_membre, 'Non renseigne')",
+    "cheminement": "coalesce(m.cheminement_pastoral, 'Non renseigne')",
+}
+
+
+def repartition_evenement(evenement_id: str, dimension_expr: str, role: str | None) -> list[dict[str, object]]:
+    """Break the CONSOLIDATED, targeted attendance of an event down by a dimension.
+
+    Same source of truth as :func:`stats_evenement`: one member counted once, bounded
+    to the targeted active population, present/partial/absent mutually exclusive. So
+    the sum of ``presents`` over the breakdown equals the ``presents`` KPI."""
+    rows = db.fetch_all(
+        f"""
+        WITH {_CONSO_CTES}
+        SELECT {dimension_expr} AS cle,
+               count(*) FILTER (WHERE dans_cible AND present) AS presents,
+               count(*) FILTER (WHERE dans_cible AND partiel AND NOT present) AS partiels,
+               count(*) FILTER (WHERE dans_cible AND absent AND NOT present AND NOT partiel) AS absents
+        FROM conso_cible cc {_REPARTITION_JOINS}
+        WHERE dans_cible
+        GROUP BY {dimension_expr}
+        ORDER BY presents DESC, cle ASC
+        """,
+        {"ev": evenement_id},
+        role=role,
+    )
+    return [{"cle": r["cle"], "presents": int(r["presents"]), "partiels": int(r["partiels"]), "absents": int(r["absents"])} for r in rows]
+
+
+def non_repondants_detail(evenement_id: str, role: str | None, fenetre_fin_sql: str) -> dict[str, int]:
+    """Split the non-respondents (targeted active members with NO consolidated record
+    in either table) by whether they signed in during the response window. The total
+    equals ``stats_evenement(...)['non_repondants']`` by construction (same population
+    and same "no record" definition, across BOTH attendance tables)."""
+    row = db.fetch_one(
+        f"""
+        WITH {POPULATION_CIBLE_CTE}
+        SELECT count(*) AS n,
+               count(*) FILTER (WHERE EXISTS (
+                   SELECT 1 FROM utilisateur u JOIN session s ON s.utilisateur_id = u.id
+                   WHERE u.membre_id = cible.membre_id AND s.cree_le BETWEEN e.debut AND {fenetre_fin_sql}
+               )) AS connectes
+        FROM cible
+        JOIN evenement e ON e.id = %(ev)s
+        WHERE NOT EXISTS (SELECT 1 FROM presence pr WHERE pr.evenement_id = %(ev)s AND pr.membre_id = cible.membre_id)
+          AND NOT EXISTS (SELECT 1 FROM participation pa WHERE pa.evenement_id = %(ev)s AND pa.membre_id = cible.membre_id AND {COMPTE})
+        """,
+        {"ev": evenement_id},
+        role=role,
+    ) or {}
+    total = int(row.get("n") or 0)
+    connectes = int(row.get("connectes") or 0)
+    return {"total": total, "connectes": connectes, "non_connectes": max(0, total - connectes)}
+
+
+def presences_cumulees(role: str | None) -> int:
+    """Total distinct attendance facts across ALL events and BOTH tables: one
+    (member, event) pair counts once even if it appears in ``presence`` (scan or
+    online link) and in ``participation`` (scan or a validated present/partial
+    declaration). This is THE cumulative attendance figure, so the direction
+    dashboard and the back-office never show two different totals for it."""
+    row = db.fetch_one(
+        f"""
+        SELECT count(*) AS n FROM (
+            SELECT DISTINCT membre_id, evenement_id FROM presence
+            UNION
+            SELECT membre_id, evenement_id FROM participation
+            WHERE {COMPTE} AND statut IN ('present', 'partiel')
+        ) faits
+        """,
+        (),
+        role=role,
+    )
+    return int((row or {}).get("n") or 0)
+
+
+def repartition_globale(role: str | None) -> dict[str, int]:
+    """Cumulative present / partial / absent across ALL events, deduplicated per
+    (member, event) over BOTH attendance tables, with the modality split of the
+    present members. Same consolidation rules as :func:`stats_evenement`, so the
+    global cards, the per-event screen and the direction dashboard reconcile. Not
+    bounded to a target: it is a raw count of attendance facts, not a rate."""
+    row = db.fetch_one(
+        f"""
+        WITH brut AS (
+            SELECT pr.membre_id, pr.evenement_id,
+                   CASE WHEN pr.mode = 'en_ligne' THEN 'en_ligne' ELSE 'presentiel' END AS modalite,
+                   'present'::text AS statut, (pr.methode IN ('qr', 'manuelle')) AS scanne
+            FROM presence pr
+            UNION ALL
+            SELECT pa.membre_id, pa.evenement_id,
+                   CASE WHEN pa.source = 'scan' THEN 'presentiel'
+                        WHEN pa.modalite IN ('presentiel', 'en_ligne') THEN pa.modalite ELSE NULL END,
+                   pa.statut, (pa.source = 'scan')
+            FROM participation pa
+            WHERE {COMPTE} AND pa.statut IN ('present', 'partiel', 'absent')
+        ),
+        conso AS (
+            SELECT membre_id, evenement_id,
+                   bool_or(statut = 'present') AS present,
+                   bool_or(statut = 'partiel') AS partiel,
+                   bool_or(statut = 'absent') AS absent,
+                   coalesce(bool_or(scanne), false) AS scanne,
+                   coalesce(bool_or(modalite = 'presentiel'), false) AS a_pres,
+                   coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enl
+            FROM brut GROUP BY membre_id, evenement_id
+        )
+        SELECT
+            count(*) FILTER (WHERE present) AS presents,
+            count(*) FILTER (WHERE partiel AND NOT present) AS partiels,
+            count(*) FILTER (WHERE absent AND NOT present AND NOT partiel) AS absents,
+            count(*) FILTER (WHERE present AND scanne) AS presentiel,
+            count(*) FILTER (WHERE present AND a_pres AND NOT scanne) AS presentiel_declare,
+            count(*) FILTER (WHERE present AND a_enl AND NOT a_pres) AS en_ligne,
+            count(*) FILTER (WHERE present AND NOT a_pres AND NOT a_enl) AS modalite_inconnue
+        FROM conso
+        """,
+        (),
+        role=role,
+    ) or {}
+    return {k: int(row.get(k) or 0) for k in ("presents", "partiels", "absents", "presentiel", "presentiel_declare", "en_ligne", "modalite_inconnue")}
+
+
+def serie_evenements(role: str | None, limite: int = 30) -> list[dict[str, object]]:
+    """Recent events with their CONSOLIDATED present/partial/absent counts (bounded
+    to each event's targeted active population), so a bar in the trend matches the
+    per-event screen exactly. Most recent first."""
+    rows = db.fetch_all(
+        f"""
+        WITH evs AS (
+            SELECT id, titre, debut, volet FROM evenement ORDER BY debut DESC NULLS LAST LIMIT %(lim)s
+        ),
+        brut AS (
+            SELECT pr.evenement_id, pr.membre_id, 'present'::text AS statut
+            FROM presence pr JOIN evs ON evs.id = pr.evenement_id
+            UNION ALL
+            SELECT pa.evenement_id, pa.membre_id, pa.statut
+            FROM participation pa JOIN evs ON evs.id = pa.evenement_id
+            WHERE {COMPTE} AND pa.statut IN ('present', 'partiel', 'absent')
+        ),
+        conso AS (
+            SELECT evenement_id, membre_id,
+                   bool_or(statut = 'present') AS present,
+                   bool_or(statut = 'partiel') AS partiel,
+                   bool_or(statut = 'absent') AS absent
+            FROM brut GROUP BY evenement_id, membre_id
+        ),
+        cible AS (
+            SELECT evs.id AS evenement_id, m.id AS membre_id
+            FROM evs JOIN evenement e ON e.id = evs.id
+            JOIN membre m ON m.statut = 'actif'
+            LEFT JOIN intendance mi ON mi.id = m.intendance_id
+            WHERE {CIBLE_PREDICATE}
+        ),
+        agg AS (
+            SELECT c.evenement_id,
+                   count(*) FILTER (WHERE c.present) AS presents,
+                   count(*) FILTER (WHERE c.partiel AND NOT c.present) AS partiels,
+                   count(*) FILTER (WHERE c.absent AND NOT c.present AND NOT c.partiel) AS absents
+            FROM conso c JOIN cible ci ON ci.evenement_id = c.evenement_id AND ci.membre_id = c.membre_id
+            GROUP BY c.evenement_id
+        )
+        SELECT evs.id, evs.titre, evs.debut, evs.volet,
+               coalesce(agg.presents, 0) AS presents,
+               coalesce(agg.partiels, 0) AS partiels,
+               coalesce(agg.absents, 0) AS absents
+        FROM evs LEFT JOIN agg ON agg.evenement_id = evs.id
+        ORDER BY evs.debut DESC NULLS LAST
+        """,
+        {"lim": limite},
+        role=role,
+    )
+    return [
+        {"id": str(r["id"]), "titre": r["titre"], "debut": r["debut"].isoformat() if r["debut"] else None,
+         "volet": r["volet"], "presents": int(r["presents"]), "partiels": int(r["partiels"]), "absents": int(r["absents"])}
+        for r in rows
+    ]
+
+
+def assiduite_perimetre(
+    where_sql: str, params: tuple[object, ...],
+    fen_where: str, fen_params: tuple[object, ...],
+    jours: int, role: str | None,
+) -> tuple[int, list[dict[str, object]]]:
+    """Consolidated attendance over a rolling window for the members matched by
+    ``where_sql`` (alias ``m``), counted over the events matched by ``fen_where``
+    (alias ``e``, the perimeter's relevant activities), so both the events count and
+    each member's presences are bounded to the same perimeter (no global leak).
+    ``presences`` counts DISTINCT events attended across BOTH tables (presence and
+    counted participation), so a member who only declared an online participation is
+    no longer wrongly seen as absent. Cancelled activities are excluded. Returns
+    (number of events in the window, per-member rows)."""
+    fen_clause = f"({fen_where}) AND e.debut >= now() - make_interval(days => %s) AND e.debut <= now() AND coalesce(e.annule, false) = false"
+    fen = db.fetch_one(
+        f"SELECT count(*) AS n FROM evenement e WHERE {fen_clause}",
+        (*fen_params, jours),
+        role=role,
+    )
+    rows = db.fetch_all(
+        f"""
+        WITH fen AS (
+            SELECT e.id FROM evenement e WHERE {fen_clause}
+        ),
+        attend AS (
+            SELECT DISTINCT membre_id, evenement_id FROM (
+                SELECT membre_id, evenement_id FROM presence WHERE evenement_id IN (SELECT id FROM fen)
+                UNION
+                SELECT membre_id, evenement_id FROM participation
+                WHERE evenement_id IN (SELECT id FROM fen) AND {COMPTE} AND statut IN ('present', 'partiel')
+            ) x
+        )
+        SELECT m.id, m.matricule, m.prenoms, m.nom, count(a.evenement_id) AS presences
+        FROM membre m LEFT JOIN attend a ON a.membre_id = m.id
+        WHERE {where_sql}
+        GROUP BY m.id, m.matricule, m.prenoms, m.nom
+        ORDER BY presences ASC, m.nom ASC
+        LIMIT 500
+        """,
+        (*fen_params, jours, *params),
+        role=role,
+    )
+    return int((fen or {}).get("n") or 0), rows
+
+
+def presents_membre_ids(evenement_id: str, role: str | None) -> list[str]:
+    """Deduplicated ids of the members counted PRESENT for an event (targeted active
+    population), from the consolidated attendance. Used to cross-check that two
+    screens or an export never disagree on who attended."""
+    rows = db.fetch_all(
+        f"WITH {_CONSO_CTES} SELECT membre_id FROM conso_cible WHERE dans_cible AND present",
+        {"ev": evenement_id},
+        role=role,
+    )
+    return [str(r["membre_id"]) for r in rows]

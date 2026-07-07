@@ -71,6 +71,11 @@ _GUIDE = {
         "aide": "Signature des rappels (attestation, activités). Vide = signature globale.",
         "roter": "Exemple : Sacerdoce Royal.",
     },
+    "signature_convocation": {
+        "titre": "Signature des convocations (sondage de pointage, début d'activité)",
+        "aide": "Signature des convocations : sondage de pointage (présence) et rappel de début d'activité. Vide = signature globale.",
+        "roter": "Exemples : Le Modérateur ; Le Collège des Bergers ; L'Administration.",
+    },
     "site_officiel": {
         "titre": "Site officiel",
         "aide": "Adresse du site officiel affichée en pied de chaque message.",
@@ -120,6 +125,20 @@ _GUIDE = {
 }
 
 
+# Curated authorities the admin can pick as a signature (quick-picks in the UI).
+# The field stays free text, but these cover the sanctioned organs so a signature
+# is chosen from a coherent list rather than typed differently each time.
+SIGNATURES_SUGGEREES = [
+    "Le Modérateur",
+    "Le Collège des Bergers",
+    "L'Administration",
+    "La Direction",
+    "Le Sacerdoce Royal",
+    "Le Bureau du Sacerdoce Royal",
+    "Fraternellement, le Sacerdoce Royal",
+]
+
+
 class ValeurIn(BaseModel):
     valeur: str
 
@@ -138,13 +157,18 @@ def list_integrations(user: Annotated[UserMe, Depends(require_permission("integr
     out: list[dict[str, object]] = []
     for r in rows:
         g = _GUIDE.get(r["cle"], {})
+        est_signature = str(r["cle"]).startswith("signature")
+        # A signature or the public site URL is not a secret: show it in clear so
+        # the admin sees the exact organ / address; tokens stay masked.
+        en_clair = est_signature or str(r["cle"]) == "site_officiel"
         out.append({
             "cle": r["cle"],
             "categorie": r["categorie"],
-            "valeur_masquee": _mask(r["valeur"]),
+            "valeur_masquee": (r["valeur"] or "") if en_clair else _mask(r["valeur"]),
             "renseigne": bool(r["valeur"]),
             "maj_le": r["maj_le"].isoformat() if r["maj_le"] else None,
             "guide": g,
+            "suggestions": SIGNATURES_SUGGEREES if est_signature else [],
         })
     return out
 

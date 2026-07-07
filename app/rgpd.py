@@ -45,6 +45,12 @@ def export_donnees(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[st
         "profil": profil_clean,
         "documents": _rows("SELECT type, nom_fichier, statut, demande_le, recu_le FROM document WHERE membre_id = %s", membre_id, role),
         "presences": _rows("SELECT evenement_id, arrivee, depart, methode FROM presence WHERE membre_id = %s ORDER BY arrivee DESC", membre_id, role),
+        "participations": _rows("SELECT evenement_id, statut, source, valide, modalite, cree_le FROM participation WHERE membre_id = %s ORDER BY cree_le DESC", membre_id, role),
+        # The FACT that the member evaluated / answered is their personal data and is
+        # exported; the CONTENT of the anonymous rating/comment is deliberately NOT
+        # included, because it is unlinkable and including it here would re-attribute it.
+        "evaluations_anonymes_soumises": _rows("SELECT evenement_id FROM evaluation_activite_droit WHERE membre_id = %s", membre_id, role),
+        "questionnaires_repondus": _rows("SELECT q.evenement_id FROM questionnaire_droit d JOIN questionnaire q ON q.id = d.questionnaire_id WHERE d.membre_id = %s", membre_id, role),
         "demandes": _rows("SELECT type, sujet, statut, cree_le FROM demande WHERE membre_id = %s ORDER BY cree_le DESC", membre_id, role),
         "notifications": _rows("SELECT type, titre, corps, lu, cree_le FROM notification WHERE membre_id = %s ORDER BY cree_le DESC", membre_id, role),
         "connexions": _rows(
