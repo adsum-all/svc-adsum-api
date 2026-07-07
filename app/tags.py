@@ -138,11 +138,28 @@ def taguer_activite(evenement_id: str, payload: EvenementTagsIn, ctx: Annotated[
     autorise = ctx.scope.is_global if cible_type == "general" else ctx.scope.couvre(cible_type, cible_id)
     if not autorise:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="activite hors de votre perimetre")
-    db.execute("DELETE FROM evenement_tag WHERE evenement_id = %s", (evenement_id,), role=ctx.user.role)
-    for tid in payload.tag_ids:
+    _remplacer_tags_activite(evenement_id, payload.tag_ids, ctx.user.role)
+    return {"ok": True, "tags": len(payload.tag_ids)}
+
+
+def _remplacer_tags_activite(evenement_id: str, tag_ids: list[str], role: str | None) -> None:
+    """Replace the whole tag set of an activity with the given catalogue tags."""
+    db.execute("DELETE FROM evenement_tag WHERE evenement_id = %s", (evenement_id,), role=role)
+    for tid in tag_ids:
         db.execute(
             "INSERT INTO evenement_tag (evenement_id, tag_id) SELECT %s, %s WHERE EXISTS (SELECT 1 FROM tag WHERE id = %s AND actif = true) ON CONFLICT DO NOTHING",
             (evenement_id, tid, tid),
-            role=ctx.user.role,
+            role=role,
         )
+
+
+@router.put("/admin/evenements/{evenement_id}/tags")
+def taguer_activite_admin(
+    evenement_id: str, payload: EvenementTagsIn, user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))]
+) -> dict[str, object]:
+    """Attach catalogue tags to any activity (central administration, full scope)."""
+    if not db.fetch_one("SELECT id FROM evenement WHERE id = %s", (evenement_id,), role=user.role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="activite introuvable")
+    _remplacer_tags_activite(evenement_id, payload.tag_ids, user.role)
+    audit.log(user.id, user.role, "tag_activite", "evenement", evenement_id, {"tags": len(payload.tag_ids)})
     return {"ok": True, "tags": len(payload.tag_ids)}

@@ -16,7 +16,7 @@ from typing import Annotated
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from . import audit, db, identifiants
 from .auth import current_user
@@ -139,6 +139,13 @@ def creer_membre_inscription(email: str, prenoms: str | None, nom: str | None, a
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="account already exists") from exc
     sent, provider = _send_temp_password(email, temp)
     telegram_envoye = _temp_password_via_telegram(membre_id, actor.role, temp)
+    if not sent and not telegram_envoye:
+        # The member received their access on no channel: record it in the delivery
+        # failure ledger so the administration sees it and re-sends the credentials,
+        # instead of a member silently stuck at the very first step.
+        from . import channels
+
+        channels._record_echec(membre_id, actor.role, "compte_cree", "email", "envoi du mot de passe temporaire echoue (aucun canal)")
     audit.log(actor.id, actor.role, "creation_inscription", "membre", membre_id,
               {"matricule": matricule, "email_envoye": sent, "canal": provider, "telegram_envoye": telegram_envoye})
     return {
@@ -166,6 +173,10 @@ def relancer_mdp(membre_id: str, user: Annotated[UserMe, Depends(require_permiss
     )
     sent, provider = _send_temp_password(str(row["email"]), temp)
     telegram_envoye = _temp_password_via_telegram(membre_id, user.role, temp)
+    if not sent and not telegram_envoye:
+        from . import channels
+
+        channels._record_echec(membre_id, user.role, "compte_cree", "email", "relance du mot de passe temporaire echouee (aucun canal)")
     audit.log(user.id, user.role, "relance_mdp_temporaire", "membre", membre_id,
               {"email_envoye": sent, "telegram_envoye": telegram_envoye})
     return {"ok": True, "expire_le": expire.isoformat(), "email_envoye": sent, "canal_email": provider, "telegram_envoye": telegram_envoye}
@@ -196,6 +207,17 @@ def decision_inscription(membre_id: str, payload: DecisionIn, user: Annotated[Us
         (payload.decision, payload.motif, cibles, user.id, verifie, membre_id),
         role=user.role,
     )
+    # If the correction targets the identity photo, unlock 'photo_identite' so the
+    # member can actually replace it: without the unlock, photo confirm returns 403
+    # and the member is asked to re-send a photo they are not allowed to change.
+    if cibles and any(c in ("photo", "photo_identite") for c in cibles):
+        db.execute(
+            "UPDATE membre SET champs_deverrouilles = array("
+            "  SELECT DISTINCT e FROM unnest(coalesce(champs_deverrouilles, '{}'::text[]) || ARRAY['photo_identite']::text[]) AS e"
+            ") WHERE id = %s",
+            (membre_id,),
+            role=user.role,
+        )
     messages = {
         "approuve": ("Inscription validée", "Votre inscription est validée. Votre carte et votre QR sont actifs."),
         "refuse": ("Inscription refusée", f"Votre inscription a été refusée. Motif : {payload.motif or 'non précisé'}."),
@@ -365,7 +387,7 @@ class ProfilUpdate(BaseModel):
     indicatif_telephone: ShortStr | None = None
     date_naissance: ShortStr | None = None
     naissance_annee_visible: bool | None = None
-    genre: ShortStr | None = None
+    genre: str | None = Field(default=None, max_length=120, pattern="^(homme|femme|autre)$")
     pays: LineStr | None = None
     region: LineStr | None = None
     ville: LineStr | None = None
@@ -373,17 +395,34 @@ class ProfilUpdate(BaseModel):
     adresse_complement: LineStr | None = None
     commission_id: ShortStr | None = None
     intendance_id: ShortStr | None = None
+    coordination_id: ShortStr | None = None
     tribu_id: ShortStr | None = None
     groupe: LineStr | None = None
     profession: LineStr | None = None
     niveau_etudes: LineStr | None = None
-    situation_matrimoniale: ShortStr | None = None
-    type_mariage: ShortStr | None = None
+    situation_matrimoniale: str | None = Field(default=None, max_length=120, pattern="^(celibataire|en_couple|fiance|marie|veuf|divorce)$")
+    type_mariage: str | None = Field(default=None, max_length=120, pattern="^(dot|religieux|dot_et_religieux|civil)$")
     baptise: bool | None = None
     confirme: bool | None = None
     premiere_communion: bool | None = None
-    type_membre: ShortStr | None = None
+    type_membre: str | None = Field(default=None, max_length=120, pattern="^[a-z][a-z0-9_]{1,39}$")
     fonction_cle: ShortStr | None = None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _empty_to_none(cls, valeur: object) -> object:
+        """Coerce empty or whitespace-only strings to None.
+
+        A member who leaves an optional dropdown on "Selectionner..." sends an empty
+        string. Written as-is that empty string would land in a uuid column
+        (intendance_id, tribu_id, commission_id) or a CHECK-constrained enum column
+        (situation_matrimoniale, type_membre) and raise a 500 at save time, blocking
+        the whole submission. Normalising to None here makes those fields NULL, which
+        is valid, so an unselected optional field never blocks a member.
+        """
+        if isinstance(valeur, str) and valeur.strip() == "":
+            return None
+        return valeur
 
 
 @router.patch("/membres/me/profil")
@@ -457,7 +496,8 @@ def mon_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)]) -> di
 def soumettre_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)]) -> dict[str, object]:
     membre_id, role = ctx
     row = db.fetch_one(
-        "SELECT prenoms, nom, telephone, date_naissance, genre, ville, pays, commission_id, tribu_id "
+        "SELECT prenoms, nom, telephone, date_naissance, genre, ville, pays, commission_id, tribu_id, "
+        "coordination_id, intendance_id "
         "FROM membre WHERE id = %s",
         (membre_id,),
         role=role,
@@ -467,6 +507,11 @@ def soumettre_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)])
     # Server-side required-field gate before a registration can be submitted.
     required = ["prenoms", "nom", "telephone", "date_naissance", "genre", "ville", "pays", "commission_id", "tribu_id"]
     missing = [k for k in required if not row.get(k)]
+    # Organizational axis: a member must belong to at least one of a coordination
+    # or an intendance (both is allowed but rare). Reported as a single virtual
+    # field so the member sees one clear "rattachement" item to fix.
+    if not (row.get("coordination_id") or row.get("intendance_id")):
+        missing.append("rattachement")
     docs = db.fetch_one("SELECT count(*) AS n FROM document WHERE membre_id = %s AND chemin_stockage IS NOT NULL", (membre_id,), role=role)
     # A verified electronic signature covering every active blocking consent
     # document is required on top of the profile and document gates. Imported
@@ -483,13 +528,22 @@ def soumettre_inscription(ctx: Annotated[tuple[str, str], Depends(_membre_ctx)])
                 "needs_signature": not signe,
             },
         )
-    db.execute(
-        "UPDATE membre SET statut_inscription = 'soumis', soumis_le = now() WHERE id = %s",
+    # Idempotent transition: only a dossier still being filled (incomplet or in a
+    # correction cycle) can move to 'soumis'. A double click, a browser retry or a
+    # dossier already decided (valide/refuse) matches no row, so it never regresses
+    # a decided dossier and never re-sends the acknowledgement.
+    transition = db.execute(
+        "UPDATE membre SET statut_inscription = 'soumis', soumis_le = now() "
+        "WHERE id = %s AND statut_inscription IN ('incomplet', 'modification_demandee') RETURNING id",
         (membre_id,),
         role=role,
     )
+    if not transition:
+        courant = db.fetch_one("SELECT statut_inscription FROM membre WHERE id = %s", (membre_id,), role=role)
+        return {"ok": True, "statut": (courant or {}).get("statut_inscription", "soumis"), "canaux": {}, "idempotent": True}
     # Multi-channel acknowledgement (in-app + e-mail + Telegram) so the member is
-    # told, off-app too, that the dossier was received and will be reviewed.
+    # told, off-app too, that the dossier was received and will be reviewed. Sent
+    # only on a real transition.
     from .notifications import notifier
 
     prenom = (str(row.get("prenoms") or "").split(" ")[0]) or "cher membre"

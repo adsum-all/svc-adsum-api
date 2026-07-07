@@ -35,7 +35,6 @@ def statistiques(user: Annotated[UserMe, Depends(require_permission("statistique
     scalar = db.fetch_one(
         """
         SELECT (SELECT count(*) FROM evenement) AS evenements,
-               (SELECT count(*) FROM presence) AS presences,
                (SELECT count(*) FROM commission WHERE type_organisation = 'commission') AS commissions,
                (SELECT count(*) FROM commission WHERE type_organisation = 'mission') AS missions,
                (SELECT count(*) FROM intendance) AS intendances
@@ -43,6 +42,12 @@ def statistiques(user: Annotated[UserMe, Depends(require_permission("statistique
         (),
         role=role,
     )
+    # Cumulative attendance from the single canonical layer (deduplicated across the
+    # presence and participation tables), so this total matches the back-office and
+    # never diverges from the participation screens.
+    from . import stats_core
+
+    presences_total = stats_core.presences_cumulees(role)
     par_commission = db.fetch_all(
         """
         SELECT c.nom AS commission, count(m.id) AS total
@@ -101,7 +106,7 @@ def statistiques(user: Annotated[UserMe, Depends(require_permission("statistique
         membres_verifies=int(m.get("verifies", 0)),
         membres_en_attente=int(m.get("en_attente", 0)),
         evenements_total=int(s.get("evenements", 0)),
-        presences_total=int(s.get("presences", 0)),
+        presences_total=presences_total,
         commissions_total=int(s.get("commissions", 0)),
         missions_total=int(s.get("missions", 0)),
         intendances_total=int(s.get("intendances", 0)),

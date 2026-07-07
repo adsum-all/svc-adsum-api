@@ -6,6 +6,7 @@ RLS. What actually scopes a member to their own records is the explicit
 ``membre_id`` filter on every query, not RLS. For events, the shared targeting
 predicate in ``visibilite`` gates both the agenda and the action endpoints.
 """
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json
@@ -159,6 +160,8 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
                  ELSE NULL
                END AS cible_libelle,
+               COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
+                         FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags,
                EXISTS (SELECT 1 FROM participation p WHERE p.evenement_id = e.id AND p.membre_id = %s) AS inscrit,
                CASE
                  WHEN now() < e.debut - interval '15 minutes' THEN 'a_venir'
@@ -201,6 +204,7 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                 cible_type=r.get("cible_type") or "general",
                 cible_id=str(r["cible_id"]) if r.get("cible_id") else None,
                 cible_libelle=r.get("cible_libelle"),
+                tags=[{"id": str(x.get("id")), "cle": str(x.get("cle") or ""), "libelle": str(x.get("libelle") or "")} for x in (r.get("tags") or [])],
                 phase=str(r["phase"]),
                 joignable=bool(liens),
                 formulaire_ouvert=bool(r["formulaire_ouvert"]),

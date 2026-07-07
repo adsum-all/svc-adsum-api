@@ -63,6 +63,9 @@ _CATEGORY_PREF = {
     "modification_complement": None,
     "activite_annulee": "evenements",
     "participation_bientot_close": "rappels",
+    # Attendance survey ("sondage de pointage"): MANDATORY. None means the member
+    # can never turn it off, because presence tracking is an administration duty.
+    "sondage_activite": None,
 }
 
 # Minimal built-in fallbacks (FR/EN) used only if no template row exists yet.
@@ -88,10 +91,13 @@ _SIGNATURE_KEY = {
     "attestation_rappel": "signature_rappel",
     "attestation_expiree": "signature_rappel",
     "activite_rappel_j1": "signature_rappel",
-    "activite_rappel_start": "signature_rappel",
     "activite_annulee": "signature_information",
     "participation_bientot_close": "signature_rappel",
     "modification_complement": "signature_approbation",
+    # The attendance survey and the just-starting reminder are convocations, signed
+    # by a dedicated authority (default "Le Moderateur"), configurable by the admin.
+    "sondage_activite": "signature_convocation",
+    "activite_rappel_start": "signature_convocation",
 }
 
 
@@ -531,3 +537,18 @@ def set_langue(payload: LangueIn, user: Annotated[UserMe, Depends(require_permis
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is not linked to a member")
     db.execute("UPDATE membre SET langue = %s WHERE id = %s", (payload.langue, user.membre_id), role=user.role)
     return {"ok": True, "langue": payload.langue}
+
+
+class ThemeIn(BaseModel):
+    theme: str
+
+
+@router.put("/membres/me/theme")
+def set_theme(payload: ThemeIn, user: Annotated[UserMe, Depends(require_permission("membres.self"))]) -> dict[str, object]:
+    """The member's display theme: light, dark or system (follow the device)."""
+    if payload.theme not in ("light", "dark", "system"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="theme must be light, dark or system")
+    if not user.membre_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is not linked to a member")
+    db.execute("UPDATE membre SET theme = %s WHERE id = %s", (payload.theme, user.membre_id), role=user.role)
+    return {"ok": True, "theme": payload.theme}

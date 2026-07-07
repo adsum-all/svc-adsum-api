@@ -18,7 +18,7 @@ MEMBRE_PROFILE_SELECT = (
     "m.cheminement_pastoral, m.statut_administratif, m.intendance_id, m.berger_referent_id, "
     "m.tribu_id, m.type_membre, m.promotion, m.situation_matrimoniale, m.type_mariage, "
     "m.profession, m.niveau_etudes, m.baptise, m.confirme, m.premiere_communion, "
-    "m.champs_deverrouilles, m.langue, m.anniversaire_visible_annuaire, "
+    "m.champs_deverrouilles, m.langue, m.theme, m.anniversaire_visible_annuaire, "
     "m.commission_id, m.fonction_cle, m.fonction_confirmee, "
     "fh.libelle_h AS fonction_h, fh.libelle_f AS fonction_f, fh.libelle_n AS fonction_n, fh.est_vip AS fonction_vip, "
     "c.nom AS commission, c.type_organisation AS commission_type, i.nom AS intendance, bm.nom AS berger_nom, bm.prenoms AS berger_prenoms, "
@@ -216,6 +216,7 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
         intendant_titre=intendant_titre,
         champs_deverrouilles=list(row.get("champs_deverrouilles") or []),
         langue=str(row.get("langue") or "fr"),
+        theme=str(row.get("theme") or "light"),
         commission_id=str(row["commission_id"]) if row.get("commission_id") else None,
         anniversaire_visible_annuaire=bool(row.get("anniversaire_visible_annuaire", True)),
         fonction_cle=row.get("fonction_cle"),

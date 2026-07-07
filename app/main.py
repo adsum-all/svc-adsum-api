@@ -35,6 +35,7 @@ from .inscription_admin import router as inscription_admin_router
 from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
+from .mfa import router as mfa_router
 from .middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .modifications import router as modifications_router
 from .niveaux import router as niveaux_router
@@ -45,6 +46,7 @@ from .participation import router as participation_router
 from .pilotage import router as pilotage_router
 from .reference import router as reference_router
 from .rgpd import router as rgpd_router
+from .sondage import cron_router as sondage_cron_router
 from .sondage import router as sondage_router
 from .tags import router as tags_router
 from .terminaux import router as terminaux_router
@@ -67,6 +69,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(mfa_router)
 app.include_router(membres_router)
 app.include_router(admin_router)
 app.include_router(controle_router)
@@ -109,6 +112,7 @@ app.include_router(engagement_public_router)
 app.include_router(engagement_router)
 app.include_router(engagement_import_router)
 app.include_router(sondage_router)
+app.include_router(sondage_cron_router)
 
 
 @app.get("/health", tags=["system"])

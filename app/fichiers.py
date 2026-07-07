@@ -23,7 +23,10 @@ from .schemas import UserMe
 router = APIRouter(prefix="/api/v1/membres/me", tags=["fichiers"])
 
 PHOTO_EXTS = {"jpg", "jpeg", "png", "webp"}
-DOC_EXTS = {"jpg", "jpeg", "png", "webp", "pdf"}
+# HEIC/HEIF are the iPhone default photo format: accepted for identity documents so
+# an iPhone member is not blocked at the upload step (the content sniffer already
+# accepts them). The extension gate is kept aligned with that sniffer.
+DOC_EXTS = {"jpg", "jpeg", "png", "webp", "pdf", "heic", "heif"}
 DOC_TYPES = {"piece_identite", "passeport", "permis", "carte_consulaire", "justificatif_domicile", "photo_identite", "attestation", "autre"}
 
 
@@ -219,7 +222,7 @@ def doc_upload_url(payload: UploadUrlIn, ctx: Annotated[tuple[str, str], Depends
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="storage unavailable") from exc
 
 
-_EXT_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "pdf": "application/pdf"}
+_EXT_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "pdf": "application/pdf", "heic": "image/heic", "heif": "image/heif"}
 
 
 def _mime_for(path: str, declared: str | None) -> str:
@@ -273,6 +276,17 @@ def _encrypt_document_at_rest(path: str, declared_mime: str | None) -> tuple[str
     bucket = settings.storage_bucket_documents
     try:
         plaintext = storage.download_bytes(bucket, path)
+    except storage.FileTooLargeError as exc:
+        # A too-large object is not transient: tell the member to reduce the file
+        # (413) instead of "retry later" (503), which would loop on the same file.
+        try:
+            storage.delete_object(bucket, path)
+        except storage.StorageError:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="fichier trop volumineux (15 Mo maximum) : réduisez la taille ou la résolution, puis réessayez",
+        ) from exc
     except storage.StorageError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="document unavailable, please retry") from exc
     # Verify the REAL content (magic bytes), never the client-declared type: only an

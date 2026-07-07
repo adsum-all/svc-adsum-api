@@ -35,6 +35,7 @@ class EngagementIn(BaseModel):
     pays_indicatif: ShortStr | None = None
     pays_code: ShortStr | None = None
     evenement_id: str | None = None
+    souhaite_telegram: bool = False
 
 
 def _langue(pays_code: str | None) -> str:
@@ -81,10 +82,10 @@ def enregistrer_invitation(payload: EngagementIn, source: str, cree_par: str | N
     prenoms = (payload.prenoms or "").strip() or None
     try:
         created = db.execute(
-            "INSERT INTO invitation_engagement (email, prenoms, nom, telephone, pays_indicatif, pays_code, source, evenement_id, cree_par) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            "INSERT INTO invitation_engagement (email, prenoms, nom, telephone, pays_indicatif, pays_code, source, evenement_id, cree_par, souhaite_telegram) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (email, prenoms, nom, (payload.telephone or None), (payload.pays_indicatif or None),
-             (payload.pays_code or None), source, (payload.evenement_id or None), cree_par),
+             (payload.pays_code or None), source, (payload.evenement_id or None), cree_par, bool(payload.souhaite_telegram)),
             role=role,
         )
     except psycopg.errors.UniqueViolation as exc:
@@ -155,7 +156,7 @@ def list_invitations(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     rows = db.fetch_all(
         "SELECT id, email, prenoms, nom, telephone, pays_indicatif, pays_code, source, statut, "
-        "membre_id, remerciement_envoye, cree_le, converti_le "
+        "membre_id, remerciement_envoye, souhaite_telegram, cree_le, converti_le "
         f"FROM invitation_engagement {where} ORDER BY cree_le DESC",
         tuple(params),
         role=user.role,
@@ -166,6 +167,7 @@ def list_invitations(
             "telephone": r.get("telephone"), "pays_indicatif": r.get("pays_indicatif"), "pays_code": r.get("pays_code"),
             "source": r["source"], "statut": r["statut"], "membre_id": str(r["membre_id"]) if r.get("membre_id") else None,
             "remerciement_envoye": bool(r["remerciement_envoye"]),
+            "souhaite_telegram": bool(r.get("souhaite_telegram")),
             "cree_le": r["cree_le"].isoformat() if r.get("cree_le") else None,
             "converti_le": r["converti_le"].isoformat() if r.get("converti_le") else None,
         }

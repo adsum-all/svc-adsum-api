@@ -37,21 +37,16 @@ router = APIRouter(prefix="/api/v1", tags=["modifications"])
 _EDITABLE_FIELDS = {
     "prenoms", "nom", "code_membre", "telephone", "indicatif_telephone", "date_naissance",
     "naissance_annee_visible", "genre", "pays", "region", "ville", "adresse",
-    "adresse_complement", "commission_id", "intendance_id", "tribu_id", "groupe",
+    "adresse_complement", "commission_id", "intendance_id", "coordination_id", "tribu_id", "groupe",
     "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage",
     "baptise", "confirme", "premiere_communion", "type_membre",
 }
 
 # Defense-in-depth whitelist: only these member columns can be committed from a
-# pending proposal, even though the submission already filtered the input.
-_COMMITTABLE_FIELDS = frozenset(
-    {
-        "prenoms", "nom", "code_membre", "telephone", "date_naissance", "genre", "pays", "ville",
-        "commission_id", "intendance_id", "tribu_id", "groupe", "profession",
-        "niveau_etudes", "situation_matrimoniale", "type_mariage",
-        "baptise", "confirme", "premiere_communion",
-    }
-)
+# pending proposal. Kept ALIGNED with _EDITABLE_FIELDS so that every field a member
+# is allowed to propose is actually applied on validation (no silent loss, e.g. of
+# the member code, the address or the region).
+_COMMITTABLE_FIELDS = frozenset(_EDITABLE_FIELDS)
 
 
 def _membre_ctx(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
@@ -267,6 +262,10 @@ def admin_decide_modification(
         applied: dict[str, object] = {}
         if mod:
             applied = {k: v for k, v in (mod["valeurs"] or {}).items() if k in _COMMITTABLE_FIELDS}
+            # An unlocked field left empty by the member must clear the column (NULL),
+            # never write an empty string into a uuid / enum / CHECK column (which would
+            # raise a 500 at commit and silently fail the whole validation).
+            applied = {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in applied.items()}
             # Normalise the civil identity on commit: family name uppercase, given
             # names title case (single source of truth in app/identite.py).
             if applied.get("nom") is not None:
