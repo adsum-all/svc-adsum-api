@@ -42,12 +42,15 @@ _VISIBLE_CLAUSE = " AND m.anniversaire_visible_annuaire = true"
 # every active+confirmed function, otherwise a secondary responsibility (e.g. a
 # coordinator whose primary function is something else) is missed. These EXISTS
 # fragments match a member by their real, confirmed functions.
+# Case-insensitive join on the function key, like the canonical resolvers
+# (mappers.py, organisation.py) which use lower(mf.fonction_cle), so a legacy
+# mixed-case membre_fonction row is never silently missed.
 _MF_FAMILLE = (
-    "EXISTS (SELECT 1 FROM membre_fonction mf JOIN fonction_honorifique fh2 ON fh2.cle = mf.fonction_cle "
+    "EXISTS (SELECT 1 FROM membre_fonction mf JOIN fonction_honorifique fh2 ON fh2.cle = lower(mf.fonction_cle) "
     "WHERE mf.membre_id = m.id AND mf.actif = true AND mf.confirmee = true AND fh2.famille = %s)"
 )
 _MF_VIP = (
-    "EXISTS (SELECT 1 FROM membre_fonction mf JOIN fonction_honorifique fh2 ON fh2.cle = mf.fonction_cle "
+    "EXISTS (SELECT 1 FROM membre_fonction mf JOIN fonction_honorifique fh2 ON fh2.cle = lower(mf.fonction_cle) "
     "WHERE mf.membre_id = m.id AND mf.actif = true AND mf.confirmee = true AND fh2.est_vip = true)"
 )
 
@@ -109,9 +112,10 @@ def _categorie_where(categorie: str, membre_id: str) -> tuple[str, list[object]]
     if categorie == "responsables":
         return _VISIBLE_CLAUSE + " AND (m.fonction_cle = 'responsable' OR m.type_membre = 'responsable' OR " + _MF_FAMILLE + ")", ["responsables"]
     if categorie == "bergers":
-        # Berger/Bergere is a consecration title (est_berger); keep the legacy
-        # function match too so nothing that showed before disappears.
-        return _VISIBLE_CLAUSE + " AND (m.est_berger = true OR (fh.famille = 'bergers' AND m.fonction_confirmee = true))", []
+        # Berger/Bergere is the consecration title (est_berger). Also match a
+        # confirmed 'bergers'-family function (e.g. Berger des missions), primary
+        # or secondary via membre_fonction, so no shepherd is ever missed.
+        return _VISIBLE_CLAUSE + " AND (m.est_berger = true OR " + _MF_FAMILLE + ")", ["bergers"]
     if categorie in _FAMILLE_CATEGORIE:  # direction, coordinateurs (-> coordination), patriarches
         fam = _FAMILLE_CATEGORIE[categorie]
         return _VISIBLE_CLAUSE + " AND ((fh.famille = %s AND m.fonction_confirmee = true) OR " + _MF_FAMILLE + ")", [fam, fam]
