@@ -29,8 +29,13 @@ _BASE_SELECT = (
     "FROM membre m "
     "LEFT JOIN fonction_honorifique fh ON fh.cle = m.fonction_cle "
     "LEFT JOIN commission c ON c.id = m.commission_id "
-    "WHERE m.date_naissance IS NOT NULL AND m.statut = 'actif' AND m.anniversaire_visible_annuaire = true"
+    "WHERE m.date_naissance IS NOT NULL AND m.statut = 'actif'"
 )
+
+# The peer-directory opt-in gates the COLLECTIVE overlays only. A member always
+# sees their own birthday on their own calendar (the 'moi' category), even after
+# opting out of the directory, so it is never applied to the self view.
+_VISIBLE_CLAUSE = " AND m.anniversaire_visible_annuaire = true"
 
 
 def _membre(user: Annotated[UserMe, Depends(current_user)]) -> str:
@@ -73,30 +78,43 @@ _FAMILLE_CATEGORIE = {
 }
 
 
+def _categorie_where(categorie: str, membre_id: str) -> tuple[str, list[object]] | None:
+    """WHERE suffix and params for a category, or None for an own-unit category
+    (which needs a DB lookup done by the caller).
+
+    The 'moi' (self) category matches the caller and deliberately OMITS the
+    peer-directory visibility clause, so a member always sees their own birthday
+    on their own calendar even after opting out of the directory. Every collective
+    category keeps the visibility clause (opt-out members stay hidden from peers)."""
+    if categorie == "moi":
+        return " AND m.id = %s", [membre_id]
+    if categorie == "vip":
+        return _VISIBLE_CLAUSE + " AND fh.est_vip = true AND m.fonction_confirmee = true", []
+    if categorie == "responsables":
+        return _VISIBLE_CLAUSE + " AND (m.fonction_cle = 'responsable' OR m.type_membre = 'responsable')", []
+    if categorie in _FAMILLE_CATEGORIE:
+        return _VISIBLE_CLAUSE + " AND fh.famille = %s AND m.fonction_confirmee = true", [_FAMILLE_CATEGORIE[categorie]]
+    return None
+
+
 @router.get("/membres/anniversaires")
 def anniversaires_annuaire(
     membre_id: Annotated[str, Depends(_membre)],
-    categorie: Annotated[str, Query(pattern="^(vip|responsables|commission|tribu|coordination|intendance|direction|coordinateurs|bergers|patriarches)$")] = "vip",
+    categorie: Annotated[str, Query(pattern="^(moi|vip|responsables|commission|tribu|coordination|intendance|direction|coordinateurs|bergers|patriarches)$")] = "vip",
     mois: Annotated[int | None, Query(ge=1, le=12)] = None,
 ) -> list[dict[str, object]]:
-    """Peer birthdays for one overlay category. Never exposes the birth year."""
-    where = ""
-    params: list[object] = []
-    if categorie == "vip":
-        where = " AND fh.est_vip = true AND m.fonction_confirmee = true"
-    elif categorie == "responsables":
-        where = " AND (m.fonction_cle = 'responsable' OR m.type_membre = 'responsable')"
-    elif categorie in _FAMILLE_CATEGORIE:
-        where = " AND fh.famille = %s AND m.fonction_confirmee = true"
-        params.append(_FAMILLE_CATEGORIE[categorie])
+    """Birthdays for one calendar overlay category. Never exposes the birth year."""
+    built = _categorie_where(categorie, membre_id)
+    if built is not None:
+        where, params = built[0], list(built[1])
     else:  # own-unit categories: only members sharing the caller's own unit
         col = _UNIT_COLUMN[categorie]
         own = db.fetch_one(f"SELECT {col} AS unite FROM membre WHERE id = %s", (membre_id,), role=None)
         unite_id = own["unite"] if own else None
         if not unite_id:
             return []
-        where = f" AND m.{col} = %s"
-        params.append(unite_id)
+        where = _VISIBLE_CLAUSE + f" AND m.{col} = %s"
+        params = [unite_id]
     if mois is not None:
         where += " AND extract(month from m.date_naissance) = %s"
         params.append(mois)
