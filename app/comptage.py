@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from . import audit, db
-from .deps import require_roles
+from . import audit, db, ratelimit
+from .permissions_rbac import require_permission
 from .schemas import (
     ComptageLigne,
     ComptageResume,
@@ -23,14 +23,15 @@ from .schemas import (
 router = APIRouter(prefix="/api/v1/admin/comptage", tags=["comptage"])
 comptage_public_router = APIRouter(prefix="/api/v1/public", tags=["public"])
 
-require_counter = require_roles("super_admin", "admin", "gestionnaire", "controleur")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "direction")
 
 
 def _resume(evenement_id: str, role: str | None) -> ComptageResume:
     event = db.fetch_one("SELECT titre FROM evenement WHERE id = %s", (evenement_id,), role=role)
+    # Members physically scanned at the venue only (QR or manual check-in). Online
+    # link participations (methode='lien') are not on-site attendees, so they must
+    # not inflate the volet B physical count.
     membres = db.fetch_one(
-        "SELECT count(*) AS n FROM presence WHERE evenement_id = %s",
+        "SELECT count(*) AS n FROM presence WHERE evenement_id = %s AND methode IN ('qr', 'manuelle')",
         (evenement_id,),
         role=role,
     )
@@ -45,13 +46,17 @@ def _resume(evenement_id: str, role: str | None) -> ComptageResume:
         role=role,
     )
     non_membres = sum(int(r["total_anonyme"]) for r in rows)
+    # Members counted manually on segments that were not scanned (large venues), so
+    # they are no longer silently dropped from the total.
+    membres_manuels = sum(int(r["total_membres"] or 0) for r in rows)
     membres_scannes = int(membres["n"]) if membres else 0
     return ComptageResume(
         evenement_id=evenement_id,
         titre=event["titre"] if event else None,
         membres_scannes=membres_scannes,
+        membres_comptes_manuellement=membres_manuels,
         non_membres=non_membres,
-        total_participants=membres_scannes + non_membres,
+        total_participants=membres_scannes + membres_manuels + non_membres,
         lignes=[
             ComptageLigne(
                 id=str(r["id"]),
@@ -68,7 +73,7 @@ def _resume(evenement_id: str, role: str | None) -> ComptageResume:
 @router.get("/{evenement_id}", response_model=ComptageResume)
 def get_comptage(
     evenement_id: str,
-    user: Annotated[UserMe, Depends(require_staff)],
+    user: Annotated[UserMe, Depends(require_permission("comptage.superviser"))],
 ) -> ComptageResume:
     return _resume(evenement_id, user.role)
 
@@ -76,7 +81,7 @@ def get_comptage(
 @router.post("", response_model=ComptageResume, status_code=status.HTTP_201_CREATED)
 def add_comptage(
     payload: CreateComptage,
-    user: Annotated[UserMe, Depends(require_counter)],
+    user: Annotated[UserMe, Depends(require_permission("comptage.controler"))],
 ) -> ComptageResume:
     db.execute(
         """
@@ -113,8 +118,13 @@ def public_event(evenement_id: str) -> PublicEvent:
 
 
 @comptage_public_router.post("/presence/{evenement_id}", status_code=status.HTTP_201_CREATED)
-def public_presence(evenement_id: str) -> dict[str, object]:
-    """Anonymous self-service presence for a volet B event ('Je suis present')."""
+def public_presence(evenement_id: str, request: Request) -> dict[str, object]:
+    """Anonymous self-service presence for a volet B event ('Je suis present').
+
+    Rate limited per client: an anonymous public counter cannot be truly
+    deduplicated, so throttling caps how fast a refresh, a double click or a script
+    can inflate the tally. The figure stays an approximate anonymous headcount."""
+    ratelimit.enforce(request, "public-comptage")
     row = db.fetch_one("SELECT id, volet FROM evenement WHERE id = %s", (evenement_id,))
     if not row or row["volet"] != "B":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="public event not found")

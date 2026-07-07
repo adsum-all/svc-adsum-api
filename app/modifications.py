@@ -19,34 +19,34 @@ from typing import Annotated
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db, identite
 from .auth import current_user
-from .demandes import _notify_ticket, _system_message, require_lecture, require_staff
+from .demandes import _notify_ticket, _system_message
+from .fields import LineStr, ShortStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["modifications"])
 
 # Fields a member may self-edit once the administration unlocks them.
+# fonction_cle (a member's governance function) is deliberately NOT here: it is set
+# by the administration only, so a member can never grant themselves a function
+# during a correction cycle.
 _EDITABLE_FIELDS = {
-    "prenoms", "nom", "telephone", "indicatif_telephone", "date_naissance",
+    "prenoms", "nom", "code_membre", "telephone", "indicatif_telephone", "date_naissance",
     "naissance_annee_visible", "genre", "pays", "region", "ville", "adresse",
-    "adresse_complement", "commission_id", "intendance_id", "tribu_id", "groupe",
+    "adresse_complement", "commission_id", "intendance_id", "coordination_id", "tribu_id", "groupe",
     "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage",
-    "baptise", "confirme", "premiere_communion", "type_membre", "fonction_cle",
+    "baptise", "confirme", "premiere_communion", "type_membre",
 }
 
 # Defense-in-depth whitelist: only these member columns can be committed from a
-# pending proposal, even though the submission already filtered the input.
-_COMMITTABLE_FIELDS = frozenset(
-    {
-        "prenoms", "nom", "telephone", "date_naissance", "genre", "pays", "ville",
-        "commission_id", "intendance_id", "tribu_id", "groupe", "profession",
-        "niveau_etudes", "situation_matrimoniale", "type_mariage",
-        "baptise", "confirme", "premiere_communion",
-    }
-)
+# pending proposal. Kept ALIGNED with _EDITABLE_FIELDS so that every field a member
+# is allowed to propose is actually applied on validation (no silent loss, e.g. of
+# the member code, the address or the region).
+_COMMITTABLE_FIELDS = frozenset(_EDITABLE_FIELDS)
 
 
 def _membre_ctx(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
@@ -62,7 +62,10 @@ class SoumettreModif(BaseModel):
     hint that a replacement photo was staged (correctness never depends on the
     hint, only the confirmation wording does)."""
 
-    champs: dict[str, str] = {}
+    # Bound both cardinality and value length: the values land in core member
+    # columns and are duplicated into the modification_membre journal, so an
+    # unbounded value would write oversized data into the record.
+    champs: dict[ShortStr, LineStr] = Field(default_factory=dict, max_length=64)
     inclure_photo: bool = False
 
 
@@ -173,7 +176,7 @@ class ModifDecision(BaseModel):
 
 @router.get("/admin/demandes/{demande_id}/modifications")
 def admin_demande_modifications(
-    demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]
+    demande_id: str, user: Annotated[UserMe, Depends(require_permission("demandes.superviser"))]
 ) -> list[dict[str, object]]:
     """Pending and past member modifications attached to this request, as a diff."""
     rows = db.fetch_all(
@@ -200,7 +203,9 @@ def admin_demande_modifications(
 
 
 @router.get("/admin/demandes/{demande_id}/photo-pending")
-def admin_photo_pending(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> dict[str, object]:
+def admin_photo_pending(
+    demande_id: str, user: Annotated[UserMe, Depends(require_permission("demandes.superviser"))]
+) -> dict[str, object]:
     """Signed preview of a replacement photo the member staged on this request,
     with its focal point, so the administration reviews the actual new photo,
     framed the way it will be shown, before validating."""
@@ -225,7 +230,7 @@ def admin_photo_pending(demande_id: str, user: Annotated[UserMe, Depends(require
 
 @router.post("/admin/demandes/{demande_id}/modifications/decision")
 def admin_decide_modification(
-    demande_id: str, payload: ModifDecision, user: Annotated[UserMe, Depends(require_staff)]
+    demande_id: str, payload: ModifDecision, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]
 ) -> dict[str, object]:
     """Final validation of the member's single modification submission.
 
@@ -257,6 +262,10 @@ def admin_decide_modification(
         applied: dict[str, object] = {}
         if mod:
             applied = {k: v for k, v in (mod["valeurs"] or {}).items() if k in _COMMITTABLE_FIELDS}
+            # An unlocked field left empty by the member must clear the column (NULL),
+            # never write an empty string into a uuid / enum / CHECK column (which would
+            # raise a 500 at commit and silently fail the whole validation).
+            applied = {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in applied.items()}
             # Normalise the civil identity on commit: family name uppercase, given
             # names title case (single source of truth in app/identite.py).
             if applied.get("nom") is not None:

@@ -12,7 +12,7 @@ _UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=1)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class TokenResponse(BaseModel):
@@ -20,6 +20,22 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     role: str
     doit_changer_mdp: bool = False
+
+
+class LoginResponse(BaseModel):
+    """Login outcome. When the second factor is required, otp_required is true and
+    the token fields stay empty; the caller then verifies the code at /login-verify.
+    When no code is needed (trusted device or 2FA off) the token is returned
+    directly, so an admin/back-office client that only reads access_token keeps
+    working unchanged."""
+
+    otp_required: bool = False
+    access_token: str | None = None
+    token_type: str = "bearer"
+    role: str | None = None
+    doit_changer_mdp: bool = False
+    # Which channel the code was sent on (telegram / email), for a clear message.
+    canal: str | None = None
 
 
 class UserMe(BaseModel):
@@ -42,6 +58,7 @@ class MembreProfile(BaseModel):
 
     id: str
     matricule: str
+    code_membre: str | None = None
     email: EmailStr
     nom: str | None = None
     prenoms: str | None = None
@@ -86,6 +103,7 @@ class MembreProfile(BaseModel):
     confirme: bool | None = None
     premiere_communion: bool | None = None
     commission: str | None = None
+    commission_type: str | None = None  # 'commission' | 'mission' | ... for the display prefix
     intendance: str | None = None
     intendance_id: str | None = None
     berger: str | None = None
@@ -94,9 +112,16 @@ class MembreProfile(BaseModel):
     tribu_id: str | None = None
     patriarche: str | None = None  # current human patriarche of the tribe, resolved (blank if none)
     coordination: str | None = None
+    coordination_id: str | None = None
+    # Responsables resolved from the structure the member belongs to, with a
+    # gender-aware title (Intendant/Intendante, Coordinateur/Coordinatrice).
     coordinateur: str | None = None
+    coordinateur_titre: str | None = None
+    intendant: str | None = None
+    intendant_titre: str | None = None
     champs_deverrouilles: list[str] = []
     langue: str = "fr"
+    theme: str = "light"
     commission_id: str | None = None
     anniversaire_visible_annuaire: bool = True
     fonction_cle: str | None = None
@@ -125,6 +150,18 @@ class EvenementOut(BaseModel):
     cible_type: str = "general"
     cible_id: str | None = None
     cible_libelle: str | None = None
+    cible_genre: str | None = None
+    cible_age_min: int | None = None
+    cible_age_max: int | None = None
+    cible_emails: list[str] = []
+    tags: list[dict[str, str]] = []  # catalogue tags, so members can filter the agenda
+    annule: bool = False  # a cancelled activity is kept for history but never runs
+    annule_motif: str | None = None
+    fuseau_horaire: str = "Africa/Abidjan"  # the activity's own zone, for editing
+    serie_id: str | None = None  # set when the activity belongs to a recurring series
+    # Per-activity response-window override (hours after end); None = global default.
+    # Surfaced so the edit form preserves it instead of silently resetting it.
+    fenetre_reponse_heures: int | None = None
     # Server-computed lifecycle (source of truth for time-gated UI actions).
     phase: str = "a_venir"  # a_venir | bientot | en_cours | termine
     joignable: bool = False  # the join button may show (in window and a link is available)
@@ -156,8 +193,8 @@ class NotificationOut(BaseModel):
 class ChangePasswordIn(BaseModel):
     """Change the member's own password (first login and settings)."""
 
-    ancien: str
-    nouveau: str
+    ancien: str = Field(min_length=1, max_length=128)
+    nouveau: str = Field(min_length=8, max_length=128)
 
 
 class EngagementAcceptIn(BaseModel):
@@ -245,6 +282,9 @@ class MembreFields(BaseModel):
 
     nom: str | None = None
     prenoms: str | None = None
+    # External member code (distinct from the app matricule): optional, uppercased,
+    # loose format (letters, digits and hyphens) so real-world codes fit.
+    code_membre: str | None = Field(default=None, max_length=32, pattern=r"^[A-Za-z0-9\- ]*$")
     telephone: str | None = None
     commission_id: str | None = None
     groupe: str | None = None
@@ -253,6 +293,9 @@ class MembreFields(BaseModel):
     pays: str | None = None
     ville: str | None = None
     intendance_id: str | None = None
+    # A member belongs to a coordination OR an intendance, never both (enforced by
+    # a DB CHECK and validated in the update handler).
+    coordination_id: str | None = None
     berger_referent_id: str | None = None
     date_entree: date | None = None
     cheminement_pastoral: str | None = Field(default=None, pattern=_CHEMINEMENT)
@@ -295,19 +338,46 @@ class UpdateMembre(MembreFields):
 
 
 class CoordinationOut(BaseModel):
-    """A coordination row. Independent by default; parent is optional."""
+    """A coordination row. Independent by default; parent is optional.
+
+    Carries its own descriptive and geographic identity so the administration
+    understands its nature, scope and location, not just a bare name.
+    """
 
     id: str
     nom: str
     description: str | None = None
+    pays_code: str | None = None  # ISO 3166-1 alpha-2, source of truth for the country
+    pays: str | None = None  # display name, kept for backward compatibility
+    continent: str | None = None
+    ville: str | None = None
+    statut: str = "actif"  # actif | archive
     publie: bool = True
     parent_id: str | None = None
     parent: str | None = None
+    responsable: str | None = None  # resolved coordinateur name (via the function)
+    responsable_titre: str | None = None  # Coordinateur/Coordinatrice per gender
 
 
 class CreateCoordination(BaseModel):
-    nom: str = Field(min_length=1)
-    description: str | None = None
+    nom: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pays_code: str | None = Field(default=None, max_length=2)
+    continent: str | None = Field(default=None, max_length=40)
+    ville: str | None = Field(default=None, max_length=120)
+    statut: str = Field(default="actif", pattern="^(actif|archive)$")
+    parent_id: str | None = None
+
+
+class UpdateCoordination(BaseModel):
+    """Partial update of a coordination. Only provided fields are written."""
+
+    nom: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pays_code: str | None = Field(default=None, max_length=2)
+    continent: str | None = Field(default=None, max_length=40)
+    ville: str | None = Field(default=None, max_length=120)
+    statut: str | None = Field(default=None, pattern="^(actif|archive)$")
     parent_id: str | None = None
 
 
@@ -317,19 +387,43 @@ class IntendanceOut(BaseModel):
 
     id: str
     nom: str
-    pays: str | None = None
+    description: str | None = None
+    pays_code: str | None = None  # ISO 3166-1 alpha-2, source of truth
+    pays: str | None = None  # display name, kept for backward compatibility
+    continent: str | None = None
     ville: str | None = None
+    statut: str = "actif"  # actif | archive
     coordination_id: str | None = None
     coordination: str | None = None
     publie: bool = True
     parent_id: str | None = None
     parent: str | None = None
+    responsable: str | None = None  # resolved intendant name (via the function)
+    responsable_titre: str | None = None  # Intendant/Intendante per gender
 
 
 class CreateIntendance(BaseModel):
-    nom: str = Field(min_length=1)
-    pays: str | None = None
-    ville: str | None = None
+    nom: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pays_code: str | None = Field(default=None, max_length=2)
+    pays: str | None = Field(default=None, max_length=120)
+    continent: str | None = Field(default=None, max_length=40)
+    ville: str | None = Field(default=None, max_length=120)
+    statut: str = Field(default="actif", pattern="^(actif|archive)$")
+    coordination_id: str | None = None
+    parent_id: str | None = None
+
+
+class UpdateIntendance(BaseModel):
+    """Partial update of an intendance. Only provided fields are written."""
+
+    nom: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pays_code: str | None = Field(default=None, max_length=2)
+    pays: str | None = Field(default=None, max_length=120)
+    continent: str | None = Field(default=None, max_length=40)
+    ville: str | None = Field(default=None, max_length=120)
+    statut: str | None = Field(default=None, pattern="^(actif|archive)$")
     coordination_id: str | None = None
     parent_id: str | None = None
 
@@ -375,9 +469,6 @@ class SetPatriarche(BaseModel):
     motif: str | None = Field(default=None, max_length=300)
 
 
-_ROLE = "^(super_admin|admin|gestionnaire|controleur|direction)$"
-
-
 class UtilisateurOut(BaseModel):
     """An application account with its role, for rights management."""
 
@@ -392,29 +483,35 @@ class UtilisateurOut(BaseModel):
 
 
 class CreateUtilisateur(BaseModel):
-    """Payload to create an application account (the super admin creates accounts)."""
+    """Payload to create an application account.
+
+    An account is always created as a plain 'membre'. Platform access (back
+    office, direction, pilotage) is never set here: it is granted only by adding
+    the member to an access group, so this payload carries no role.
+    """
 
     email: EmailStr
-    role: str = Field(pattern=_ROLE)
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=8, max_length=128)
     membre_id: str | None = None
     double_facteur: bool = True
 
 
 class UpdateUtilisateur(BaseModel):
-    """Partial update of an account: role and activation."""
+    """Partial update of an account: activation and 2FA only.
 
-    role: str | None = Field(default=None, pattern=_ROLE)
+    A role is never written here: it is derived from the member's access groups,
+    so this endpoint cannot be used to grant platform access outside a group.
+    """
+
     actif: bool | None = None
     double_facteur: bool | None = None
 
 
 class BulkCompte(BaseModel):
-    """One account in a bulk creation request."""
+    """One account in a bulk creation request. Always created as a plain 'membre'."""
 
     email: EmailStr
-    password: str = Field(min_length=8)
-    role: str = Field(default="direction", pattern=_ROLE)
+    password: str = Field(min_length=8, max_length=128)
 
 
 class BulkCreateUtilisateurs(BaseModel):
@@ -462,6 +559,7 @@ class ComptageResume(BaseModel):
     evenement_id: str
     titre: str | None = None
     membres_scannes: int
+    membres_comptes_manuellement: int = 0
     non_membres: int
     total_participants: int
     lignes: list[ComptageLigne]
@@ -549,6 +647,18 @@ class CreateCommission(BaseModel):
     type_organisation: str = Field(default="commission", pattern="^[a-z][a-z_]{1,29}$")
 
 
+class OccurrenceIn(BaseModel):
+    """One additional occurrence of a recurring activity (absolute instants).
+
+    ``mode`` lets an intermittent series vary the mode per date (e.g. some days in
+    person, some online); when omitted the series' base mode applies.
+    """
+
+    debut: datetime
+    fin: datetime | None = None
+    mode: str | None = Field(default=None, pattern="^(presentiel|en_ligne|hybride)$")
+
+
 class CreateEvenement(BaseModel):
     """Payload to create an event."""
 
@@ -563,13 +673,29 @@ class CreateEvenement(BaseModel):
     liens: list[str] = []
     type_diffusion: str = Field(default="aucun", pattern="^(embed|externe|aucun)$")
     visibilite: str = Field(default="membres", pattern="^(public|membres|prive)$")
-    # Targeting: 'general' reaches everyone; any other value must be paired with
-    # cible_id (the id of the aimed coordination/commission/intendance/tribu).
-    cible_type: str = Field(default="general", pattern="^(general|coordination|commission|intendance|tribu)$")
+    # Targeting has a primary audience and optional refinements that combine (AND).
+    # Primary: 'general' (everyone), an organisational unit (needs cible_id), the
+    # 'bergers', the 'responsables', or a 'liste' of e-mails (needs cible_emails).
+    cible_type: str = Field(default="general", pattern="^(general|coordination|commission|intendance|tribu|bergers|responsables|liste)$")  # noqa: E501
     cible_id: str | None = Field(default=None, pattern=_UUID_RE)
+    # Refinements: restrict the primary audience by gender and/or age range.
+    cible_genre: str | None = Field(default=None, pattern="^(homme|femme)$")
+    cible_age_min: int | None = Field(default=None, ge=0, le=120)
+    cible_age_max: int | None = Field(default=None, ge=0, le=120)
+    # Ad-hoc audience for cible_type = 'liste': the e-mail addresses to reach.
+    cible_emails: list[str] = Field(default_factory=list, max_length=500)
     # Response-window override in hours after the session end; when empty the
     # global admin parameter applies (questionnaire_fenetre_heures, default 6h).
     fenetre_reponse_heures: int | None = Field(default=None, ge=1, le=336)
+    # The activity's reference IANA time zone (the zone the start/end were entered
+    # in). Default is the base's home GMT zone; members still see their own time.
+    fuseau_horaire: str = Field(default="Africa/Abidjan", max_length=64)
+    # Recurrence: when `occurrences` is non-empty, the event becomes a SERIES. The
+    # first occurrence is (debut, fin); each extra occurrence is one more real
+    # activity row sharing a serie_id, so participation/questionnaire/survey keep
+    # working per date. `recurrence` records the rule for display, no computation.
+    occurrences: list[OccurrenceIn] = Field(default_factory=list, max_length=103)
+    recurrence: dict[str, object] | None = None
 
 
 class VerifyResult(BaseModel):

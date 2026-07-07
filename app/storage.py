@@ -20,6 +20,12 @@ class StorageError(RuntimeError):
     pass
 
 
+class FileTooLargeError(StorageError):
+    """An object exceeds the download size cap. Distinct from a transient storage
+    failure so callers can tell the member the file is too big (retrying the same
+    oversized file would loop forever) instead of a generic 'retry later'."""
+
+
 def _request(
     method: str, path: str, body: dict[str, object] | None = None, headers: dict[str, str] | None = None
 ) -> dict[str, object]:
@@ -89,8 +95,20 @@ def upload_bytes(bucket: str, path: str, data: bytes, content_type: str = "appli
         raise StorageError(f"storage upload {bucket}/{path} failed: {exc.code}") from exc
 
 
-def download_bytes(bucket: str, path: str) -> bytes:
-    """Download raw bytes with the service key (server-side), for decryption."""
+# Member files are small (identity photos and documents). This cap bounds the
+# memory a single serverless invocation buffers when it downloads an object for
+# decryption or re-encryption, so an oversized object (a member PUTs a huge file
+# straight to the bucket) cannot exhaust the function's memory.
+_MAX_DOWNLOAD_BYTES = 15 * 1024 * 1024
+
+
+def download_bytes(bucket: str, path: str, max_bytes: int = _MAX_DOWNLOAD_BYTES) -> bytes:
+    """Download raw bytes with the service key (server-side), for decryption.
+
+    Refuses an object larger than ``max_bytes`` (checked against the advertised
+    Content-Length and enforced on the actual read), so a hostile oversized upload
+    cannot be buffered whole into memory.
+    """
     if not settings.supabase_url or not settings.supabase_service_key:
         raise StorageError("storage is not configured")
     url = f"{settings.supabase_url.rstrip('/')}/storage/v1/object/{bucket}/{path}"
@@ -99,7 +117,15 @@ def download_bytes(bucket: str, path: str) -> bytes:
     req.add_header("apikey", settings.supabase_service_key)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted Supabase URL)
-            return resp.read()
+            declared = resp.headers.get("Content-Length")
+            if declared and declared.isdigit() and int(declared) > max_bytes:
+                raise FileTooLargeError(f"storage object {bucket}/{path} too large: {declared} bytes")
+            # Read one byte past the cap so an under-declared / chunked body is
+            # still caught rather than buffered whole.
+            data = resp.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise FileTooLargeError(f"storage object {bucket}/{path} exceeds {max_bytes} bytes")
+            return data
     except urllib.error.HTTPError as exc:  # pragma: no cover - network error path
         raise StorageError(f"storage download {bucket}/{path} failed: {exc.code}") from exc
 
@@ -113,11 +139,22 @@ def delete_object(bucket: str, path: str) -> None:
 
 
 def delete_prefix(bucket: str, prefix: str) -> None:
-    """Delete every object under a member's folder (RGPD erasure)."""
-    try:
-        listing = _request("POST", f"/object/list/{bucket}", {"prefix": prefix, "limit": 100})
-    except StorageError:
-        return
-    names = [str(o.get("name")) for o in listing] if isinstance(listing, list) else []
-    for name in names:
-        delete_object(bucket, f"{prefix}{name}")
+    """Delete every object under a member's folder (RGPD erasure).
+
+    Supabase caps a single list to a page; a member with more objects than the
+    page size would otherwise keep files after erasure. We list and delete in
+    pages until the folder is empty, so the erasure is complete (this also sweeps
+    orphaned ``.enc`` ciphertext left by earlier re-uploads). The pass bound is a
+    safety net against a delete that silently keeps returning the same object.
+    """
+    page = 100
+    for _ in range(1000):  # up to 100k objects per member; a safety bound, not a cap
+        try:
+            listing = _request("POST", f"/object/list/{bucket}", {"prefix": prefix, "limit": page})
+        except StorageError:
+            return
+        names = [str(o.get("name")) for o in listing] if isinstance(listing, list) else []
+        if not names:
+            return
+        for name in names:
+            delete_object(bucket, f"{prefix}{name}")

@@ -12,7 +12,7 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import audit, db
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import (
     BulkCreateUtilisateurs,
     BulkResult,
@@ -25,8 +25,6 @@ from .security import hash_password
 
 router = APIRouter(prefix="/api/v1/admin/utilisateurs", tags=["utilisateurs"])
 
-require_admin = require_roles("super_admin", "admin")
-require_super = require_roles("super_admin")
 
 _SELECT = (
     "SELECT u.id, u.email, u.role, u.actif, u.double_facteur, u.membre_id, u.dernier_login, "
@@ -50,7 +48,9 @@ def _to_out(row: dict[str, object]) -> UtilisateurOut:
 
 
 @router.get("", response_model=list[UtilisateurOut])
-def list_utilisateurs(user: Annotated[UserMe, Depends(require_admin)]) -> list[UtilisateurOut]:
+def list_utilisateurs(
+    user: Annotated[UserMe, Depends(require_permission("comptes.administrer"))]
+) -> list[UtilisateurOut]:
     rows = db.fetch_all(f"{_SELECT} ORDER BY u.role ASC, u.email ASC", (), role=user.role)
     return [_to_out(r) for r in rows]
 
@@ -58,16 +58,18 @@ def list_utilisateurs(user: Annotated[UserMe, Depends(require_admin)]) -> list[U
 @router.post("", response_model=UtilisateurOut, status_code=status.HTTP_201_CREATED)
 def create_utilisateur(
     payload: CreateUtilisateur,
-    user: Annotated[UserMe, Depends(require_super)],
+    user: Annotated[UserMe, Depends(require_permission("comptes.systeme"))],
 ) -> UtilisateurOut:
     try:
+        # An account is always created as 'membre'. Elevated access is granted
+        # afterwards only through an access group, never at account creation.
         created = db.execute(
             """
             INSERT INTO utilisateur (email, hash_mdp, role, membre_id, double_facteur, actif)
-            VALUES (%s, %s, %s, %s, %s, true)
+            VALUES (%s, %s, 'membre', %s, %s, true)
             RETURNING id
             """,
-            (payload.email, hash_password(payload.password), payload.role, payload.membre_id,
+            (payload.email, hash_password(payload.password), payload.membre_id,
              payload.double_facteur),
             role=user.role,
         )
@@ -79,14 +81,14 @@ def create_utilisateur(
     row = db.fetch_one(f"{_SELECT} WHERE u.id = %s", (new_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="read failed")
-    audit.log(user.id, user.role, "creation_compte", "utilisateur", new_id, {"role": payload.role})
+    audit.log(user.id, user.role, "creation_compte", "utilisateur", new_id, {"role": "membre"})
     return _to_out(row)
 
 
 @router.post("/lot", response_model=BulkResult)
 def bulk_create(
     payload: BulkCreateUtilisateurs,
-    user: Annotated[UserMe, Depends(require_super)],
+    user: Annotated[UserMe, Depends(require_permission("comptes.systeme"))],
 ) -> BulkResult:
     """Create access accounts in bulk; profiles are completed later by each member."""
     crees = 0
@@ -97,11 +99,11 @@ def bulk_create(
             created = db.execute(
                 """
                 INSERT INTO utilisateur (email, hash_mdp, role, actif)
-                VALUES (%s, %s, %s, true)
+                VALUES (%s, %s, 'membre', true)
                 ON CONFLICT (email) DO NOTHING
                 RETURNING id
                 """,
-                (compte.email, hash_password(compte.password), compte.role),
+                (compte.email, hash_password(compte.password)),
                 role=user.role,
             )
             if created:
@@ -118,10 +120,36 @@ def bulk_create(
 def update_utilisateur(
     utilisateur_id: str,
     payload: UpdateUtilisateur,
-    user: Annotated[UserMe, Depends(require_super)],
+    user: Annotated[UserMe, Depends(require_permission("comptes.systeme"))],
 ) -> UtilisateurOut:
     fields = payload.model_dump(exclude_unset=True)
     if fields:
+        # Capture the prior values so the audit trail records the actual change
+        # (role/actif before and after), not merely which fields were touched.
+        # UpdateUtilisateur carries no secret, so the values are safe to log.
+        before = db.fetch_one(
+            "SELECT role, actif, double_facteur FROM utilisateur WHERE id = %s",
+            (utilisateur_id,),
+            role=user.role,
+        )
+        # Availability floor: never deactivate the last active super_admin account.
+        desactive_super = (
+            fields.get("actif") is False
+            and before is not None
+            and before.get("role") == "super_admin"
+            and before.get("actif")
+        )
+        if desactive_super:
+            still = db.fetch_one(
+                "SELECT count(*) AS n FROM utilisateur WHERE role = 'super_admin' AND actif = true",
+                (),
+                role=user.role,
+            )
+            if int((still or {}).get("n", 0)) <= 1:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="impossible de desactiver le dernier super-administrateur actif",
+                )
         columns = ", ".join(f"{name} = %s" for name in fields)
         updated = db.execute(
             f"UPDATE utilisateur SET {columns} WHERE id = %s RETURNING id",
@@ -130,7 +158,15 @@ def update_utilisateur(
         )
         if not updated:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")
-        audit.log(user.id, user.role, "modification_compte", "utilisateur", utilisateur_id, {"champs": list(fields)})
+        avant = {name: (before.get(name) if before else None) for name in fields}
+        audit.log(
+            user.id,
+            user.role,
+            "modification_compte",
+            "utilisateur",
+            utilisateur_id,
+            {"champs": list(fields), "avant": avant, "apres": fields},
+        )
     row = db.fetch_one(f"{_SELECT} WHERE u.id = %s", (utilisateur_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")

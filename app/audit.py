@@ -12,12 +12,11 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 
 from . import db
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import AuditEntry, UserMe
 
 router = APIRouter(prefix="/api/v1/admin/audit", tags=["audit"])
 
-require_reader = require_roles("super_admin", "admin")
 
 
 def log(
@@ -50,7 +49,7 @@ def log(
 
 
 @router.get("", response_model=list[AuditEntry])
-def list_audit(user: Annotated[UserMe, Depends(require_reader)]) -> list[AuditEntry]:
+def list_audit(user: Annotated[UserMe, Depends(require_permission("audit.administrer"))]) -> list[AuditEntry]:
     rows = db.fetch_all(
         """
         SELECT a.id, a.acteur_role, a.action, a.objet_type, a.objet_id, a.horodatage,

@@ -16,22 +16,19 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from . import db
-from .deps import require_roles
+from .fields import LineStr, ShortStr, TextStr, TitleStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/collaboration", tags=["collaboration"])
 
-COMITE = ("super_admin", "admin", "gestionnaire")
-LECTURE = ("super_admin", "admin", "gestionnaire", "direction")
-require_comite = require_roles(*COMITE)
-require_lecture = require_roles(*LECTURE)
 
 DEFAULT_COLUMNS = ("A preparer", "En preparation", "Pret", "Publie")
 
 
 class TableauIn(BaseModel):
-    nom: str
-    description: str | None = None
+    nom: TitleStr
+    description: TextStr | None = None
 
 
 class TableauOut(BaseModel):
@@ -71,27 +68,27 @@ class TableauDetail(BaseModel):
 
 
 class CarteIn(BaseModel):
-    tableau_id: str
-    colonne_id: str
-    titre: str
-    description: str | None = None
-    type_activite: str | None = None
+    tableau_id: ShortStr
+    colonne_id: ShortStr
+    titre: TitleStr
+    description: TextStr | None = None
+    type_activite: ShortStr | None = None
     date_prevue: datetime | None = None
-    lieu: str | None = None
+    lieu: LineStr | None = None
 
 
 class CartePatch(BaseModel):
-    colonne_id: str | None = None
-    titre: str | None = None
-    description: str | None = None
-    type_activite: str | None = None
+    colonne_id: ShortStr | None = None
+    titre: TitleStr | None = None
+    description: TextStr | None = None
+    type_activite: ShortStr | None = None
     date_prevue: datetime | None = None
-    lieu: str | None = None
+    lieu: LineStr | None = None
     position: int | None = None
 
 
 class CommentaireIn(BaseModel):
-    corps: str
+    corps: TextStr
 
 
 class CommentaireOut(BaseModel):
@@ -118,7 +115,7 @@ def _carte_from_row(r: dict[str, object]) -> CarteOut:
 
 
 @router.get("/tableaux", response_model=list[TableauOut])
-def list_tableaux(user: Annotated[UserMe, Depends(require_lecture)]) -> list[TableauOut]:
+def list_tableaux(user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]) -> list[TableauOut]:
     rows = db.fetch_all(
         """
         SELECT t.id, t.nom, t.description, t.cree_le,
@@ -143,7 +140,9 @@ def list_tableaux(user: Annotated[UserMe, Depends(require_lecture)]) -> list[Tab
 
 
 @router.post("/tableaux", response_model=TableauDetail, status_code=status.HTTP_201_CREATED)
-def create_tableau(payload: TableauIn, user: Annotated[UserMe, Depends(require_comite)]) -> TableauDetail:
+def create_tableau(
+    payload: TableauIn, user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))]
+) -> TableauDetail:
     created = db.execute(
         "INSERT INTO collab_tableau (nom, description, cree_par) VALUES (%s, %s, %s) RETURNING id",
         (payload.nom, payload.description, user.id),
@@ -162,7 +161,9 @@ def create_tableau(payload: TableauIn, user: Annotated[UserMe, Depends(require_c
 
 
 @router.get("/tableaux/{tableau_id}", response_model=TableauDetail)
-def get_tableau(tableau_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> TableauDetail:
+def get_tableau(
+    tableau_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
+) -> TableauDetail:
     return _board_detail(tableau_id, user.role)
 
 
@@ -200,7 +201,9 @@ def _board_detail(tableau_id: str, role: str) -> TableauDetail:
 
 
 @router.post("/cartes", response_model=CarteOut, status_code=status.HTTP_201_CREATED)
-def create_carte(payload: CarteIn, user: Annotated[UserMe, Depends(require_comite)]) -> CarteOut:
+def create_carte(
+    payload: CarteIn, user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))]
+) -> CarteOut:
     created = db.execute(
         """
         INSERT INTO collab_carte
@@ -230,7 +233,7 @@ def create_carte(payload: CarteIn, user: Annotated[UserMe, Depends(require_comit
 
 @router.patch("/cartes/{carte_id}", response_model=CarteOut)
 def update_carte(
-    carte_id: str, payload: CartePatch, user: Annotated[UserMe, Depends(require_comite)]
+    carte_id: str, payload: CartePatch, user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))]
 ) -> CarteOut:
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
@@ -278,7 +281,7 @@ def _snapshot_version(carte_id: str, user: UserMe) -> None:
 
 @router.get("/cartes/{carte_id}/commentaires", response_model=list[CommentaireOut])
 def list_commentaires(
-    carte_id: str, user: Annotated[UserMe, Depends(require_lecture)]
+    carte_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
 ) -> list[CommentaireOut]:
     rows = db.fetch_all(
         "SELECT id, auteur_nom, corps, cree_le FROM collab_commentaire WHERE carte_id = %s ORDER BY cree_le ASC",
@@ -293,7 +296,7 @@ def list_commentaires(
 
 @router.post("/cartes/{carte_id}/commentaires", response_model=CommentaireOut, status_code=status.HTTP_201_CREATED)
 def add_commentaire(
-    carte_id: str, payload: CommentaireIn, user: Annotated[UserMe, Depends(require_comite)]
+    carte_id: str, payload: CommentaireIn, user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))]
 ) -> CommentaireOut:
     created = db.execute(
         """
@@ -312,7 +315,9 @@ def add_commentaire(
 
 
 @router.post("/cartes/{carte_id}/publier", response_model=CarteOut)
-def publier_carte(carte_id: str, user: Annotated[UserMe, Depends(require_comite)]) -> CarteOut:
+def publier_carte(
+    carte_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))]
+) -> CarteOut:
     carte = db.fetch_one(
         "SELECT id, tableau_id, titre, type_activite, date_prevue, lieu, publie FROM collab_carte WHERE id = %s",
         (carte_id,),

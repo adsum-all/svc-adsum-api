@@ -16,13 +16,11 @@ from pydantic import BaseModel, EmailStr
 
 from . import audit, channels, db
 from .config import settings
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/admin/integrations", tags=["integrations"])
 
-require_admin = require_roles("super_admin", "admin")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "direction")
 
 # Guidance shown next to each setting (rendered behind info icons in the UI).
 _GUIDE = {
@@ -73,6 +71,11 @@ _GUIDE = {
         "aide": "Signature des rappels (attestation, activités). Vide = signature globale.",
         "roter": "Exemple : Sacerdoce Royal.",
     },
+    "signature_convocation": {
+        "titre": "Signature des convocations (sondage de pointage, début d'activité)",
+        "aide": "Signature des convocations : sondage de pointage (présence) et rappel de début d'activité. Vide = signature globale.",
+        "roter": "Exemples : Le Modérateur ; Le Collège des Bergers ; L'Administration.",
+    },
     "site_officiel": {
         "titre": "Site officiel",
         "aide": "Adresse du site officiel affichée en pied de chaque message.",
@@ -122,6 +125,20 @@ _GUIDE = {
 }
 
 
+# Curated authorities the admin can pick as a signature (quick-picks in the UI).
+# The field stays free text, but these cover the sanctioned organs so a signature
+# is chosen from a coherent list rather than typed differently each time.
+SIGNATURES_SUGGEREES = [
+    "Le Modérateur",
+    "Le Collège des Bergers",
+    "L'Administration",
+    "La Direction",
+    "Le Sacerdoce Royal",
+    "Le Bureau du Sacerdoce Royal",
+    "Fraternellement, le Sacerdoce Royal",
+]
+
+
 class ValeurIn(BaseModel):
     valeur: str
 
@@ -135,24 +152,29 @@ def _mask(value: str | None) -> str:
 
 
 @router.get("")
-def list_integrations(user: Annotated[UserMe, Depends(require_admin)]) -> list[dict[str, object]]:
+def list_integrations(user: Annotated[UserMe, Depends(require_permission("integrations.administrer"))]) -> list[dict[str, object]]:
     rows = db.fetch_all("SELECT cle, valeur, categorie, maj_le FROM integration_config ORDER BY categorie, cle", (), role=user.role)
     out: list[dict[str, object]] = []
     for r in rows:
         g = _GUIDE.get(r["cle"], {})
+        est_signature = str(r["cle"]).startswith("signature")
+        # A signature or the public site URL is not a secret: show it in clear so
+        # the admin sees the exact organ / address; tokens stay masked.
+        en_clair = est_signature or str(r["cle"]) == "site_officiel"
         out.append({
             "cle": r["cle"],
             "categorie": r["categorie"],
-            "valeur_masquee": _mask(r["valeur"]),
+            "valeur_masquee": (r["valeur"] or "") if en_clair else _mask(r["valeur"]),
             "renseigne": bool(r["valeur"]),
             "maj_le": r["maj_le"].isoformat() if r["maj_le"] else None,
             "guide": g,
+            "suggestions": SIGNATURES_SUGGEREES if est_signature else [],
         })
     return out
 
 
 @router.put("/{cle}")
-def set_integration(cle: str, payload: ValeurIn, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def set_integration(cle: str, payload: ValeurIn, user: Annotated[UserMe, Depends(require_permission("integrations.administrer"))]) -> dict[str, object]:
     exists = db.fetch_one("SELECT cle FROM integration_config WHERE cle = %s", (cle,), role=user.role)
     if not exists:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown setting")
@@ -166,7 +188,7 @@ def set_integration(cle: str, payload: ValeurIn, user: Annotated[UserMe, Depends
 
 
 @router.get("/statut")
-def statut_canaux(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object]:
+def statut_canaux(user: Annotated[UserMe, Depends(require_permission("integrations.superviser"))]) -> dict[str, object]:
     """Live status of each notification channel, with a Telegram bot health check."""
     telegram_ok = False
     telegram_bot = None
@@ -196,7 +218,7 @@ class TestEmailIn(BaseModel):
 
 
 @router.post("/test-email")
-def test_email(payload: TestEmailIn, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def test_email(payload: TestEmailIn, user: Annotated[UserMe, Depends(require_permission("integrations.administrer"))]) -> dict[str, object]:
     """Send a real test e-mail through the configured pipeline and report the outcome.
 
     Lets an administrator confirm end-to-end that outgoing e-mail actually works

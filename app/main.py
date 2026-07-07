@@ -15,27 +15,41 @@ from .comptage import comptage_public_router
 from .comptage import router as comptage_router
 from .config import settings
 from .consentement import router as consentement_router
+from .consultations import router as consultations_router
 from .controle import router as controle_router
 from .demandes import router as demandes_router
 from .doublons import router as doublons_router
+from .emargement import router as emargement_router
+from .engagement import public_router as engagement_public_router
+from .engagement import router as engagement_router
+from .engagement_import import router as engagement_import_router
+from .evenements_series import router as evenements_series_router
 from .fichiers import admin_router as fichiers_admin_router
 from .fichiers import router as fichiers_router
 from .fonctions import router as fonctions_router
 from .formation import router as formation_router
 from .gestion import router as gestion_router
+from .groupes import router as groupes_router
+from .groupes_lecture import router as groupes_lecture_router
 from .inscription import router as inscription_router
+from .inscription_admin import router as inscription_admin_router
 from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
-from .middleware import SecurityHeadersMiddleware
+from .mfa import router as mfa_router
+from .middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from .modifications import router as modifications_router
 from .niveaux import router as niveaux_router
 from .notifications import router as notifications_router
 from .organisation import router as organisation_router
 from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
+from .pilotage import router as pilotage_router
 from .reference import router as reference_router
 from .rgpd import router as rgpd_router
+from .sondage import cron_router as sondage_cron_router
+from .sondage import router as sondage_router
+from .tags import router as tags_router
 from .terminaux import router as terminaux_router
 from .users import router as users_router
 
@@ -46,6 +60,7 @@ app = FastAPI(
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
@@ -55,12 +70,17 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(mfa_router)
 app.include_router(membres_router)
 app.include_router(admin_router)
+app.include_router(evenements_series_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
+app.include_router(pilotage_router)
+app.include_router(consultations_router)
+app.include_router(tags_router)
 app.include_router(analytics_router)
 app.include_router(users_router)
 app.include_router(terminaux_router)
@@ -74,6 +94,7 @@ app.include_router(fichiers_router)
 app.include_router(fichiers_admin_router)
 app.include_router(formation_router)
 app.include_router(inscription_router)
+app.include_router(inscription_admin_router)
 app.include_router(modifications_router)
 app.include_router(consentement_router)
 app.include_router(matrice_pays_router)
@@ -86,6 +107,14 @@ app.include_router(integrations_router)
 app.include_router(fonctions_router)
 app.include_router(niveaux_router)
 app.include_router(gestion_router)
+app.include_router(groupes_router)
+app.include_router(groupes_lecture_router)
+app.include_router(emargement_router)
+app.include_router(engagement_public_router)
+app.include_router(engagement_router)
+app.include_router(engagement_import_router)
+app.include_router(sondage_router)
+app.include_router(sondage_cron_router)
 
 
 @app.get("/health", tags=["system"])

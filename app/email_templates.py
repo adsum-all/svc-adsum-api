@@ -7,6 +7,8 @@ display/mono type. One builder renders both a code e-mail and a notification.
 # ruff: noqa: E501 - HTML e-mail templates have unavoidably long inline-styled lines.
 from __future__ import annotations
 
+import html as _html
+
 BG = "#eef1f6"
 INK = "#16181d"
 MUT = "#5b6170"
@@ -81,8 +83,10 @@ def render_temp_password_email(temp_password: str, validity: str = "72 heures", 
 
 def render_anniversaire_email(titre: str, corps: str, image_url: str | None = None, site: str | None = None) -> str:
     """A festive, sober birthday message on the design system."""
+    titre = _html.escape(titre)
+    corps = _html.escape(corps).replace("\n", "<br>")
     image = (
-        f'<tr><td style="padding:0 28px 4px;"><img src="{image_url}" alt="" '
+        f'<tr><td style="padding:0 28px 4px;"><img src="{_html.escape(image_url, quote=True)}" alt="" '
         f'style="width:100%;max-height:200px;object-fit:cover;border-radius:14px;display:block;"></td></tr>'
         if image_url
         else ""
@@ -120,19 +124,25 @@ def render_notification_email(
     signature: str | None = "Sacerdoce Royal",
     site: str | None = None,
 ) -> str:
+    # Escape every dynamic value before it enters the HTML: titles, bodies and CTA
+    # labels can carry member/event text, so raw interpolation would allow HTML
+    # injection in e-mail clients. Body newlines are turned into line breaks after
+    # escaping, so formatting is kept without opening an injection.
+    titre_s = _html.escape(titre)
+    corps_s = _html.escape(corps).replace("\n", "<br>")
     cta = ""
     if cta_label and cta_url:
         cta = (
             f'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 4px;"><tr>'
-            f'<td style="background:{ACC};border-radius:11px;"><a href="{cta_url}" '
+            f'<td style="background:{ACC};border-radius:11px;"><a href="{_html.escape(cta_url, quote=True)}" '
             f'style="display:inline-block;padding:12px 22px;font-family:{FONT_UI};font-weight:600;font-size:14px;'
-            f'color:#ffffff;text-decoration:none;">{cta_label}</a></td></tr></table>'
+            f'color:#ffffff;text-decoration:none;">{_html.escape(cta_label)}</a></td></tr></table>'
         )
     inner = f"""\
 <tr><td style="padding:30px 28px 8px;">
-<h1 style="margin:0 0 10px;font-family:{FONT_DISPLAY};font-weight:700;font-size:20px;color:{INK};">{titre}</h1>
-<p style="margin:0;font-family:{FONT_UI};font-size:14px;line-height:1.65;color:{MUT};">{corps}</p>
+<h1 style="margin:0 0 10px;font-family:{FONT_DISPLAY};font-weight:700;font-size:20px;color:{INK};">{titre_s}</h1>
+<p style="margin:0;font-family:{FONT_UI};font-size:14px;line-height:1.65;color:{MUT};">{corps_s}</p>
 {cta}
 {_signature_block(signature, site)}
 </td></tr>"""
-    return _shell(inner, titre)
+    return _shell(inner, titre_s)

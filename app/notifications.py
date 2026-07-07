@@ -22,14 +22,12 @@ from pydantic import BaseModel
 
 from . import audit, channels, db
 from .cron_auth import require_cron_auth
-from .deps import require_roles
 from .email_templates import render_anniversaire_email, render_notification_email
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["notifications"])
 
-require_writer = require_roles("super_admin", "admin", "gestionnaire")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 # Type -> member preference category that gates it (None = always sent, critical).
 _CATEGORY_PREF = {
@@ -65,6 +63,9 @@ _CATEGORY_PREF = {
     "modification_complement": None,
     "activite_annulee": "evenements",
     "participation_bientot_close": "rappels",
+    # Attendance survey ("sondage de pointage"): MANDATORY. None means the member
+    # can never turn it off, because presence tracking is an administration duty.
+    "sondage_activite": None,
 }
 
 # Minimal built-in fallbacks (FR/EN) used only if no template row exists yet.
@@ -90,10 +91,13 @@ _SIGNATURE_KEY = {
     "attestation_rappel": "signature_rappel",
     "attestation_expiree": "signature_rappel",
     "activite_rappel_j1": "signature_rappel",
-    "activite_rappel_start": "signature_rappel",
     "activite_annulee": "signature_information",
     "participation_bientot_close": "signature_rappel",
     "modification_complement": "signature_approbation",
+    # The attendance survey and the just-starting reminder are convocations, signed
+    # by a dedicated authority (default "Le Moderateur"), configurable by the admin.
+    "sondage_activite": "signature_convocation",
+    "activite_rappel_start": "signature_convocation",
 }
 
 
@@ -253,10 +257,23 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     )
     actifs = db.fetch_all("SELECT id, prenoms, langue FROM membre WHERE statut = 'actif'", (), role=role)
     lien_app = channels.integration_value("site_officiel") or "https://adsum-web-membre.pages.dev"
+    from .visibilite import CIBLE_PREDICATE
+
     for ev in evs:
         date_str = ev["debut"].strftime("%d/%m/%Y") if ev["debut"] else ""
         heure_str = ev["debut"].strftime("%Hh%M") if ev["debut"] else ""
-        for m in actifs:
+        # Only the members TARGETED by this event receive the reminder: a restricted
+        # event (commission/intendance/coordination/tribu) never leaks its title and
+        # time to the whole base. General events still reach everyone.
+        cibles = db.fetch_all(
+            "SELECT m.id, m.prenoms, m.langue FROM membre m "
+            "LEFT JOIN intendance mi ON mi.id = m.intendance_id "
+            "JOIN evenement e ON e.id = %s "
+            f"WHERE m.statut = 'actif' AND {CIBLE_PREDICATE}",
+            (str(ev["id"]),),
+            role=role,
+        )
+        for m in cibles:
             ctx = {"prenom": _prenom(m), "titre": ev["titre"], "date": date_str, "heure": heure_str, "lien": lien_app}
             if notifier(str(m["id"]), role, "activite_rappel_j1", ctx, ref_id=str(ev["id"]), dedup=True):
                 result["rappels_j1"] += 1
@@ -284,8 +301,11 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
 
     # 3) Monday: weekly agenda of the coming week.
     if weekday == 0:
+        # Shared digest to every active member, so it lists only community-wide
+        # events; a targeted event never appears in a broadcast agenda.
         semaine = db.fetch_all(
-            "SELECT titre, debut FROM evenement WHERE debut BETWEEN now() AND now() + interval '7 days' ORDER BY debut ASC",
+            "SELECT titre, debut FROM evenement WHERE cible_type = 'general' "
+            "AND debut BETWEEN now() AND now() + interval '7 days' ORDER BY debut ASC",
             (),
             role=role,
         )
@@ -299,7 +319,8 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     # 4) Sunday: recap of the past week.
     if weekday == 6:
         passe = db.fetch_all(
-            "SELECT titre FROM evenement WHERE debut BETWEEN now() - interval '7 days' AND now() ORDER BY debut ASC",
+            "SELECT titre FROM evenement WHERE cible_type = 'general' "
+            "AND debut BETWEEN now() - interval '7 days' AND now() ORDER BY debut ASC",
             (),
             role=role,
         )
@@ -417,7 +438,7 @@ def cron_quotidien(authorization: Annotated[str | None, Header()] = None) -> dic
 
 
 @router.post("/admin/notifications/declencher-quotidien")
-def declencher_quotidien(user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def declencher_quotidien(user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, object]:
     """Run the daily job on demand (admin), for testing."""
     result = _run_quotidien(role=user.role)
     audit.log(user.id, user.role, "declenchement_notifications", "membre", None, result)
@@ -431,7 +452,7 @@ class TypeToggle(BaseModel):
 
 
 @router.get("/admin/notifications/types")
-def list_types(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_types(user: Annotated[UserMe, Depends(require_permission("notifications.consulter"))]) -> list[dict[str, object]]:
     rows = db.fetch_all("SELECT cle, libelle, categorie, actif, scheduled, sensibilite FROM type_notification ORDER BY categorie, libelle", (), role=user.role)
     return [
         {"cle": r["cle"], "libelle": r["libelle"], "categorie": r["categorie"], "actif": bool(r["actif"]),
@@ -441,7 +462,7 @@ def list_types(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str
 
 
 @router.put("/admin/notifications/types/{cle}")
-def toggle_type(cle: str, payload: TypeToggle, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def toggle_type(cle: str, payload: TypeToggle, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, object]:
     current = db.fetch_one("SELECT sensibilite FROM type_notification WHERE cle = %s", (cle,), role=user.role)
     if not current:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown type")
@@ -461,7 +482,7 @@ def toggle_type(cle: str, payload: TypeToggle, user: Annotated[UserMe, Depends(r
 
 @router.get("/admin/notifications/echecs")
 def list_echecs(
-    user: Annotated[UserMe, Depends(require_staff)], limit: int = 100, inclure_resolus: bool = False
+    user: Annotated[UserMe, Depends(require_permission("notifications.consulter"))], limit: int = 100, inclure_resolus: bool = False
 ) -> dict[str, object]:
     """Delivery-failure observability: the recent failed channel sends so the
     administration can see who did not receive a message and follow up."""
@@ -494,7 +515,7 @@ def list_echecs(
 
 
 @router.post("/admin/notifications/echecs/{echec_id}/resolu", status_code=status.HTTP_204_NO_CONTENT)
-def resoudre_echec(echec_id: str, user: Annotated[UserMe, Depends(require_writer)]) -> None:
+def resoudre_echec(echec_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> None:
     """Mark a delivery failure as handled so it leaves the open list."""
     row = db.execute("UPDATE notification_echec SET resolu = true WHERE id = %s RETURNING id", (echec_id,), role=user.role)
     if not row:
@@ -509,10 +530,25 @@ class LangueIn(BaseModel):
 
 
 @router.put("/membres/me/langue")
-def set_langue(payload: LangueIn, user: Annotated[UserMe, Depends(require_roles("membre", "super_admin", "admin", "gestionnaire", "controleur", "direction"))]) -> dict[str, object]:
+def set_langue(payload: LangueIn, user: Annotated[UserMe, Depends(require_permission("membres.self"))]) -> dict[str, object]:
     if payload.langue not in ("fr", "en"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="langue must be fr or en")
     if not user.membre_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is not linked to a member")
     db.execute("UPDATE membre SET langue = %s WHERE id = %s", (payload.langue, user.membre_id), role=user.role)
     return {"ok": True, "langue": payload.langue}
+
+
+class ThemeIn(BaseModel):
+    theme: str
+
+
+@router.put("/membres/me/theme")
+def set_theme(payload: ThemeIn, user: Annotated[UserMe, Depends(require_permission("membres.self"))]) -> dict[str, object]:
+    """The member's display theme: light, dark or system (follow the device)."""
+    if payload.theme not in ("light", "dark", "system"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="theme must be light, dark or system")
+    if not user.membre_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is not linked to a member")
+    db.execute("UPDATE membre SET theme = %s WHERE id = %s", (payload.theme, user.membre_id), role=user.role)
+    return {"ok": True, "theme": payload.theme}

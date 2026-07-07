@@ -7,6 +7,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ADSUM_", extra="ignore")
 
+    # Deployment environment. Set ADSUM_ENVIRONMENT=production on the live
+    # deployment: it turns on fail-closed guards (e.g. a dedicated document
+    # encryption key becomes mandatory instead of a dev-only derived fallback).
+    environment: str = "development"
     # PostgreSQL connection (plain postgresql:// form), Supabase Paris in production.
     database_url: str = ""
     # JWT signing
@@ -41,9 +45,10 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
     storage_bucket_photos: str = "member-photos"
     storage_bucket_documents: str = "member-documents"
-    # Encryption key for identity documents at rest (Fernet). If unset, a key is
-    # derived from jwt_secret so encryption still works; set a dedicated key
-    # (ADSUM_DOC_ENCRYPTION_KEY) in production for proper key separation.
+    # Encryption key for identity documents at rest (Fernet). Mandatory in
+    # production: when environment is production the API fails closed if it is
+    # unset. Outside production a key is derived from jwt_secret so local
+    # development still works, without proper key separation.
     doc_encryption_key: str = ""
     # Retired keys kept for decryption during a rotation (comma-separated Fernet
     # keys). New data is always encrypted with doc_encryption_key.
@@ -64,6 +69,22 @@ class Settings(BaseSettings):
     sms_provider: str = ""
     # Daily cron shared secret (Vercel sends it as an Authorization bearer header).
     cron_secret: str = ""
+    # Two-factor authentication. mfa_trust_days is how long a member's "trust this
+    # device" choice skips the login code. mfa_baseline_enforced, when true, makes
+    # the 30-day / new-device verification mandatory for EVERY member even without
+    # opting in; it is off by default so 2FA is opt-in first and no member is locked
+    # out on rollout, and can be switched on (ADSUM_MFA_BASELINE_ENFORCED=true) once
+    # code delivery is confirmed reliable for everyone.
+    mfa_trust_days: int = 30
+    # Reinforced mode (member opted in via mfa_actif): a shorter trust window, so a
+    # trusted device is re-verified more often. 2FA itself is always on when the
+    # baseline is enforced; this is a real, honest strengthening the member controls.
+    mfa_trust_days_strict: int = 7
+    mfa_baseline_enforced: bool = False
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() in ("production", "prod")
 
     @property
     def database_dsn(self) -> str:
@@ -71,3 +92,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Fail closed at startup: the JWT secret signs access tokens and derives the OTP and
+# QR keys. An empty secret would make tokens forgeable and one-time codes computable
+# offline (account takeover), so the API refuses to run without it.
+if not settings.jwt_secret.strip():
+    raise RuntimeError("ADSUM_JWT_SECRET is required and must not be empty (fail-closed).")

@@ -15,14 +15,12 @@ from pydantic import BaseModel, Field
 from . import db, identifiants
 from .auth import current_user
 from .demandes_catalogue import _TRANSITIONS, CATALOGUE, STATUTS_LISIBLES
-from .deps import require_roles
+from .fields import ShortStr, TextStr, TitleStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["demandes"])
 
-STAFF = ("super_admin", "admin", "gestionnaire")
-require_staff = require_roles(*STAFF)
-require_lecture = require_roles("super_admin", "admin", "gestionnaire", "direction")
 
 
 def _require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str, str]:
@@ -32,34 +30,34 @@ def _require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str
 
 
 class DemandeIn(BaseModel):
-    type: str = "question"
-    sujet: str
-    champ_concerne: str | None = None
-    message: str
-    categorie: str | None = None
-    sous_categorie: str | None = None
+    type: ShortStr = "question"
+    sujet: TitleStr
+    champ_concerne: ShortStr | None = None
+    message: TextStr
+    categorie: ShortStr | None = None
+    sous_categorie: ShortStr | None = None
     # Optional supporting document: never required to submit (absolute rule).
-    document_id: str | None = None
+    document_id: ShortStr | None = None
 
 
 class MessageIn(BaseModel):
-    corps: str
+    corps: TextStr
     # Optional supporting document uploaded through the standard document flow,
     # attached to this very ticket message (rule: files live inside the thread).
-    document_id: str | None = None
+    document_id: ShortStr | None = None
 
 
 class DemandePatch(BaseModel):
-    statut: str | None = None
-    champs_deverrouilles: list[str] | None = None
-    motif: str | None = None
+    statut: ShortStr | None = None
+    champs_deverrouilles: list[ShortStr] | None = None
+    motif: TextStr | None = None
     # Response window (days) granted with an unlock; falls back to the central
     # admin parameter deblocage_delai_jours when omitted.
     delai_jours: int | None = Field(default=None, ge=1, le=90)
 
 
 class PieceRequeteIn(BaseModel):
-    description: str
+    description: TextStr
 
 
 class MessageOut(BaseModel):
@@ -276,6 +274,26 @@ def my_demandes(ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) 
     return [_demande_row(r) for r in rows]
 
 
+def _validated_document_id(document_id: str | None, membre_id: str, role: str) -> str | None:
+    """Ensure an attached document belongs to the current member, else reject.
+
+    Without this check a member could attach any document_id, including another
+    member's, to their own ticket: the staff agent handling it would then see and
+    could open a third party's identity file from this thread. Ownership is not
+    verified elsewhere on this write path, so it is enforced here.
+    """
+    if not document_id:
+        return None
+    owns = db.fetch_one(
+        "SELECT 1 FROM document WHERE id = %s AND membre_id = %s",
+        (document_id, membre_id),
+        role=role,
+    )
+    if not owns:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown document")
+    return document_id
+
+
 @router.post("/membres/me/demandes", response_model=DemandeDetail, status_code=status.HTTP_201_CREATED)
 def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) -> DemandeDetail:
     membre_id, role, _ = ctx
@@ -294,9 +312,10 @@ def create_demande(payload: DemandeIn, ctx: Annotated[tuple[str, str, str], Depe
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="request not created")
     did = str(created["id"])
+    doc_id = _validated_document_id(payload.document_id, membre_id, role)
     db.execute(
         "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id) VALUES (%s, 'membre', %s, %s, %s)",
-        (did, auteur, payload.message, payload.document_id),
+        (did, auteur, payload.message, doc_id),
         role=role,
     )
     out = _demande_row(created)
@@ -339,10 +358,11 @@ def my_demande_reply(
         "SELECT trim(coalesce(prenoms,'')||' '||coalesce(nom,'')) AS nom FROM membre WHERE id = %s", (membre_id,), role=role
     )
     auteur = (nom_row["nom"] if nom_row and nom_row.get("nom") else "Membre") or "Membre"
+    doc_id = _validated_document_id(payload.document_id, membre_id, role)
     created = db.execute(
         "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id) VALUES (%s, 'membre', %s, %s, %s) "
         "RETURNING id, auteur_type, auteur_nom, corps, cree_le",
-        (demande_id, auteur, payload.corps, payload.document_id),
+        (demande_id, auteur, payload.corps, doc_id),
         role=role,
     )
     db.execute("UPDATE demande SET maj_le = now() WHERE id = %s", (demande_id,), role=role)
@@ -362,7 +382,7 @@ def my_demande_reply(
 
 @router.get("/admin/demandes", response_model=list[DemandeOut])
 def admin_demandes(
-    user: Annotated[UserMe, Depends(require_lecture)],
+    user: Annotated[UserMe, Depends(require_permission("demandes.superviser"))],
     statut: str | None = None,
     categorie: str | None = None,
     q: str | None = None,
@@ -399,7 +419,7 @@ def admin_demandes(
 
 
 @router.get("/admin/demandes/{demande_id}", response_model=DemandeDetailAdmin)
-def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lecture)]) -> DemandeDetailAdmin:
+def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_permission("demandes.superviser"))]) -> DemandeDetailAdmin:
     row = db.fetch_one(
         """
         SELECT d.id, d.numero, d.reference, d.type, d.sujet, d.champ_concerne, d.statut, d.categorie, d.sous_categorie, d.motif_cloture, d.cree_le, d.pris_en_charge_le, d.clos_le, d.echeance_reponse,
@@ -428,11 +448,11 @@ def admin_demande(demande_id: str, user: Annotated[UserMe, Depends(require_lectu
 
 
 @router.post("/admin/demandes/{demande_id}/messages", response_model=MessageOut, status_code=status.HTTP_201_CREATED)
-def admin_reply(demande_id: str, payload: MessageIn, user: Annotated[UserMe, Depends(require_staff)]) -> MessageOut:
+def admin_reply(demande_id: str, payload: MessageIn, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]) -> MessageOut:
     created = db.execute(
-        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id) VALUES (%s, 'staff', 'Administration', %s, %s) "
+        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, document_id, auteur_id) VALUES (%s, 'staff', 'Administration', %s, %s, %s) "
         "RETURNING id, cree_le",
-        (demande_id, payload.corps, payload.document_id),
+        (demande_id, payload.corps, payload.document_id, user.id),
         role=user.role,
     )
     db.execute("UPDATE demande SET maj_le = now(), statut = 'en_cours' WHERE id = %s AND statut = 'ouverte'", (demande_id,), role=user.role)
@@ -447,7 +467,7 @@ def admin_reply(demande_id: str, payload: MessageIn, user: Annotated[UserMe, Dep
 
 
 @router.post("/admin/demandes/{demande_id}/prendre-en-charge", response_model=DemandeOut)
-def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> DemandeOut:
+def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]) -> DemandeOut:
     """Explicitly take a request over: records who and when, moves an open
     request to 'en cours', writes the timeline entry and informs the member."""
     from . import audit
@@ -479,7 +499,7 @@ def admin_prendre_en_charge(demande_id: str, user: Annotated[UserMe, Depends(req
 
 @router.post("/admin/demandes/{demande_id}/demander-piece", response_model=DemandeOut)
 def admin_demander_piece(
-    demande_id: str, payload: PieceRequeteIn, user: Annotated[UserMe, Depends(require_staff)]
+    demande_id: str, payload: PieceRequeteIn, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]
 ) -> DemandeOut:
     """Ask the member for a supporting document INSIDE the same ticket: staff
     message describing the expected document, state moves to pieces_demandees,
@@ -492,8 +512,8 @@ def admin_demander_piece(
     if str(row["statut"]) in ("resolue", "refusee"):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="request is closed")
     db.execute(
-        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps) VALUES (%s, 'staff', 'Administration', %s)",
-        (demande_id, f"Pièce demandée : {payload.description}"),
+        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps, auteur_id) VALUES (%s, 'staff', 'Administration', %s, %s)",
+        (demande_id, f"Pièce demandée : {payload.description}", user.id),
         role=user.role,
     )
     db.execute("UPDATE demande SET statut = 'pieces_demandees', maj_le = now() WHERE id = %s", (demande_id,), role=user.role)
@@ -512,7 +532,7 @@ def admin_demander_piece(
 
 
 @router.patch("/admin/demandes/{demande_id}", response_model=DemandeOut)
-def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe, Depends(require_staff)]) -> DemandeOut:
+def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe, Depends(require_permission("demandes.gerer"))]) -> DemandeOut:
     from . import audit
 
     if payload.statut:
@@ -539,6 +559,14 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
             (payload.statut, closing, payload.motif, closing, demande_id),
             role=user.role,
         )
+        if closing:
+            # A closed correction re-locks the member's fields: what was unlocked for
+            # a now resolved/refused request must no longer be self-editable.
+            db.execute(
+                "UPDATE membre SET champs_deverrouilles = NULL WHERE id = (SELECT membre_id FROM demande WHERE id = %s)",
+                (demande_id,),
+                role=user.role,
+            )
         libelle = STATUTS_LISIBLES.get(payload.statut, payload.statut)
         _system_message(demande_id, user.role, f"Statut : {libelle}." + (f" Motif : {payload.motif}" if closing and payload.motif else ""))
         # A ticket linked to an attestation task carries the same truth: closing
@@ -621,7 +649,7 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
 
 
 @router.get("/admin/deblocage/elements")
-def catalogue_deblocage(user: Annotated[UserMe, Depends(require_lecture)]) -> list[dict[str, str]]:
+def catalogue_deblocage(user: Annotated[UserMe, Depends(require_permission("deblocage.superviser"))]) -> list[dict[str, str]]:
     """Extensible catalog of unlockable elements (fields, photo, documents)."""
     from .deblocage import ELEMENTS
 

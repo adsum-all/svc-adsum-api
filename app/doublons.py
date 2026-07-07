@@ -20,13 +20,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from . import audit, db
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/admin/doublons", tags=["doublons"])
 
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
-require_writer = require_roles("super_admin", "admin")
+# The side-by-side comparison reveals every personal field of two members at once
+# (e-mail, phone, date of birth, full address): keep it to the member-managing
+# roles, never a field scanner (controleur) nor read-only supervision (direction).
 
 # Signal weights, summing to 1.0. Name and date of birth dominate; the address
 # adds trigram nuance; the city is a weak corroborating signal. A second set is
@@ -123,7 +124,7 @@ _SCAN_SQL = """
 
 
 @router.post("/scan")
-def scan(user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def scan(user: Annotated[UserMe, Depends(require_permission("doublons.administrer"))]) -> dict[str, object]:
     """Run the similarity scan and log every pair at or above the threshold."""
     seuil = _seuil(user.role)
     rows = db.fetch_all(_SCAN_SQL, (), role=user.role)
@@ -149,7 +150,7 @@ def scan(user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
 
 
 @router.get("")
-def list_detections(user: Annotated[UserMe, Depends(require_staff)], statut: str | None = None) -> list[dict[str, object]]:
+def list_detections(user: Annotated[UserMe, Depends(require_permission("doublons.consulter"))], statut: str | None = None) -> list[dict[str, object]]:
     """Logged detections, most similar first, with both members' summary."""
     where = "WHERE d.statut = %s" if statut else ""
     params: tuple[object, ...] = (statut,) if statut else ()
@@ -183,7 +184,7 @@ def list_detections(user: Annotated[UserMe, Depends(require_staff)], statut: str
 
 
 @router.get("/comparaison")
-def comparaison(a: str, b: str, user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object]:
+def comparaison(a: str, b: str, user: Annotated[UserMe, Depends(require_permission("doublons.gerer"))]) -> dict[str, object]:
     """Side-by-side comparison of two members with per-field match flags."""
     ma = db.fetch_one(f"SELECT {_DISPLAY} FROM membre WHERE id = %s", (a,), role=user.role)
     mb = db.fetch_one(f"SELECT {_DISPLAY} FROM membre WHERE id = %s", (b,), role=user.role)
@@ -208,7 +209,7 @@ def _s(v: object) -> str | None:
 
 
 @router.post("/{detection_id}/statut")
-def decider(detection_id: str, payload: StatutIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def decider(detection_id: str, payload: StatutIn, user: Annotated[UserMe, Depends(require_permission("doublons.administrer"))]) -> dict[str, object]:
     """Confirm or dismiss a detection."""
     if payload.statut not in ("nouveau", "confirme", "ignore"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid statut")
@@ -224,12 +225,12 @@ def decider(detection_id: str, payload: StatutIn, user: Annotated[UserMe, Depend
 
 
 @router.get("/seuil")
-def get_seuil(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, float]:
+def get_seuil(user: Annotated[UserMe, Depends(require_permission("doublons.consulter"))]) -> dict[str, float]:
     return {"seuil": _seuil(user.role)}
 
 
 @router.put("/seuil")
-def set_seuil(payload: SeuilIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, float]:
+def set_seuil(payload: SeuilIn, user: Annotated[UserMe, Depends(require_permission("doublons.administrer"))]) -> dict[str, float]:
     if not 0.0 <= payload.seuil <= 1.0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="seuil must be between 0 and 1")
     db.execute(

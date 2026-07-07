@@ -23,14 +23,12 @@ from . import audit, channels, db
 from .auth import current_user
 from .config import settings
 from .cron_auth import require_cron_auth
-from .deps import require_roles
 from .email_templates import render_anniversaire_email
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["anniversaires"])
 
-require_writer = require_roles("super_admin", "admin", "gestionnaire")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 
 def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
@@ -49,7 +47,7 @@ class ModeleIn(BaseModel):
 
 
 @router.get("/admin/modeles/anniversaire")
-def get_modele(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object]:
+def get_modele(user: Annotated[UserMe, Depends(require_permission("modeles.consulter"))]) -> dict[str, object]:
     row = db.fetch_one("SELECT titre, corps, image_url, actif FROM modele_message WHERE cle = 'anniversaire'", (), role=user.role)
     if not row:
         return {"titre": "", "corps": "", "image_url": None, "actif": True}
@@ -57,7 +55,7 @@ def get_modele(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, obj
 
 
 @router.put("/admin/modeles/anniversaire")
-def set_modele(payload: ModeleIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def set_modele(payload: ModeleIn, user: Annotated[UserMe, Depends(require_permission("modeles.gerer"))]) -> dict[str, object]:
     if not payload.titre.strip() or not payload.corps.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="titre and corps required")
     db.execute(
@@ -138,7 +136,7 @@ def cron_anniversaires(authorization: Annotated[str | None, Header()] = None) ->
 
 
 @router.post("/admin/anniversaires/declencher")
-def declencher_manuel(user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def declencher_manuel(user: Annotated[UserMe, Depends(require_permission("anniversaires.gerer"))]) -> dict[str, object]:
     """Manually run the birthday job (admin), for testing or a missed day."""
     result = _run_anniversaires(role=user.role)
     audit.log(user.id, user.role, "declenchement_anniversaires", "membre", None, result)

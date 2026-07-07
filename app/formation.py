@@ -16,15 +16,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import audit, db, visibilite
+from . import audit, db, ratelimit, visibilite
 from .auth import current_user
-from .deps import require_roles
+from .fields import LineStr, LongTextStr, ShortStr, TitleStr
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["formation"])
 
-require_event_writer = require_roles("super_admin", "admin", "gestionnaire")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 
 def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
@@ -44,15 +43,15 @@ def _fenetre_heures(role: str) -> int:
 # --- Admin: session link and live session ----------------------------------
 
 class SessionPatch(BaseModel):
-    lien_session: str | None = None
-    liens: list[str] | None = None
+    lien_session: LineStr | None = None
+    liens: list[LineStr] | None = None
     session_ouverte: bool | None = None
     type_diffusion: str | None = Field(default=None, pattern="^(embed|externe|aucun)$")
     visibilite: str | None = Field(default=None, pattern="^(public|membres|prive)$")
 
 
 @router.patch("/admin/evenements/{evenement_id}/session")
-def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
+def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))]) -> dict[str, object]:
     """Set the session links, broadcast kind/visibility, and open or close the live session."""
     import json
 
@@ -94,7 +93,7 @@ def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe
 
 
 @router.post("/admin/evenements/{evenement_id}/test-diffusion")
-def test_diffusion(evenement_id: str, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
+def test_diffusion(evenement_id: str, user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))]) -> dict[str, object]:
     """Send a 'live broadcast test' notification so members can verify the stream view.
 
     The message clearly flags itself as a test. Not deduplicated: each explicit
@@ -105,6 +104,14 @@ def test_diffusion(evenement_id: str, user: Annotated[UserMe, Depends(require_ev
     ev = db.fetch_one("SELECT titre FROM evenement WHERE id = %s", (evenement_id,), role=user.role)
     if not ev:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
+    # This test fans out to every active member across all channels (including the
+    # paid WhatsApp channel), so cap it to one send per event and per hour to stop
+    # a looped trigger from amplifying notifications or running up cost.
+    if not ratelimit.throttle_action(f"test-diffusion:{evenement_id}", 1, 3600):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="test de diffusion deja envoye pour cet evenement dans la derniere heure",
+        )
     sent = 0
     for m in db.fetch_all("SELECT id FROM membre WHERE statut = 'actif'", (), role=user.role):
         if notifier(str(m["id"]), user.role, "activite_test_diffusion", {"titre": ev["titre"]}, ref_id=evenement_id, dedup=False):
@@ -129,18 +136,18 @@ def _notifier_session_ouverte(evenement_id: str, lien: str, role: str) -> None:
 # --- Admin: questionnaire builder -------------------------------------------
 
 class QuestionIn(BaseModel):
-    libelle: str
-    type: str = "texte"  # 'texte' | 'choix' | 'note'
-    options: list[str] = []
+    libelle: TitleStr
+    type: ShortStr = "texte"  # 'texte' | 'choix' | 'note'
+    options: list[LineStr] = []
 
 
 class QuestionnaireIn(BaseModel):
-    titre: str = "Questionnaire de session"
-    questions: list[QuestionIn]
+    titre: TitleStr = "Questionnaire de session"
+    questions: list[QuestionIn] = Field(max_length=100)
 
 
 @router.put("/admin/evenements/{evenement_id}/questionnaire")
-def definir_questionnaire(evenement_id: str, payload: QuestionnaireIn, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, object]:
+def definir_questionnaire(evenement_id: str, payload: QuestionnaireIn, user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))]) -> dict[str, object]:
     """Create or replace the questionnaire attached to an event."""
     if not payload.questions:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="at least one question required")
@@ -175,32 +182,55 @@ def _questions(qid: str, role: str) -> list[dict[str, object]]:
 
 
 @router.get("/admin/evenements/{evenement_id}/questionnaire")
-def get_questionnaire_admin(evenement_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object] | None:
+def get_questionnaire_admin(evenement_id: str, user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))]) -> dict[str, object] | None:
     q = db.fetch_one("SELECT id, titre FROM questionnaire WHERE evenement_id = %s", (evenement_id,), role=user.role)
     if not q:
         return None
     return {"id": str(q["id"]), "titre": q["titre"], "questions": _questions(str(q["id"]), user.role)}
 
 
+# Diffusion threshold: below this number of answers, no individual content (rating
+# distribution or comment) is revealed, so a small cohort cannot be re-identified.
+_SEUIL_DIFFUSION = 3
+
+
 @router.get("/admin/evenements/{evenement_id}/reponses")
-def get_reponses(evenement_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
-    """All member responses to an event questionnaire."""
-    rows = db.fetch_all(
-        """
-        SELECT r.reponses, r.soumis_le, trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre_nom, m.matricule
-        FROM reponse_questionnaire r
-        JOIN questionnaire q ON q.id = r.questionnaire_id
-        JOIN membre m ON m.id = r.membre_id
-        WHERE q.evenement_id = %s
-        ORDER BY r.soumis_le DESC
-        """,
-        (evenement_id,),
-        role=user.role,
-    )
-    return [
-        {"membre_nom": r["membre_nom"], "matricule": r["matricule"], "reponses": r["reponses"], "soumis_le": r["soumis_le"].isoformat() if r["soumis_le"] else None}
-        for r in rows
-    ]
+def get_reponses(evenement_id: str, user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))]) -> dict[str, object]:
+    """Anonymous aggregate of an activity's questionnaire.
+
+    The answers carry NO member link, so nothing here can attribute a rating or a
+    comment to a person. Ratings are returned as a mean and a 1..5 distribution;
+    free answers as an unordered, author-less list. Below the diffusion threshold
+    the content stays hidden to protect small cohorts."""
+    q = db.fetch_one("SELECT id, titre FROM questionnaire WHERE evenement_id = %s", (evenement_id,), role=user.role)
+    if not q:
+        return {"total": 0, "seuil": _SEUIL_DIFFUSION, "seuil_atteint": False, "anonyme": True, "questions": []}
+    qid = str(q["id"])
+    questions = _questions(qid, user.role)
+    rows = db.fetch_all("SELECT reponses FROM reponse_questionnaire WHERE questionnaire_id = %s", (qid,), role=user.role)
+    total = len(rows)
+    base = {"total": total, "seuil": _SEUIL_DIFFUSION, "titre": q["titre"], "anonyme": True}
+    if total < _SEUIL_DIFFUSION:
+        # Reveal only the count and the question list, never the content, so 1 or 2
+        # answers can never be pinned to the 1 or 2 people who could have sent them.
+        return {**base, "seuil_atteint": False,
+                "questions": [{"id": x["id"], "libelle": x["libelle"], "type": x["type"]} for x in questions]}
+    agg: list[dict[str, object]] = []
+    for x in questions:
+        vals = [str((r["reponses"] or {}).get(x["id"], "")).strip() for r in rows]
+        vals = [v for v in vals if v]
+        if x["type"] == "note":
+            nums = [int(v) for v in vals if v.isdigit() and 1 <= int(v) <= 5]
+            moyenne = round(sum(nums) / len(nums), 2) if nums else None
+            distribution = {str(k): nums.count(k) for k in range(1, 6)}
+            agg.append({"id": x["id"], "libelle": x["libelle"], "type": "note",
+                        "reponses": len(nums), "moyenne": moyenne, "distribution": distribution})
+        else:
+            # Free text / choice: an author-less list. No order that could correlate
+            # with an arrival sequence carries meaning (no timestamp, no member link).
+            agg.append({"id": x["id"], "libelle": x["libelle"], "type": x["type"],
+                        "reponses": len(vals), "valeurs": vals})
+    return {**base, "seuil_atteint": True, "questions": agg}
 
 
 # --- Member: answer the questionnaire ---------------------------------------
@@ -226,7 +256,9 @@ def get_questionnaire_membre(evenement_id: str, ctx: Annotated[tuple[str, str], 
         (str(fenetre), evenement_id),
         role=role,
     )
-    already = db.fetch_one("SELECT 1 FROM reponse_questionnaire WHERE questionnaire_id = %s AND membre_id = %s", (str(q["id"]), membre_id), role=role)
+    # "Already answered" is read from the member-side consumption record, never from
+    # the answer content (which no longer carries a member link).
+    already = db.fetch_one("SELECT 1 FROM questionnaire_droit WHERE questionnaire_id = %s AND membre_id = %s", (str(q["id"]), membre_id), role=role)
     disponible = bool(window and window["ouvert"]) and not already
     return {
         "disponible": disponible,
@@ -238,7 +270,9 @@ def get_questionnaire_membre(evenement_id: str, ctx: Annotated[tuple[str, str], 
 
 
 class ReponseIn(BaseModel):
-    reponses: dict[str, str]
+    # Answer values are free text: bound both the number of entries and each
+    # value's length so a single submission cannot carry an unbounded payload.
+    reponses: dict[ShortStr, LongTextStr] = Field(max_length=200)
 
 
 @router.post("/membres/me/evenements/{evenement_id}/questionnaire", status_code=status.HTTP_201_CREATED)
@@ -262,10 +296,21 @@ def repondre_questionnaire(evenement_id: str, payload: ReponseIn, ctx: Annotated
     )
     if not window or not window["ouvert"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="questionnaire window closed")
+    # ANONYMITY BY DESIGN. In a single atomic statement: claim the member's one-time
+    # right to answer (questionnaire_droit, member-keyed, NO content) and, only if the
+    # claim succeeds, store the answers WITHOUT any member link (reponse_questionnaire
+    # carries no member_id and only a coarse date). The member_id therefore never sits
+    # next to a note or a comment, and the two rows share no persisted key: the note and
+    # comment can never be attributed to the member, while duplicates are still blocked.
     row = db.execute(
         """
-        INSERT INTO reponse_questionnaire (questionnaire_id, membre_id, reponses) VALUES (%s, %s, %s::jsonb)
-        ON CONFLICT (questionnaire_id, membre_id) DO NOTHING
+        WITH claim AS (
+            INSERT INTO questionnaire_droit (questionnaire_id, membre_id) VALUES (%s, %s)
+            ON CONFLICT (questionnaire_id, membre_id) DO NOTHING
+            RETURNING questionnaire_id
+        )
+        INSERT INTO reponse_questionnaire (questionnaire_id, reponses)
+        SELECT questionnaire_id, %s::jsonb FROM claim
         RETURNING id
         """,
         (str(q["id"]), membre_id, json.dumps(payload.reponses)),
@@ -291,13 +336,20 @@ class PreferencesIn(BaseModel):
     cal_vip: bool = True  # show VIP birthdays in the calendar by default
     cal_responsables: bool = False  # responsables birthdays off by default
     cal_commission: bool = False  # own-commission birthdays behind a filter
+    cal_tribu: bool = False  # own-tribe birthdays behind a filter
+    cal_coordination: bool = False  # own-coordination birthdays behind a filter
+    cal_intendance: bool = False  # own-intendance birthdays behind a filter
 
 
 _PREF_COLS = (
     "evenements", "demandes", "rappels", "email", "telegram", "whatsapp", "sms",
     "anniversaire", "anniv_pairs", "cal_vip", "cal_responsables", "cal_commission",
+    "cal_tribu", "cal_coordination", "cal_intendance",
 )
-_PREF_OFF_DEFAULT = ("whatsapp", "sms", "cal_responsables", "cal_commission")
+_PREF_OFF_DEFAULT = (
+    "whatsapp", "sms", "cal_responsables", "cal_commission",
+    "cal_tribu", "cal_coordination", "cal_intendance",
+)
 
 
 @router.get("/membres/me/preferences-notification")
@@ -335,12 +387,12 @@ class FenetreIn(BaseModel):
 
 
 @router.get("/admin/parametres/questionnaire-fenetre")
-def get_fenetre(user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, int]:
+def get_fenetre(user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> dict[str, int]:
     return {"heures": _fenetre_heures(user.role)}
 
 
 @router.put("/admin/parametres/questionnaire-fenetre")
-def set_fenetre(payload: FenetreIn, user: Annotated[UserMe, Depends(require_event_writer)]) -> dict[str, int]:
+def set_fenetre(payload: FenetreIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, int]:
     if not 1 <= payload.heures <= 168:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="heures must be between 1 and 168")
     db.execute(

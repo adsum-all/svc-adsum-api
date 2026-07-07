@@ -18,13 +18,11 @@ from pydantic import BaseModel
 
 from . import audit, db, identifiants
 from .auth import current_user
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["attestation"])
 
-require_writer = require_roles("super_admin", "admin", "gestionnaire")
-require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
 
 DELAI_JOURS = 30  # deadline to return the signed attestation, from the approval date
 
@@ -111,7 +109,7 @@ class PaysPatch(BaseModel):
 
 
 @router.get("/admin/pays-signature")
-def list_pays(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_pays(user: Annotated[UserMe, Depends(require_permission("matrice-pays.consulter"))]) -> list[dict[str, object]]:
     rows = db.fetch_all(
         "SELECT code_pays, nom, nom_en, esignature_reconnue, manuel_requis, source, note FROM pays_signature ORDER BY nom",
         (),
@@ -121,7 +119,7 @@ def list_pays(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str,
 
 
 @router.patch("/admin/pays-signature/{code}")
-def maj_pays(code: str, payload: PaysPatch, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def maj_pays(code: str, payload: PaysPatch, user: Annotated[UserMe, Depends(require_permission("matrice-pays.gerer"))]) -> dict[str, object]:
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
@@ -200,6 +198,14 @@ class AttestationUploadIn(BaseModel):
 def deposer_attestation(payload: AttestationUploadIn, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     """Attach the uploaded scan of the hand-signed attestation for admin review."""
     membre_id, role = ctx
+    # Ownership check (HDS/RGPD): the document MUST belong to this member, so nobody
+    # can reference another member's identity document into their own attestation.
+    if not db.fetch_one(
+        "SELECT 1 AS ok FROM document WHERE id = %s AND membre_id = %s",
+        (payload.document_id, membre_id),
+        role=role,
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="document introuvable ou non rattaché à ce membre")
     row = db.execute(
         "UPDATE attestation_manuelle SET document_id = %s, statut = 'under_review', soumise_le = now(), motif_rejet = NULL "
         "WHERE membre_id = %s AND statut IN ('awaiting', 'reminded', 'overdue', 'rejected') RETURNING id, demande_id",
@@ -235,7 +241,7 @@ def deposer_attestation(payload: AttestationUploadIn, ctx: Annotated[tuple[str, 
 # --- Admin: attestation review ----------------------------------------------
 
 @router.get("/admin/attestations")
-def list_attestations(user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
+def list_attestations(user: Annotated[UserMe, Depends(require_permission("attestations.gerer"))]) -> list[dict[str, object]]:
     rows = db.fetch_all(
         "SELECT a.id, a.statut, a.document_id, to_char(a.echeance, 'YYYY-MM-DD') AS echeance, "
         "trim(coalesce(m.prenoms,'')||' '||coalesce(m.nom,'')) AS membre, m.pays, m.email "
@@ -253,7 +259,7 @@ class ValiderAttestationIn(BaseModel):
 
 
 @router.post("/admin/attestations/{attestation_id}/valider")
-def valider_attestation(attestation_id: str, payload: ValiderAttestationIn, user: Annotated[UserMe, Depends(require_writer)]) -> dict[str, object]:
+def valider_attestation(attestation_id: str, payload: ValiderAttestationIn, user: Annotated[UserMe, Depends(require_permission("attestations.gerer"))]) -> dict[str, object]:
     if payload.decision not in ("accepted", "rejected"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown decision")
     motif = (payload.motif or "").strip() or None

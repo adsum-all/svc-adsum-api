@@ -12,7 +12,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import audit, db
-from .deps import require_roles
+from .fonctions_membre import label_genre
+from .permissions_rbac import require_permission
 from .schemas import (
     BergerOut,
     CoordinationOut,
@@ -23,15 +24,13 @@ from .schemas import (
     SetPatriarche,
     SousCommissionOut,
     TribuOut,
+    UpdateCoordination,
+    UpdateIntendance,
     UserMe,
 )
 
 router = APIRouter(prefix="/api/v1/admin", tags=["organisation"])
 
-STAFF = ("super_admin", "admin", "gestionnaire", "controleur", "direction")
-WRITERS = ("super_admin", "admin")
-require_staff = require_roles(*STAFF)
-require_writer = require_roles(*WRITERS)
 
 
 def _parent_id(table: str, parent_id: str | None, role: str) -> str | None:
@@ -45,105 +44,227 @@ def _parent_id(table: str, parent_id: str | None, role: str) -> str | None:
     return parent_id
 
 
+def _verifier_cycle(table: str, item_id: str, parent_id: str | None, role: str) -> None:
+    """Refuse a parent link that would create a cycle in the self-hierarchy.
+
+    Walks the ancestor chain from ``parent_id`` upward: if ``item_id`` reappears,
+    the link would close a cycle (A parent of B, B parent of A, ...). Self-parent
+    is already blocked by a DB CHECK; this covers the multi-level case the base
+    cannot. ``table`` is a fixed internal value (never user input).
+    """
+    if not parent_id:
+        return
+    seen: set[str] = {item_id}
+    current: str | None = parent_id
+    for _ in range(64):  # depth guard; real hierarchies are shallow
+        if current is None:
+            return
+        if current in seen:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cette relation creerait un cycle")
+        seen.add(current)
+        row = db.fetch_one(f"SELECT parent_id FROM {table} WHERE id = %s", (current,), role=role)
+        current = str(row["parent_id"]) if row and row.get("parent_id") else None
+
+
+def _nom(prenoms: object, nom: object) -> str | None:
+    name = f"{prenoms or ''} {nom or ''}".strip()
+    return name or None
+
+
+# LATERAL fragment resolving a structure's responsable: the member attached to
+# that structure (by the given FK column) who holds the given function, mirroring
+# how the patriarche is resolved for a tribe. Gender is carried for the title.
+def _responsable_lateral(fk_column: str, fonction: str) -> str:
+    return (
+        "LEFT JOIN LATERAL ("
+        "  SELECT rm.prenoms AS r_prenoms, rm.nom AS r_nom, rm.genre AS r_genre FROM membre rm "
+        f"  WHERE rm.{fk_column} = s.id AND (rm.fonction_cle = '{fonction}' "
+        f"    OR EXISTS (SELECT 1 FROM membre_fonction mf WHERE mf.membre_id = rm.id AND lower(mf.fonction_cle) = '{fonction}' AND mf.actif)) "
+        "  ORDER BY rm.nom LIMIT 1"
+        ") resp ON true "
+        f"LEFT JOIN fonction_honorifique frt ON frt.cle = '{fonction}' "
+    )
+
+
+def _coordination_out(r: dict[str, object]) -> CoordinationOut:
+    resp = _nom(r.get("r_prenoms"), r.get("r_nom"))
+    return CoordinationOut(
+        id=str(r["id"]), nom=str(r["nom"]), description=r.get("description"),  # type: ignore[arg-type]
+        pays_code=r.get("pays_code"), pays=r.get("pays"), continent=r.get("continent"), ville=r.get("ville"),  # type: ignore[arg-type]
+        statut=str(r.get("statut") or "actif"), publie=bool(r.get("publie")),
+        parent_id=str(r["parent_id"]) if r.get("parent_id") else None, parent=r.get("parent"),  # type: ignore[arg-type]
+        responsable=resp,
+        responsable_titre=(label_genre(r.get("r_genre"), r.get("frt_h"), r.get("frt_f"), r.get("frt_n")) if resp else None),
+    )
+
+
+_COORD_SELECT = (
+    "SELECT s.id, s.nom, s.description, s.pays_code, s.pays, s.continent, s.ville, s.statut, s.publie, s.parent_id, p.nom AS parent, "
+    "resp.r_prenoms, resp.r_nom, resp.r_genre, frt.libelle_h AS frt_h, frt.libelle_f AS frt_f, frt.libelle_n AS frt_n "
+    "FROM coordination s LEFT JOIN coordination p ON p.id = s.parent_id "
+)
+
+
 @router.get("/coordinations", response_model=list[CoordinationOut])
-def list_coordinations(user: Annotated[UserMe, Depends(require_staff)]) -> list[CoordinationOut]:
+def list_coordinations(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> list[CoordinationOut]:
     rows = db.fetch_all(
-        "SELECT c.id, c.nom, c.description, c.publie, c.parent_id, p.nom AS parent "
-        "FROM coordination c LEFT JOIN coordination p ON p.id = c.parent_id ORDER BY c.nom ASC",
+        _COORD_SELECT + _responsable_lateral("coordination_id", "coordinateur") + "ORDER BY s.nom ASC",
         (),
         role=user.role,
     )
-    return [
-        CoordinationOut(
-            id=str(r["id"]), nom=r["nom"], description=r["description"], publie=bool(r["publie"]),
-            parent_id=str(r["parent_id"]) if r.get("parent_id") else None, parent=r.get("parent"),
-        )
-        for r in rows
-    ]
+    return [_coordination_out(r) for r in rows]
+
+
+def _coordination_by_id(item_id: str, role: str) -> CoordinationOut:
+    row = db.fetch_one(
+        _COORD_SELECT + _responsable_lateral("coordination_id", "coordinateur") + "WHERE s.id = %s",
+        (item_id,),
+        role=role,
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="coordination not found")
+    return _coordination_out(row)
 
 
 @router.post("/coordinations", response_model=CoordinationOut, status_code=status.HTTP_201_CREATED)
 def create_coordination(
     payload: CreateCoordination,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> CoordinationOut:
     parent = _parent_id("coordination", payload.parent_id, user.role)
     created = db.execute(
-        "INSERT INTO coordination (nom, description, parent_id) VALUES (%s, %s, %s) "
-        "RETURNING id, nom, description, parent_id",
-        (payload.nom, payload.description, parent),
+        "INSERT INTO coordination (nom, description, pays_code, continent, ville, statut, parent_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (payload.nom, payload.description, payload.pays_code, payload.continent, payload.ville, payload.statut, parent),
         role=user.role,
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
-    return CoordinationOut(
-        id=str(created["id"]), nom=created["nom"], description=created["description"],
-        parent_id=str(created["parent_id"]) if created.get("parent_id") else None,
+    audit.log(user.id, user.role, "creation_organisation", "coordination", str(created["id"]), {"nom": payload.nom})
+    return _coordination_by_id(str(created["id"]), user.role)
+
+
+@router.put("/coordinations/{item_id}", response_model=CoordinationOut)
+def update_coordination(
+    item_id: str,
+    payload: UpdateCoordination,
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
+) -> CoordinationOut:
+    """Full edit of a coordination: descriptive/geographic fields and the optional
+    parent link, with a cycle guard. Only provided fields are written."""
+    fields = payload.model_dump(exclude_unset=True)
+    if "parent_id" in fields:
+        fields["parent_id"] = _parent_id("coordination", fields.get("parent_id"), user.role)
+        _verifier_cycle("coordination", item_id, fields.get("parent_id"), user.role)
+    if not fields:
+        return _coordination_by_id(item_id, user.role)
+    columns = ", ".join(f"{name} = %s" for name in fields)
+    updated = db.execute(
+        f"UPDATE coordination SET {columns} WHERE id = %s RETURNING id",
+        (*fields.values(), item_id),
+        role=user.role,
     )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="coordination not found")
+    audit.log(user.id, user.role, "modification_organisation", "coordination", item_id, {"champs": list(fields)})
+    return _coordination_by_id(item_id, user.role)
+
+
+def _intendance_out(r: dict[str, object]) -> IntendanceOut:
+    resp = _nom(r.get("r_prenoms"), r.get("r_nom"))
+    return IntendanceOut(
+        id=str(r["id"]), nom=str(r["nom"]), description=r.get("description"),  # type: ignore[arg-type]
+        pays_code=r.get("pays_code"), pays=r.get("pays"), continent=r.get("continent"), ville=r.get("ville"),  # type: ignore[arg-type]
+        statut=str(r.get("statut") or "actif"),
+        coordination_id=str(r["coordination_id"]) if r.get("coordination_id") else None,
+        coordination=r.get("coordination"),  # type: ignore[arg-type]
+        publie=bool(r.get("publie")),
+        parent_id=str(r["parent_id"]) if r.get("parent_id") else None, parent=r.get("parent"),  # type: ignore[arg-type]
+        responsable=resp,
+        responsable_titre=(label_genre(r.get("r_genre"), r.get("frt_h"), r.get("frt_f"), r.get("frt_n")) if resp else None),
+    )
+
+
+_INTENDANCE_SELECT = (
+    "SELECT s.id, s.nom, s.description, s.pays_code, s.pays, s.continent, s.ville, s.statut, s.coordination_id, s.publie, s.parent_id, "
+    "co.nom AS coordination, p.nom AS parent, "
+    "resp.r_prenoms, resp.r_nom, resp.r_genre, frt.libelle_h AS frt_h, frt.libelle_f AS frt_f, frt.libelle_n AS frt_n "
+    "FROM intendance s LEFT JOIN coordination co ON co.id = s.coordination_id LEFT JOIN intendance p ON p.id = s.parent_id "
+)
+
+
+def _intendance_by_id(item_id: str, role: str) -> IntendanceOut:
+    row = db.fetch_one(
+        _INTENDANCE_SELECT + _responsable_lateral("intendance_id", "intendant") + "WHERE s.id = %s",
+        (item_id,),
+        role=role,
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="intendance not found")
+    return _intendance_out(row)
 
 
 @router.get("/intendances", response_model=list[IntendanceOut])
-def list_intendances(user: Annotated[UserMe, Depends(require_staff)]) -> list[IntendanceOut]:
+def list_intendances(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> list[IntendanceOut]:
     rows = db.fetch_all(
-        """
-        SELECT i.id, i.nom, i.pays, i.ville, i.coordination_id, i.publie, i.parent_id,
-               co.nom AS coordination, p.nom AS parent
-        FROM intendance i
-        LEFT JOIN coordination co ON co.id = i.coordination_id
-        LEFT JOIN intendance p ON p.id = i.parent_id
-        ORDER BY i.nom ASC
-        """,
+        _INTENDANCE_SELECT + _responsable_lateral("intendance_id", "intendant") + "ORDER BY s.nom ASC",
         (),
         role=user.role,
     )
-    return [
-        IntendanceOut(
-            id=str(r["id"]),
-            nom=r["nom"],
-            pays=r["pays"],
-            ville=r["ville"],
-            coordination_id=str(r["coordination_id"]) if r["coordination_id"] else None,
-            coordination=r["coordination"],
-            publie=bool(r["publie"]),
-            parent_id=str(r["parent_id"]) if r.get("parent_id") else None,
-            parent=r.get("parent"),
-        )
-        for r in rows
-    ]
+    return [_intendance_out(r) for r in rows]
 
 
 @router.post("/intendances", response_model=IntendanceOut, status_code=status.HTTP_201_CREATED)
 def create_intendance(
     payload: CreateIntendance,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> IntendanceOut:
     # Coordination and parent intendance are both optional and independent: an
     # intendance never requires either to exist.
     coordination_id = _parent_id("coordination", payload.coordination_id, user.role)
     parent = _parent_id("intendance", payload.parent_id, user.role)
     created = db.execute(
-        """
-        INSERT INTO intendance (nom, pays, ville, coordination_id, parent_id)
-        VALUES (%s, %s, %s, %s, %s) RETURNING id, nom, pays, ville, coordination_id, parent_id
-        """,
-        (payload.nom, payload.pays, payload.ville, coordination_id, parent),
+        "INSERT INTO intendance (nom, description, pays_code, pays, continent, ville, statut, coordination_id, parent_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (payload.nom, payload.description, payload.pays_code, payload.pays, payload.continent, payload.ville, payload.statut, coordination_id, parent),
         role=user.role,
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
-    return IntendanceOut(
-        id=str(created["id"]),
-        nom=created["nom"],
-        pays=created["pays"],
-        ville=created["ville"],
-        coordination_id=str(created["coordination_id"]) if created["coordination_id"] else None,
-        coordination=None,
-        parent_id=str(created["parent_id"]) if created.get("parent_id") else None,
+    audit.log(user.id, user.role, "creation_organisation", "intendance", str(created["id"]), {"nom": payload.nom})
+    return _intendance_by_id(str(created["id"]), user.role)
+
+
+@router.put("/intendances/{item_id}", response_model=IntendanceOut)
+def update_intendance(
+    item_id: str,
+    payload: UpdateIntendance,
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
+) -> IntendanceOut:
+    """Full edit of an intendance: descriptive/geographic fields, the optional
+    coordination link and the optional parent intendance, with a cycle guard."""
+    fields = payload.model_dump(exclude_unset=True)
+    if "coordination_id" in fields:
+        fields["coordination_id"] = _parent_id("coordination", fields.get("coordination_id"), user.role)
+    if "parent_id" in fields:
+        fields["parent_id"] = _parent_id("intendance", fields.get("parent_id"), user.role)
+        _verifier_cycle("intendance", item_id, fields.get("parent_id"), user.role)
+    if not fields:
+        return _intendance_by_id(item_id, user.role)
+    columns = ", ".join(f"{name} = %s" for name in fields)
+    updated = db.execute(
+        f"UPDATE intendance SET {columns} WHERE id = %s RETURNING id",
+        (*fields.values(), item_id),
+        role=user.role,
     )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="intendance not found")
+    audit.log(user.id, user.role, "modification_organisation", "intendance", item_id, {"champs": list(fields)})
+    return _intendance_by_id(item_id, user.role)
 
 
 @router.get("/sous-commissions", response_model=list[SousCommissionOut])
-def list_sous_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> list[SousCommissionOut]:
+def list_sous_commissions(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> list[SousCommissionOut]:
     rows = db.fetch_all(
         """
         SELECT s.id, s.nom, s.commission_id, s.publie, c.nom AS commission
@@ -169,7 +290,7 @@ def list_sous_commissions(user: Annotated[UserMe, Depends(require_staff)]) -> li
 @router.post("/sous-commissions", response_model=SousCommissionOut, status_code=status.HTTP_201_CREATED)
 def create_sous_commission(
     payload: CreateSousCommission,
-    user: Annotated[UserMe, Depends(require_writer)],
+    user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))],
 ) -> SousCommissionOut:
     created = db.execute(
         """
@@ -181,6 +302,7 @@ def create_sous_commission(
     )
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
+    audit.log(user.id, user.role, "creation_organisation", "sous_commission", str(created["id"]), {"nom": created["nom"]})
     return SousCommissionOut(
         id=str(created["id"]),
         nom=created["nom"],
@@ -190,7 +312,7 @@ def create_sous_commission(
 
 
 @router.get("/tribus", response_model=list[TribuOut])
-def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOut]:
+def list_tribus(user: Annotated[UserMe, Depends(require_permission("tribus.consulter"))]) -> list[TribuOut]:
     rows = db.fetch_all(
         "SELECT t.id, t.nom, t.patriarche, patr.membre_id AS patriarche_membre_id, "
         "TRIM(COALESCE(patr.prenoms, '') || ' ' || COALESCE(patr.nom, '')) AS patriarche_nom "
@@ -215,7 +337,7 @@ def list_tribus(user: Annotated[UserMe, Depends(require_staff)]) -> list[TribuOu
 
 @router.put("/tribus/{tribu_id}/patriarche")
 def set_patriarche(
-    tribu_id: str, payload: SetPatriarche, user: Annotated[UserMe, Depends(require_writer)]
+    tribu_id: str, payload: SetPatriarche, user: Annotated[UserMe, Depends(require_permission("tribus.administrer"))]
 ) -> dict[str, object]:
     """Assign or revoke the human patriarche of a tribe.
 
@@ -252,7 +374,7 @@ def set_patriarche(
 
 
 @router.get("/bergers", response_model=list[BergerOut])
-def list_bergers(user: Annotated[UserMe, Depends(require_staff)]) -> list[BergerOut]:
+def list_bergers(user: Annotated[UserMe, Depends(require_permission("bergers.consulter"))]) -> list[BergerOut]:
     """Users that can be set as a member shepherd, with their member display name."""
     rows = db.fetch_all(
         """

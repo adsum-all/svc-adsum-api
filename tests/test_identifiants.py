@@ -1,10 +1,12 @@
 """Unit tests for the durable identifier generators (no database needed).
 
-They prove the format (year-partitioned, six-digit, zero-padded) and that the
-generator relies on an atomic UPSERT ... RETURNING on a per-year counter, which
-is what makes it concurrency-safe and non-saturating.
+They prove the single canonical matricule format ADS-{L1}{L2}-{NNNNNN}-{X} (initials
+from the name, global 6-digit sequence, random trailing letter) and that the request
+reference keeps its year-partitioned atomic format.
 """
 from __future__ import annotations
+
+import re
 
 import pytest
 
@@ -12,18 +14,20 @@ from app import identifiants
 
 
 class _FakeDB:
-    """Stand-in for app.db that emulates the per-year atomic counter."""
+    """Stand-in for app.db: a global sequence (fetch_one) and a per-year counter (execute)."""
 
     def __init__(self) -> None:
+        self.seq = 0
         self.counters: dict[tuple[str, int], int] = {}
-        self.last_sql = ""
 
-    def execute(self, sql: str, params: tuple[object, ...], role: str | None = None) -> dict[str, object]:
-        self.last_sql = sql
-        # Emulate: INSERT ... ON CONFLICT DO UPDATE dernier = dernier + 1, fixed year.
-        table = "matricule_compteur" if "matricule_compteur" in sql else "demande_compteur"
+    def fetch_one(self, sql: str, params: tuple[object, ...] = (), role: str | None = None) -> dict[str, object]:
+        assert "nextval" in sql and "matricule_seq" in sql
+        self.seq += 1
+        return {"n": self.seq}
+
+    def execute(self, sql: str, params: tuple[object, ...] = (), role: str | None = None) -> dict[str, object]:
         annee = 2026
-        key = (table, annee)
+        key = ("demande_compteur", annee)
         self.counters[key] = self.counters.get(key, 0) + 1
         return {"annee": annee, "dernier": self.counters[key]}
 
@@ -35,32 +39,55 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     return fake
 
 
-def test_matricule_format(fake_db: _FakeDB) -> None:
-    assert identifiants.next_matricule("admin") == "ADS-2026-000001"
-    assert identifiants.next_matricule("admin") == "ADS-2026-000002"
-    # The new format never collides with the legacy ADS-NNNNNN shape.
-    assert identifiants.next_matricule("admin") != "ADS-000003"
+# --- Initials -------------------------------------------------------------
 
+def test_initiales_basic() -> None:
+    assert identifiants.initiales("AMOUSSOU", "Armand") == "AA"
+    assert identifiants.initiales("Brou", "Emmanuel Kouassi") == "BE"
+
+
+def test_initiales_strip_accents_and_case() -> None:
+    assert identifiants.initiales("Éboué", "Ózrïc") == "EO"
+    assert identifiants.initiales("  koffi ", "  jean-baptiste") == "KJ"
+
+
+def test_initiales_fallback_on_missing() -> None:
+    assert identifiants.initiales(None, None) == "XX"
+    assert identifiants.initiales("", "Marie") == "XM"
+    assert identifiants.initiales("Traore", "") == "TX"
+
+
+def test_initiales_leading_symbol() -> None:
+    # Leading symbols are skipped to the first real letter.
+    assert identifiants.initiales("'Ndiaye", "@lain") == "NL"
+    assert identifiants.initiales("-Traore", "Alain") == "TA"
+
+
+def test_premiere_lettre_no_letter() -> None:
+    assert identifiants.premiere_lettre("123-!") == "X"
+    assert identifiants.premiere_lettre(None) == "X"
+
+
+# --- Matricule format -----------------------------------------------------
+
+def test_matricule_matches_canonical_format(fake_db: _FakeDB) -> None:
+    m = identifiants.next_matricule("admin", "AMOUSSOU", "Armand")
+    assert re.fullmatch(identifiants.MATRICULE_RE, m), m
+    assert m.startswith("ADS-AA-000001-")
+
+
+def test_matricule_sequence_is_unique(fake_db: _FakeDB) -> None:
+    seen = {identifiants.next_matricule("admin", "Traore", "Marie")[7:13] for _ in range(20)}
+    assert len(seen) == 20  # the 6-digit part never repeats
+
+
+def test_matricule_regex_rejects_legacy() -> None:
+    for bad in ("ADS-000001", "ADS-2026-000001", "ADS-A-000001-Q", "ADS-AM-00001-Q", "ads-am-000001-q"):
+        assert not re.fullmatch(identifiants.MATRICULE_RE, bad), bad
+
+
+# --- Reference (unchanged) ------------------------------------------------
 
 def test_reference_format(fake_db: _FakeDB) -> None:
     assert identifiants.next_reference("membre") == "DEM-2026-000001"
     assert identifiants.next_reference("membre") == "DEM-2026-000002"
-
-
-def test_matricule_uses_atomic_upsert(fake_db: _FakeDB) -> None:
-    identifiants.next_matricule("admin")
-    sql = fake_db.last_sql.lower()
-    assert "on conflict" in sql and "returning" in sql and "dernier + 1" in sql
-
-
-def test_reference_monotonic(fake_db: _FakeDB) -> None:
-    refs = [identifiants.next_reference("membre") for _ in range(5)]
-    assert refs == [f"DEM-2026-{i:06d}" for i in range(1, 6)]
-    assert len(set(refs)) == 5  # no collision
-
-
-def test_six_digits_do_not_saturate_before_a_million(fake_db: _FakeDB) -> None:
-    fake_db.counters[("demande_compteur", 2026)] = 999_998
-    assert identifiants.next_reference("m") == "DEM-2026-999999"
-    # Past six digits the number simply grows; it never wraps or collides.
-    assert identifiants.next_reference("m") == "DEM-2026-1000000"

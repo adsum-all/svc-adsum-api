@@ -14,13 +14,11 @@ from pydantic import BaseModel
 
 from . import audit, db, storage
 from .config import settings
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/admin/membres", tags=["gestion"])
 
-require_admin = require_roles("super_admin", "admin")
-require_staff = require_roles("super_admin", "admin", "gestionnaire")
 
 # Child tables that reference a member, deleted before the member on erasure.
 _CHILD_TABLES = ("notification", "document", "presence", "recensement_reponse", "comptage_ligne")
@@ -48,7 +46,7 @@ def _notifier_membre(membre_id: str, role: str, type_cle: str, ctx: dict[str, ob
 
 
 @router.post("/{membre_id}/bloquer")
-def bloquer(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def bloquer(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.administrer"))]) -> dict[str, object]:
     row = db.execute("UPDATE membre SET statut = 'suspendu' WHERE id = %s RETURNING email", (membre_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
@@ -59,7 +57,7 @@ def bloquer(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> 
 
 
 @router.post("/{membre_id}/debloquer")
-def debloquer(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> dict[str, object]:
+def debloquer(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.administrer"))]) -> dict[str, object]:
     row = db.execute("UPDATE membre SET statut = 'actif' WHERE id = %s RETURNING email", (membre_id,), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
@@ -75,7 +73,7 @@ class DemandeDocIn(BaseModel):
 
 
 @router.post("/{membre_id}/demander-document")
-def demander_document(membre_id: str, payload: DemandeDocIn, user: Annotated[UserMe, Depends(require_staff)]) -> dict[str, object]:
+def demander_document(membre_id: str, payload: DemandeDocIn, user: Annotated[UserMe, Depends(require_permission("membres.gerer"))]) -> dict[str, object]:
     db.execute(
         "INSERT INTO document (membre_id, type, statut, demande_le) VALUES (%s, %s, 'demande', now())",
         (membre_id, payload.type),
@@ -87,8 +85,12 @@ def demander_document(membre_id: str, payload: DemandeDocIn, user: Annotated[Use
 
 
 @router.get("/{membre_id}/connexions")
-def connexions(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) -> list[dict[str, object]]:
-    """Recent login sessions for the member (security tracking)."""
+def connexions(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.administrer"))]) -> list[dict[str, object]]:
+    """Recent login sessions for the member (security tracking).
+
+    Exposes the member's IP and geolocation history, so it is reserved to the
+    account administrators, not the general member-managing staff (gestionnaire).
+    """
     rows = db.fetch_all(
         "SELECT s.ip::text AS ip, s.appareil, s.pays, s.ville, s.region, s.cree_le, s.fin, s.revoque, "
         "EXTRACT(EPOCH FROM (COALESCE(s.fin, now()) - s.cree_le))::bigint AS duree_s "
@@ -114,7 +116,7 @@ def connexions(membre_id: str, user: Annotated[UserMe, Depends(require_staff)]) 
 
 
 @router.delete("/{membre_id}", status_code=status.HTTP_204_NO_CONTENT)
-def supprimer_membre(membre_id: str, user: Annotated[UserMe, Depends(require_admin)]) -> None:
+def supprimer_membre(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.administrer"))]) -> None:
     """RGPD right to erasure: purge files then all member records."""
     exists = db.fetch_one("SELECT id FROM membre WHERE id = %s", (membre_id,), role=user.role)
     if not exists:

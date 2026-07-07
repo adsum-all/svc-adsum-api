@@ -6,6 +6,7 @@ RLS. What actually scopes a member to their own records is the explicit
 ``membre_id`` filter on every query, not RLS. For events, the shared targeting
 predicate in ``visibilite`` gates both the agenda and the action endpoints.
 """
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json
@@ -13,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from . import db, visibilite
 from .auth import current_user
@@ -37,6 +39,12 @@ from .schemas import (
 from .security import hash_password, verify_password
 
 router = APIRouter(prefix="/api/v1/membres", tags=["membres"])
+
+
+class FuseauIn(BaseModel):
+    """The member's IANA time zone, detected client-side (e.g. 'Europe/Paris')."""
+
+    fuseau: str
 
 
 def _notify(
@@ -98,6 +106,42 @@ def my_profile(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> Memb
     return membre_row_to_profile(row, fonctions)
 
 
+@router.get("/me/permissions")
+def my_permissions(user: Annotated[UserMe, Depends(current_user)]) -> dict[str, object]:
+    """The atomic permissions the signed-in account effectively holds.
+
+    Powers the back office: the menu shows only what the account can do and the
+    login accepts an account (even role 'membre') that holds at least one back
+    office permission through a specialized group. This is a convenience mirror,
+    never a security barrier; every endpoint is still guarded server side by
+    ``require_permission``.
+    """
+    from .permissions_rbac import permissions_effectives
+
+    perms = sorted(permissions_effectives(user))
+    # 'membres.self' is the baseline every account holds; back-office reach means
+    # holding at least one permission beyond it.
+    back_office = [p for p in perms if p != "membres.self"]
+    return {"role": user.role, "permissions": perms, "acces_back_office": bool(back_office)}
+
+
+@router.put("/me/fuseau", status_code=status.HTTP_204_NO_CONTENT)
+def set_fuseau(payload: FuseauIn, ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> None:
+    """Store the member's IANA time zone, detected by their device on app open.
+
+    Used to localize server-rendered times (Telegram, e-mail, survey reminders) to
+    the member's own zone. Only a real IANA identifier is accepted, never a fixed
+    offset, so seasonal (DST) transitions stay correct.
+    """
+    from . import temps
+
+    membre_id, role = ctx
+    zone = temps.zone_valide(payload.fuseau)
+    if not zone:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="fuseau horaire invalide")
+    db.execute("UPDATE membre SET fuseau_horaire = %s WHERE id = %s", (zone, membre_id), role=role)
+
+
 @router.get("/me/evenements", response_model=list[EvenementOut])
 def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[EvenementOut]:
     membre_id, role = ctx
@@ -116,6 +160,8 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
                  ELSE NULL
                END AS cible_libelle,
+               COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
+                         FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags,
                EXISTS (SELECT 1 FROM participation p WHERE p.evenement_id = e.id AND p.membre_id = %s) AS inscrit,
                CASE
                  WHEN now() < e.debut - interval '15 minutes' THEN 'a_venir'
@@ -158,6 +204,7 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                 cible_type=r.get("cible_type") or "general",
                 cible_id=str(r["cible_id"]) if r.get("cible_id") else None,
                 cible_libelle=r.get("cible_libelle"),
+                tags=[{"id": str(x.get("id")), "cle": str(x.get("cle") or ""), "libelle": str(x.get("libelle") or "")} for x in (r.get("tags") or [])],
                 phase=str(r["phase"]),
                 joignable=bool(liens),
                 formulaire_ouvert=bool(r["formulaire_ouvert"]),
@@ -383,6 +430,16 @@ def change_password(
         (hash_password(payload.nouveau), user.id),
         role=user.role,
     )
+    # Revoke every session so a stolen token cannot outlive the change, and audit
+    # the event (never the password value). The caller re-authenticates afterwards.
+    db.execute(
+        "UPDATE session SET fin = now(), revoque = true WHERE utilisateur_id = %s AND fin IS NULL",
+        (user.id,),
+        role=user.role,
+    )
+    from . import audit
+
+    audit.log(user.id, user.role, "changement_mdp", "utilisateur", user.id, {"sessions_revoquees": True})
 
 
 @router.post("/me/engagements/accepter", response_model=EngagementOut, status_code=status.HTTP_201_CREATED)

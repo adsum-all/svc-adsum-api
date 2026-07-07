@@ -17,13 +17,16 @@ from pydantic import BaseModel
 from . import audit, db, storage
 from .auth import current_user
 from .config import settings
-from .deps import require_roles
+from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1/membres/me", tags=["fichiers"])
 
 PHOTO_EXTS = {"jpg", "jpeg", "png", "webp"}
-DOC_EXTS = {"jpg", "jpeg", "png", "webp", "pdf"}
+# HEIC/HEIF are the iPhone default photo format: accepted for identity documents so
+# an iPhone member is not blocked at the upload step (the content sniffer already
+# accepts them). The extension gate is kept aligned with that sniffer.
+DOC_EXTS = {"jpg", "jpeg", "png", "webp", "pdf", "heic", "heif"}
 DOC_TYPES = {"piece_identite", "passeport", "permis", "carte_consulaire", "justificatif_domicile", "photo_identite", "attestation", "autre"}
 
 
@@ -115,7 +118,7 @@ def photo_confirm(payload: PhotoConfirm, ctx: Annotated[tuple[str, str], Depends
     anything. The staged photo travels with the single modification submission and
     is only promoted to the live photo when the administration validates it."""
     membre_id, role = ctx
-    if not payload.path.startswith(f"{membre_id}/"):
+    if not payload.path.startswith(f"{membre_id}/") or ".." in payload.path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
     etat = db.fetch_one(
         "SELECT photo_url, coalesce(champs_deverrouilles, '{}') AS deverrouilles FROM membre WHERE id = %s",
@@ -219,7 +222,7 @@ def doc_upload_url(payload: UploadUrlIn, ctx: Annotated[tuple[str, str], Depends
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="storage unavailable") from exc
 
 
-_EXT_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "pdf": "application/pdf"}
+_EXT_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "pdf": "application/pdf", "heic": "image/heic", "heif": "image/heif"}
 
 
 def _mime_for(path: str, declared: str | None) -> str:
@@ -231,27 +234,87 @@ def _mime_for(path: str, declared: str | None) -> str:
     return _EXT_MIME.get(ext, "image/jpeg")
 
 
+def _contenu_document_autorise(data: bytes) -> bool:
+    """True if the bytes really are an image or a PDF (magic-byte sniffing).
+
+    Trusts the file content, never the client-declared type. Covers the formats a
+    member could legitimately upload for an identity document or a photo.
+    """
+    if len(data) < 12:
+        return False
+    if data[:3] == b"\xff\xd8\xff":  # JPEG
+        return True
+    if data[:8] == b"\x89PNG\r\n\x1a\n":  # PNG
+        return True
+    if data[:4] == b"%PDF":  # PDF
+        return True
+    if data[:6] in (b"GIF87a", b"GIF89a"):  # GIF
+        return True
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":  # WEBP
+        return True
+    if data[4:12] in (b"ftypheic", b"ftypheif", b"ftypmif1", b"ftypavif"):  # HEIC/HEIF/AVIF
+        return True
+    return False
+
+
 def _encrypt_document_at_rest(path: str, declared_mime: str | None) -> tuple[str, bool]:
     """Encrypt a just-uploaded plaintext object and return (stored_path, chiffre).
 
     Downloads the bytes with the service key, encrypts them (app-controlled key),
     writes the ciphertext to a fresh ``path.enc`` object, then deletes the
     plaintext. A distinct path avoids any overwrite ambiguity and guarantees the
-    stored object is ciphertext. On any storage/crypto issue the plaintext is left
-    in place and (path, False) is returned, rather than breaking the upload.
+    stored object is ciphertext.
+
+    In production this is fail-closed on the most sensitive data: if any step
+    fails, the plaintext is purged (best effort) and the confirmation is refused
+    (503), so an identity document is never recorded or served in clear. Outside
+    production the plaintext is left in place and (path, False) is returned so
+    local development keeps working without the storage/crypto round-trip.
     """
     from . import crypto
 
     bucket = settings.storage_bucket_documents
     try:
         plaintext = storage.download_bytes(bucket, path)
+    except storage.FileTooLargeError as exc:
+        # A too-large object is not transient: tell the member to reduce the file
+        # (413) instead of "retry later" (503), which would loop on the same file.
+        try:
+            storage.delete_object(bucket, path)
+        except storage.StorageError:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="fichier trop volumineux (15 Mo maximum) : réduisez la taille ou la résolution, puis réessayez",
+        ) from exc
+    except storage.StorageError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="document unavailable, please retry") from exc
+    # Verify the REAL content (magic bytes), never the client-declared type: only an
+    # image or a PDF is accepted. A mismatch purges the object and refuses the upload.
+    if not _contenu_document_autorise(plaintext):
+        try:
+            storage.delete_object(bucket, path)
+        except storage.StorageError:
+            pass
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type de fichier non autorisé (image ou PDF attendu)")
+    try:
         ciphertext = crypto.encrypt_bytes(plaintext)
         enc_path = f"{path}.enc"
         storage.upload_bytes(bucket, enc_path, ciphertext, content_type=_mime_for(path, declared_mime))
         storage.delete_object(bucket, path)
         return enc_path, True
-    except (storage.StorageError, ValueError):
-        return path, False
+    except (storage.StorageError, ValueError) as exc:
+        # Fail closed ALWAYS, not only in production: an identity document is never
+        # persisted in clear. On any encryption failure, purge the plaintext object
+        # and refuse, whatever the environment (the prod env flag is not relied upon).
+        try:
+            storage.delete_object(bucket, path)
+        except storage.StorageError:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="document encryption unavailable, please retry",
+        ) from exc
 
 
 @router.post("/documents/confirm", status_code=status.HTTP_201_CREATED)
@@ -259,13 +322,20 @@ def doc_confirm(payload: DocConfirm, ctx: Annotated[tuple[str, str], Depends(_me
     membre_id, role = ctx
     if payload.type not in DOC_TYPES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown document type")
-    if not payload.path.startswith(f"{membre_id}/"):
+    if not payload.path.startswith(f"{membre_id}/") or ".." in payload.path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
     # Encrypt the uploaded identity document at rest before recording it, so the
     # bytes in the bucket are ciphertext. Decryption happens only through an
     # authenticated, audited read.
     from . import crypto
 
+    # Path of the object currently attached to this (member, type), if any, so it
+    # can be purged from the bucket when the new upload replaces it (no orphan).
+    ancien = db.fetch_one(
+        "SELECT chemin_stockage FROM document WHERE membre_id = %s AND type = %s",
+        (membre_id, payload.type),
+        role=role,
+    )
     stored_path, chiffre = _encrypt_document_at_rest(payload.path, payload.mime)
     algo = crypto.ALGO if chiffre else None
     # One logical document per (member, type): a new upload replaces the previous
@@ -279,6 +349,9 @@ def doc_confirm(payload: DocConfirm, ctx: Annotated[tuple[str, str], Depends(_me
         role=role,
     )
     if updated:
+        ancien_path = (ancien or {}).get("chemin_stockage")
+        if ancien_path and str(ancien_path) != stored_path:
+            storage.delete_object(settings.storage_bucket_documents, str(ancien_path))
         return {"id": str(updated["id"]), "chiffre": str(chiffre).lower()}
     created = db.execute(
         "INSERT INTO document (membre_id, type, statut, bucket, chemin_stockage, nom_fichier, mime, chiffre, chiffrement_algo, recu_le) "
@@ -312,15 +385,44 @@ def doc_download_url(document_id: str, ctx: Annotated[tuple[str, str], Depends(_
         return {"url": None, "chiffre": False}
 
 
-def _document_bytes(row: dict[str, object]) -> tuple[bytes, str]:
-    """Return (plaintext bytes, mime) for a document row, decrypting when needed."""
+def _document_bytes(row: dict[str, object]) -> bytes:
+    """Return the plaintext bytes for a document row, decrypting when needed."""
     from . import crypto
 
     bucket = str(row.get("bucket") or settings.storage_bucket_documents)
     raw = storage.download_bytes(bucket, str(row["chemin_stockage"]))
     if row.get("chiffre"):
         raw = crypto.decrypt_bytes(raw)
-    return raw, str(row.get("mime") or "application/octet-stream")
+    return raw
+
+
+def _safe_media_type(path: str) -> str:
+    """A content type derived from the real file extension, NEVER the client mime.
+
+    The client-declared mime is untrusted: a member could upload an HTML file
+    tagged text/html and get it executed in the API origin when a staff member
+    opens it. We only ever serve a known image/PDF type; anything else falls back
+    to octet-stream so the browser downloads it instead of rendering it. The
+    stored ciphertext path ends in ``.enc``: strip it to read the real extension.
+    """
+    real = path[:-4] if path.lower().endswith(".enc") else path
+    ext = real.rsplit(".", 1)[-1].lower() if "." in real else ""
+    return _EXT_MIME.get(ext, "application/octet-stream")
+
+
+def _document_response(data: bytes, path: str) -> Response:
+    """Serve a member document defensively: a safe extension-derived content type,
+    forced download, and a locked-down CSP so no markup/script can execute in the
+    API origin even if a hostile file slips through."""
+    return Response(
+        content=data,
+        media_type=_safe_media_type(path),
+        headers={
+            "Content-Disposition": "attachment",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/documents/{document_id}/content")
@@ -335,19 +437,20 @@ def doc_content(document_id: str, ctx: Annotated[tuple[str, str], Depends(_membr
     if not row or not row.get("chemin_stockage"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
     try:
-        data, mime = _document_bytes(row)
+        data = _document_bytes(row)
     except (storage.StorageError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="document unreadable") from exc
-    return Response(content=data, media_type=mime)
+    return _document_response(data, str(row["chemin_stockage"]))
 
 
-_require_staff = require_roles("super_admin", "admin", "gestionnaire", "controleur", "direction")
+# Identity documents are decrypted here: keep this to the roles with a real need
+# (never controleur, a field scan operator, nor direction, read-only supervision).
 
 admin_router = APIRouter(prefix="/api/v1/admin", tags=["fichiers"])
 
 
 @admin_router.get("/documents/{document_id}/url")
-def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_staff)]) -> dict[str, str | bool | None]:
+def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(require_permission("documents.gerer"))]) -> dict[str, str | bool | None]:
     """Signed download URL for any member's document, for admin review (e.g. a
     hand-signed attestation scan). Encrypted documents are read through the
     audited content endpoint instead of a plain signed URL."""
@@ -362,13 +465,17 @@ def admin_doc_url(document_id: str, user: Annotated[UserMe, Depends(_require_sta
         return {"url": None, "chiffre": True, "content_path": f"/api/v1/admin/documents/{document_id}/content"}
     try:
         url = storage.signed_download_url(str(row["bucket"] or settings.storage_bucket_documents), str(row["chemin_stockage"]))
+        # Trace every admin access to a member document (HDS/RGPD), even non-encrypted.
+        from . import audit
+
+        audit.log(user.id, user.role, "consultation_document", "document", document_id, {"chiffre": False})
         return {"url": url, "chiffre": False}
     except storage.StorageError:
         return {"url": None, "chiffre": False}
 
 
 @admin_router.get("/documents/{document_id}/content")
-def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(_require_staff)]) -> Response:
+def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(require_permission("documents.gerer"))]) -> Response:
     """Decrypted bytes of any member's document, for staff review. Every access is
     audited (who read which document), because this is a controlled decryption of
     a sensitive identity file."""
@@ -380,16 +487,16 @@ def admin_doc_content(document_id: str, user: Annotated[UserMe, Depends(_require
     if not row or not row.get("chemin_stockage"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
     try:
-        data, mime = _document_bytes(row)
+        data = _document_bytes(row)
     except (storage.StorageError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="document unreadable") from exc
     audit.log(user.id, user.role, "consultation_document", "document", document_id,
               {"membre_id": str(row.get("membre_id")), "chiffre": bool(row.get("chiffre"))})
-    return Response(content=data, media_type=mime)
+    return _document_response(data, str(row["chemin_stockage"]))
 
 
 @admin_router.get("/membres/{membre_id}/photo-url")
-def admin_photo_url(membre_id: str, user: Annotated[UserMe, Depends(_require_staff)]) -> dict[str, str | None]:
+def admin_photo_url(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.consulter"))]) -> dict[str, str | None]:
     """Signed download URL for any member's identity photo, for staff views
     (registration review, QR-scan identity card, member directory). Reads as an
     owner query since the endpoint is already gated by staff roles."""
