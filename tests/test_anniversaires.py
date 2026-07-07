@@ -41,10 +41,13 @@ def test_vip_is_additive_legacy_or_multifunction() -> None:
     assert "membre_fonction" in where and "fh2.est_vip = true" in where  # plus multi
 
 
-def test_bergers_matches_title_and_legacy_function() -> None:
-    where = _where("bergers")
-    assert "m.est_berger = true" in where        # canonical consecration title
-    assert "fh.famille = 'bergers'" in where     # legacy match preserved (additive)
+def test_bergers_matches_title_or_bergers_family_function() -> None:
+    built = _categorie_where("bergers", "M-123")
+    assert built is not None
+    where, params = built
+    assert "m.est_berger = true" in where          # canonical consecration title
+    assert "membre_fonction" in where              # plus a confirmed bergers-family function
+    assert params == ["bergers"]
 
 
 def test_family_categories_additive_and_parameterized() -> None:
