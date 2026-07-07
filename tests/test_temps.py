@@ -1,11 +1,11 @@
 """Unit tests for time-zone aware formatting of absolute instants."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.temps import DEFAULT_TZ, formater_instant, zone_valide
 
-_NOON_UTC = datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc)
+_NOON_UTC = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
 
 
 def test_paris_summer_is_local_time_with_country() -> None:

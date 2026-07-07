@@ -23,6 +23,7 @@ from .emargement import router as emargement_router
 from .engagement import public_router as engagement_public_router
 from .engagement import router as engagement_router
 from .engagement_import import router as engagement_import_router
+from .evenements_series import router as evenements_series_router
 from .fichiers import admin_router as fichiers_admin_router
 from .fichiers import router as fichiers_router
 from .fonctions import router as fonctions_router
@@ -72,6 +73,7 @@ app.include_router(auth_router)
 app.include_router(mfa_router)
 app.include_router(membres_router)
 app.include_router(admin_router)
+app.include_router(evenements_series_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(organisation_admin_router)
