@@ -37,6 +37,20 @@ _BASE_SELECT = (
 # opting out of the directory, so it is never applied to the self view.
 _VISIBLE_CLAUSE = " AND m.anniversaire_visible_annuaire = true"
 
+# A member holds SEVERAL functions (membre_fonction, migration 0059), not just the
+# primary mirror in membre.fonction_cle. Category filtering must therefore look at
+# every active+confirmed function, otherwise a secondary responsibility (e.g. a
+# coordinator whose primary function is something else) is missed. These EXISTS
+# fragments match a member by their real, confirmed functions.
+_MF_FAMILLE = (
+    "EXISTS (SELECT 1 FROM membre_fonction mf JOIN fonction_honorifique fh2 ON fh2.cle = mf.fonction_cle "
+    "WHERE mf.membre_id = m.id AND mf.actif = true AND mf.confirmee = true AND fh2.famille = %s)"
+)
+_MF_VIP = (
+    "EXISTS (SELECT 1 FROM membre_fonction mf JOIN fonction_honorifique fh2 ON fh2.cle = mf.fonction_cle "
+    "WHERE mf.membre_id = m.id AND mf.actif = true AND mf.confirmee = true AND fh2.est_vip = true)"
+)
+
 
 def _membre(user: Annotated[UserMe, Depends(current_user)]) -> str:
     if not user.membre_id:
@@ -73,7 +87,6 @@ _UNIT_COLUMN = {
 _FAMILLE_CATEGORIE = {
     "direction": "direction",
     "coordinateurs": "coordination",
-    "bergers": "bergers",
     "patriarches": "patriarches",
 }
 
@@ -89,11 +102,14 @@ def _categorie_where(categorie: str, membre_id: str) -> tuple[str, list[object]]
     if categorie == "moi":
         return " AND m.id = %s", [membre_id]
     if categorie == "vip":
-        return _VISIBLE_CLAUSE + " AND fh.est_vip = true AND m.fonction_confirmee = true", []
+        return _VISIBLE_CLAUSE + " AND " + _MF_VIP, []
     if categorie == "responsables":
-        return _VISIBLE_CLAUSE + " AND (m.fonction_cle = 'responsable' OR m.type_membre = 'responsable')", []
-    if categorie in _FAMILLE_CATEGORIE:
-        return _VISIBLE_CLAUSE + " AND fh.famille = %s AND m.fonction_confirmee = true", [_FAMILLE_CATEGORIE[categorie]]
+        return _VISIBLE_CLAUSE + " AND (m.type_membre = 'responsable' OR " + _MF_FAMILLE + ")", ["responsables"]
+    if categorie == "bergers":
+        # Berger/Bergere is a consecration title (est_berger), never a function.
+        return _VISIBLE_CLAUSE + " AND m.est_berger = true", []
+    if categorie in _FAMILLE_CATEGORIE:  # direction, coordinateurs (-> coordination), patriarches
+        return _VISIBLE_CLAUSE + " AND " + _MF_FAMILLE, [_FAMILLE_CATEGORIE[categorie]]
     return None
 
 
