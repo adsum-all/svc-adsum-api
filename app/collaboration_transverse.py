@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
 
-from . import db
+from . import activites, audit, db
 from .collaboration_cartes import _CARTE_COLS, LECTEURS, CarteProtoOut, carte_out
 from .collaboration_espaces import MembreOut, _initials, _name_from_email, require_espace_role
+from .fields import LineStr, ShortStr, TitleStr
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -203,11 +204,12 @@ class ActivitePublieeOut(BaseModel):
     the collaboration calendar shows the same activities as the member agenda."""
 
     id: str
-    carte_id: str
-    tableau_id: str
-    espace_id: str | None
+    carte_id: str | None = None
+    tableau_id: str | None = None
+    espace_id: str | None = None
     titre: str
     type: str | None = None
+    cible_type: str | None = None
     debut: str | None = None
     lieu: str | None = None
 
@@ -216,19 +218,21 @@ class ActivitePublieeOut(BaseModel):
 def activites_publiees(
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
 ) -> list[ActivitePublieeOut]:
-    """The real activities published from the caller's visible spaces (a card linked
-    to a non-cancelled evenement), so the collaboration calendar reflects them
-    exactly like the member agenda and the back office do."""
-    espaces = _visible_espace_ids(user)
-    if not espaces:
-        return []
+    """Every programmed activity from the shared ``evenement`` table (non-cancelled),
+    so the collaboration calendar shows the SAME activities as the back office and
+    the member agenda: same table, same source of truth, the difference between apps
+    being only the filters each one applies. An activity that was published from a
+    collaboration card also carries its card link (so it can be opened); the others
+    are shown read-only. No space scoping here: the whole fraternity's programme."""
     rows = db.fetch_all(
-        "SELECT e.id, c.id AS carte_id, c.tableau_id, t.espace_id, e.titre, e.type, e.debut, e.lieu "
-        "FROM collab_carte c JOIN collab_tableau t ON t.id = c.tableau_id "
-        "JOIN evenement e ON e.id = c.evenement_id "
-        "WHERE c.evenement_id IS NOT NULL AND NOT e.annule AND t.espace_id = ANY(%s) "
+        "SELECT e.id, e.titre, e.type, e.cible_type, e.debut, e.lieu, "
+        "c.id AS carte_id, c.tableau_id, t.espace_id "
+        "FROM evenement e "
+        "LEFT JOIN collab_carte c ON c.evenement_id = e.id "
+        "LEFT JOIN collab_tableau t ON t.id = c.tableau_id "
+        "WHERE NOT e.annule "
         "ORDER BY e.debut",
-        (espaces,),
+        (),
         role=user.role,
     )
     out: list[ActivitePublieeOut] = []
@@ -237,16 +241,49 @@ def activites_publiees(
         out.append(
             ActivitePublieeOut(
                 id=str(r["id"]),
-                carte_id=str(r["carte_id"]),
-                tableau_id=str(r["tableau_id"]),
+                carte_id=str(r["carte_id"]) if r.get("carte_id") else None,
+                tableau_id=str(r["tableau_id"]) if r.get("tableau_id") else None,
                 espace_id=str(r["espace_id"]) if r.get("espace_id") else None,
                 titre=r["titre"],
                 type=r.get("type"),
+                cible_type=r.get("cible_type"),
                 debut=debut.isoformat() if hasattr(debut, "isoformat") else (str(debut) if debut else None),
                 lieu=r.get("lieu"),
             )
         )
     return out
+
+
+class ActiviteIn(BaseModel):
+    """Create a real activity from the collaboration app. Same engine and same
+    evenement row as the back office and pilotage, so it appears in every calendar."""
+
+    titre: TitleStr
+    type: ShortStr | None = None
+    debut: str
+    fin: str | None = None
+    lieu: LineStr | None = None
+    cible_type: ShortStr = "general"
+    cible_id: ShortStr | None = None
+    visibilite: ShortStr = "membres"
+
+
+@router.post("/activites", status_code=status.HTTP_201_CREATED)
+def creer_activite(
+    payload: ActiviteIn,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> dict[str, str]:
+    """Program an activity directly from the collaboration app, through the shared
+    activity engine (same evenement row as the back office and pilotage), so it is
+    immediately visible in every aligned calendar."""
+    evenement_id = activites.inserer_evenement(
+        titre=payload.titre, type_=payload.type, debut=payload.debut, fin=payload.fin,
+        lieu=payload.lieu, cible_type=payload.cible_type, cible_id=payload.cible_id,
+        visibilite=payload.visibilite, cree_par=user.id, role=user.role,
+    )
+    audit.log(user.id, user.role, "creation_activite_collaboration", "evenement", evenement_id,
+              {"cible_type": payload.cible_type})
+    return {"id": evenement_id}
 
 
 @router.get("/stats", response_model=StatsGlobalesOut)
@@ -325,7 +362,7 @@ def stats_espace(
         "LEFT JOIN collab_carte_membre cm ON cm.utilisateur_id = em.utilisateur_id AND cm.role = 'assigne' "
         "LEFT JOIN collab_carte c ON c.id = cm.carte_id AND NOT c.archive "
         "LEFT JOIN collab_tableau t ON t.id = c.tableau_id AND t.espace_id = %s "
-        "WHERE em.espace_id = %s GROUP BY em.utilisateur_id, nom",
+        "WHERE em.espace_id = %s GROUP BY em.utilisateur_id, m.nom_affiche, u.email",
         (espace_id, espace_id),
         role=user.role,
     )
