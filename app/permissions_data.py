@@ -188,6 +188,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'POST /api/v1/collaboration/cartes-espace/{carte_id}/deplacer-tableau': 'collaboration.gerer',
     'POST /api/v1/collaboration/cartes-espace/{carte_id}/dupliquer': 'collaboration.gerer',
     'POST /api/v1/collaboration/cartes-espace/{carte_id}/archive': 'collaboration.gerer',
+    'POST /api/v1/collaboration/cartes-espace/{carte_id}/publier': 'collaboration.gerer',
     'DELETE /api/v1/collaboration/cartes-espace/{carte_id}': 'collaboration.gerer',
     'POST /api/v1/collaboration/cartes-espace/{carte_id}/commentaires': 'collaboration.gerer',
     'POST /api/v1/collaboration/cartes-espace/{carte_id}/lu': 'collaboration.superviser',
