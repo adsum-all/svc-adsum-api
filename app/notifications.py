@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 
 from . import audit, channels, db
+from .config import settings
 from .cron_auth import require_cron_auth
 from .email_templates import render_anniversaire_email, render_notification_email
 from .permissions_rbac import require_permission
@@ -72,7 +73,18 @@ _CATEGORY_PREF = {
     "collab_assignation": "collaboration",
     "collab_echeance": "collaboration",
     "collab_publication": "collaboration",
+    "collab_demande": "collaboration",
 }
+
+
+def _whatsapp_template_for(type_cle: str) -> str | None:
+    """The approved WhatsApp template for a notification type, or None when none is
+    configured (WhatsApp is then skipped for that type, other channels still send)."""
+    if type_cle == "anniversaire":
+        return settings.whatsapp_template_anniversaire or None
+    if _CATEGORY_PREF.get(type_cle) == "collaboration":
+        return settings.whatsapp_template_collab or None
+    return None
 
 # Minimal built-in fallbacks (FR/EN) used only if no template row exists yet.
 _FALLBACK = {
@@ -198,7 +210,10 @@ def notifier(
             html = render_anniversaire_email(titre, corps, site=site or None)
         else:
             html = render_notification_email(titre, corps, signature=signature, site=site or None)
-        msg = channels.Message(titre=titre, corps_text=corps_text, corps_html=html, type_notif=type_cle)
+        msg = channels.Message(
+            titre=titre, corps_text=corps_text, corps_html=html, type_notif=type_cle,
+            whatsapp_template=_whatsapp_template_for(type_cle),
+        )
         # Critical messages ignore the channel kill-switch and the member's channel
         # preferences: security must always be attempted on every reachable channel.
         used = channels.dispatch(membre_id, role, msg, whatsapp_params=whatsapp_params, critique=critique)

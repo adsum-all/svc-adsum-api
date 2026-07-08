@@ -14,7 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import db
+from . import collaboration_notif, db
 from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
 from .schemas import UserMe
@@ -359,12 +359,15 @@ def rejoindre(
     espace_id = str(e["id"])
     if role_in_espace(espace_id, user) is not None:
         return RejoindreOut(espace_id=espace_id, espace_nom=e["nom"], statut="deja_membre")
-    db.execute(
+    inserted = db.execute(
         "INSERT INTO collab_demande_acces (espace_id, utilisateur_id) VALUES (%s, %s) "
-        "ON CONFLICT (espace_id, utilisateur_id) DO NOTHING",
+        "ON CONFLICT (espace_id, utilisateur_id) DO NOTHING RETURNING id",
         (espace_id, user.id),
         role=user.role,
     )
+    # Only tell the owners/admins on a genuinely new request, never on a duplicate.
+    if inserted:
+        collaboration_notif.notifier_demande_acces(espace_id, str(e["nom"]), user.id, user.role)
     return RejoindreOut(espace_id=espace_id, espace_nom=e["nom"], statut="demande")
 
 
@@ -374,12 +377,16 @@ def demander_acces(
     payload: DemandeIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
 ) -> EspaceOut:
-    db.execute(
+    inserted = db.execute(
         "INSERT INTO collab_demande_acces (espace_id, utilisateur_id) VALUES (%s, %s) "
-        "ON CONFLICT (espace_id, utilisateur_id) DO NOTHING",
+        "ON CONFLICT (espace_id, utilisateur_id) DO NOTHING RETURNING id",
         (espace_id, payload.membre_id),
         role=user.role,
     )
+    if inserted:
+        collaboration_notif.notifier_demande_acces(
+            espace_id, collaboration_notif.nom_espace(espace_id, user.role), str(payload.membre_id), user.role
+        )
     return _espace_out(espace_id, user.role)
 
 
