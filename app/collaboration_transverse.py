@@ -39,12 +39,6 @@ class NotificationOut(BaseModel):
     lue: bool
 
 
-class MembrePatch(BaseModel):
-    nom: str | None = None
-    courriel: str | None = None
-    initiales: str | None = None
-
-
 class CarteEcheanceOut(CarteProtoOut):
     espace_id: str | None = None
 
@@ -145,13 +139,12 @@ def marquer_toutes_lues(
     )
 
 
-@router.patch("/moi", response_model=MembreOut)
-def maj_moi(
-    _payload: MembrePatch, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
-) -> MembreOut:
-    # Identity is managed centrally (utilisateur / membre), shared with the other
-    # apps, so this never renames the person globally: it returns the resolved
-    # member. Editing display identity belongs to the back office.
+@router.get("/moi", response_model=MembreOut)
+def moi(user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]) -> MembreOut:
+    # The signed-in member's real identity. Identity is managed centrally
+    # (utilisateur / membre, shared with the other apps and governed by the civil
+    # identity rules), so collaboration reads it here (real nom_affiche) and never
+    # edits it: display-name changes belong to the back office.
     row = db.fetch_one(
         "SELECT u.id, u.email, m.nom_affiche FROM utilisateur u LEFT JOIN membre m ON m.id = u.membre_id "
         "WHERE u.id = %s",
