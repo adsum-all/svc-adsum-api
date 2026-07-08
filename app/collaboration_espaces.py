@@ -23,7 +23,13 @@ router = APIRouter(prefix="/api/v1/collaboration", tags=["collaboration-espaces"
 
 ADMINS = ("super_admin", "admin")
 GERANTS = ("proprietaire", "admin")
-DEFAULT_ETIQUETTES = (("General", "#2A4FAD", True), ("Urgent", "#C0392B", False))
+DEFAULT_ETIQUETTES = (
+    ("Liturgie", "#2A4FAD", True),
+    ("Intendance", "#2E7D32", False),
+    ("Communication", "#8E44AD", False),
+    ("Urgent", "#C0392B", False),
+    ("Finance", "#B8860B", False),
+)
 
 
 class MembreEspaceOut(BaseModel):
