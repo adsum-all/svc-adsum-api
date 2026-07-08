@@ -15,8 +15,13 @@ CATALOGUE: dict[str, dict[str, str]] = {
     'attestations.gerer': {'domaine': 'attestations', 'libelle': 'Attestations - gerer', 'risque': 'moyen', 'portee': 'scope'},
     'audit.administrer': {'domaine': 'audit', 'libelle': "Journal d'audit - administrer", 'risque': 'eleve', 'portee': 'global'},
     'bergers.consulter': {'domaine': 'bergers', 'libelle': 'Bergers - consulter', 'risque': 'faible', 'portee': 'scope'},
-    'collaboration.gerer': {'domaine': 'collaboration', 'libelle': 'Collaboration - gerer', 'risque': 'moyen', 'portee': 'scope'},
-    'collaboration.superviser': {'domaine': 'collaboration', 'libelle': 'Collaboration - superviser', 'risque': 'faible', 'portee': 'scope'},
+    # Collaboration access is a global app-entry permission: the fine boundary is
+    # per-space membership (collab_espace_membre, require_espace_role), not an
+    # organisational perimeter. It is declared 'global' rather than 'scope' because
+    # collaboration never consumes require_perimetre, so a perimeter-scoped grant of
+    # these keys would be inert (permissions_effectives only counts global grants).
+    'collaboration.gerer': {'domaine': 'collaboration', 'libelle': 'Collaboration - gerer', 'risque': 'moyen', 'portee': 'global'},
+    'collaboration.superviser': {'domaine': 'collaboration', 'libelle': 'Collaboration - superviser', 'risque': 'faible', 'portee': 'global'},
     'commissions.administrer': {'domaine': 'commissions', 'libelle': 'Commissions et missions - administrer', 'risque': 'eleve', 'portee': 'scope'},
     'commissions.consulter': {'domaine': 'commissions', 'libelle': 'Commissions et missions - consulter', 'risque': 'faible', 'portee': 'scope'},
     'comptage.controler': {'domaine': 'comptage', 'libelle': 'Comptage - controler', 'risque': 'moyen', 'portee': 'scope'},
