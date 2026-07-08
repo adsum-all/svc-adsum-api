@@ -40,6 +40,10 @@ class Message:
     corps_html: str | None = None
     image_url: str | None = None
     type_notif: str = "systeme"
+    # Approved WhatsApp template to use for this message, if any. None falls back
+    # to the birthday template for the legacy birthday flow; an unknown or empty
+    # template makes the WhatsApp send a no-op (the other channels still deliver).
+    whatsapp_template: str | None = None
 
 
 def _post_json(url: str, payload: dict[str, object], headers: dict[str, str]) -> tuple[bool, dict[str, object]]:
@@ -85,7 +89,9 @@ def telegram_configured() -> bool:
 
 
 def whatsapp_configured() -> bool:
-    return bool(settings.whatsapp_token and settings.whatsapp_phone_number_id and settings.whatsapp_template_anniversaire)
+    # The template is now chosen per message, so availability is just the account
+    # credentials; a message without an approved template is skipped at send time.
+    return bool(settings.whatsapp_token and settings.whatsapp_phone_number_id)
 
 
 def sms_configured() -> bool:
@@ -168,9 +174,15 @@ def _retention_days() -> int:
     return max(1, value)
 
 
-def send_whatsapp(numero: str, template_params: list[str]) -> bool:
-    """Send an approved template (the only proactive option on WhatsApp)."""
-    if not whatsapp_configured() or not numero:
+def send_whatsapp(numero: str, template_params: list[str], template_name: str | None = None) -> bool:
+    """Send an approved template (the only proactive option on WhatsApp).
+
+    ``template_name`` selects the approved template; it falls back to the birthday
+    template for the legacy birthday flow. Without a resolved template the send is
+    a no-op so a message type with no approved template never blocks the fan-out.
+    """
+    template = template_name or settings.whatsapp_template_anniversaire
+    if not whatsapp_configured() or not numero or not template:
         return False
     url = f"https://graph.facebook.com/{settings.whatsapp_graph_version}/{settings.whatsapp_phone_number_id}/messages"
     payload = {
@@ -178,12 +190,38 @@ def send_whatsapp(numero: str, template_params: list[str]) -> bool:
         "to": numero.lstrip("+"),
         "type": "template",
         "template": {
-            "name": settings.whatsapp_template_anniversaire,
+            "name": template,
             "language": {"code": settings.whatsapp_template_lang},
             "components": [{"type": "body", "parameters": [{"type": "text", "text": p} for p in template_params]}] if template_params else [],
         },
     }
     ok, _ = _post_json(url, payload, {"Authorization": f"Bearer {settings.whatsapp_token}"})
+    return ok
+
+
+def send_sms(numero: str, text: str) -> bool:
+    """Send a transactional SMS through the configured provider (config-gated).
+
+    Only 'brevo' is wired: it reuses the Brevo account key (email_api_key) and the
+    transactional SMS API. Returns False (a clean no-op) when SMS is not configured,
+    so the fan-out is never blocked by an unconfigured channel.
+    """
+    if not sms_configured() or not numero:
+        return False
+    if settings.sms_provider.lower() != "brevo" or not settings.email_api_key:
+        return False
+    payload = {
+        "type": "transactional",
+        "unicodeEnabled": True,
+        "sender": (settings.sms_sender or "ADSUM")[:11],
+        "recipient": numero.lstrip("+"),
+        "content": text[:640],
+    }
+    ok, _ = _post_json(
+        "https://api.brevo.com/v3/transactionalSMS/sms",
+        payload,
+        {"api-key": settings.email_api_key, "accept": "application/json"},
+    )
     return ok
 
 
@@ -235,7 +273,7 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
         role=role,
     ) or {"email": True, "telegram": True, "whatsapp": True, "sms": True}
     contact = db.fetch_one(
-        "SELECT email, telegram_chat_id, whatsapp_numero FROM membre WHERE id = %s",
+        "SELECT email, telegram_chat_id, whatsapp_numero, indicatif_telephone, telephone FROM membre WHERE id = %s",
         (membre_id,),
         role=role,
     ) or {}
@@ -264,14 +302,37 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
         else:
             _record_echec(membre_id, role, message.type_notif, "telegram", "envoi Telegram non abouti")
 
-    # 4) WhatsApp (paid, config-gated).
+    # 4) WhatsApp (paid, config-gated). The message picks its approved template;
+    # a type with no template is skipped inside send_whatsapp.
     if autorise("whatsapp") and contact.get("whatsapp_numero"):
-        if send_whatsapp(str(contact["whatsapp_numero"]), whatsapp_params or []):
+        if send_whatsapp(str(contact["whatsapp_numero"]), whatsapp_params or [], message.whatsapp_template):
             used.append("whatsapp")
         else:
             _record_echec(membre_id, role, message.type_notif, "whatsapp", "envoi WhatsApp non abouti")
 
+    # 5) SMS (config-gated, off until a provider is selected).
+    numero_sms = _sms_numero(contact.get("indicatif_telephone"), contact.get("telephone"))
+    if autorise("sms") and sms_configured() and numero_sms:
+        if send_sms(numero_sms, f"{message.titre}: {message.corps_text}"):
+            used.append("sms")
+        else:
+            _record_echec(membre_id, role, message.type_notif, "sms", "envoi SMS non abouti")
+
     return used
+
+
+def _sms_numero(indicatif: object, telephone: object) -> str:
+    """Build the international MSISDN (digits only) from the dialing code and the
+    national number. Drops a single leading national trunk 0 when a code is present.
+    Returns "" when the number is unusable."""
+    ind = "".join(ch for ch in str(indicatif or "") if ch.isdigit())
+    nat = "".join(ch for ch in str(telephone or "") if ch.isdigit())
+    if not nat:
+        return ""
+    if ind and nat.startswith("0"):
+        nat = nat[1:]
+    numero = f"{ind}{nat}"
+    return numero if len(numero) >= 8 else ""
 
 
 def canal_actif(canal: str) -> bool:

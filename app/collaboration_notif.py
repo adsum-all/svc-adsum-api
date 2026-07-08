@@ -58,8 +58,16 @@ def emettre(
     membre_id = resoudre_membre_id(utilisateur_id, role)
     if not membre_id:
         return
-    full_ctx = {"prenom": _prenom(membre_id, role), **(ctx or {})}
-    notifications.notifier(membre_id, role, type_offchannel, full_ctx, ref_id=carte_id or "", dedup=dedup)
+    prenom = _prenom(membre_id, role)
+    full_ctx = {"prenom": prenom, **(ctx or {})}
+    # Positional body params for the (single) approved collaboration WhatsApp
+    # template: recipient first name, the subject (card title or requester), the space.
+    sujet = str(full_ctx.get("titre") or full_ctx.get("demandeur") or "")
+    espace = str(full_ctx.get("espace") or "")
+    notifications.notifier(
+        membre_id, role, type_offchannel, full_ctx, ref_id=carte_id or "", dedup=dedup,
+        whatsapp_params=[prenom, sujet, espace],
+    )
 
 
 def nom_espace(espace_id: str | None, role: str | None) -> str:
@@ -67,3 +75,35 @@ def nom_espace(espace_id: str | None, role: str | None) -> str:
         return ""
     row = db.fetch_one("SELECT nom FROM collab_espace WHERE id = %s", (espace_id,), role=role)
     return (row["nom"] if row else "") or ""
+
+
+def nom_compte(utilisateur_id: str, role: str | None) -> str:
+    """Display name of a login account: the linked member's name, else the e-mail
+    local part. Used to name the requester in an access-request notification."""
+    row = db.fetch_one(
+        "SELECT coalesce(m.nom_affiche, u.email) AS nom FROM utilisateur u "
+        "LEFT JOIN membre m ON m.id = u.membre_id WHERE u.id = %s",
+        (utilisateur_id,),
+        role=role,
+    )
+    nom = (row["nom"] if row else "") or "Un collaborateur"
+    return nom.split("@")[0] if "@" in nom else nom
+
+
+def notifier_demande_acces(espace_id: str, espace_nom: str, demandeur_uid: str, role: str | None) -> None:
+    """Tell each owner/admin of a space that someone asked to join it, in-app and
+    (when they map to a member) over their real channels via the collab_demande
+    catalogue message."""
+    demandeur = nom_compte(demandeur_uid, role)
+    gerants = db.fetch_all(
+        "SELECT utilisateur_id FROM collab_espace_membre WHERE espace_id = %s AND role IN ('proprietaire', 'admin')",
+        (espace_id,),
+        role=role,
+    )
+    ctx = {"espace": espace_nom, "demandeur": demandeur}
+    texte = f"{demandeur} demande a rejoindre l'espace {espace_nom}"
+    for g in gerants:
+        uid = str(g["utilisateur_id"])
+        if uid == demandeur_uid:
+            continue
+        emettre(uid, "demande_acces", "collab_demande", texte, None, espace_id, ctx, role)

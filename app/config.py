@@ -64,9 +64,16 @@ class Settings(BaseSettings):
     whatsapp_phone_number_id: str = ""
     whatsapp_graph_version: str = "v22.0"
     whatsapp_template_anniversaire: str = ""
+    # Approved template used for collaboration notifications (mention, assignment,
+    # due date, publication, access request). Empty until the template is approved
+    # on the WABA, in which case WhatsApp is simply skipped for those messages.
+    whatsapp_template_collab: str = ""
     whatsapp_template_lang: str = "fr"
-    # SMS placeholder: no provider selected yet.
+    # SMS: provider selector (empty = off). 'brevo' reuses the Brevo account key
+    # (email_api_key) through the transactional SMS API; sms_sender is the
+    # alphanumeric originator shown to the recipient (max 11 chars).
     sms_provider: str = ""
+    sms_sender: str = "ADSUM"
     # Daily cron shared secret (Vercel sends it as an Authorization bearer header).
     cron_secret: str = ""
     # Two-factor authentication. mfa_trust_days is how long a member's "trust this
