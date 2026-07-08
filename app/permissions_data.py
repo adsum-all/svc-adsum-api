@@ -150,6 +150,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/admin/terminaux': 'terminaux.consulter',
     'GET /api/v1/admin/tribus': 'tribus.consulter',
     'GET /api/v1/admin/utilisateurs': 'comptes.administrer',
+    'GET /api/v1/collaboration/calendrier': 'collaboration.superviser',
     'GET /api/v1/collaboration/cartes/{carte_id}/commentaires': 'collaboration.superviser',
     'GET /api/v1/collaboration/tableaux': 'collaboration.superviser',
     'GET /api/v1/collaboration/tableaux/{tableau_id}': 'collaboration.superviser',
