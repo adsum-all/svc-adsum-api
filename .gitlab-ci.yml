@@ -12,6 +12,8 @@ stages:
 variables:
   DOCKERFILE_PATH: "deploy/Dockerfile"
 
+# Continuous deployment to Vercel on develop activates once the protected CI/CD
+# variable VERCEL_TOKEN is set (repo already holds .vercel/project.json).
 include:
   - project: 'sr-media-ai/adsum/deployment/ci-templates'
     ref: develop
@@ -20,3 +22,4 @@ include:
       - '/templates/security.yml'
       - '/templates/docker.yml'
       - '/templates/deploy-gcp.yml'
+      - '/templates/deploy-web.yml'
