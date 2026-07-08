@@ -198,6 +198,57 @@ def _carte_echeance(row: dict[str, Any], role: str) -> CarteEcheanceOut:
     return CarteEcheanceOut(**base.model_dump(), espace_id=str(row["_espace"]) if row.get("_espace") else None)
 
 
+class ActivitePublieeOut(BaseModel):
+    """A real activity published from a collaboration card: the evenement row, so
+    the collaboration calendar shows the same activities as the member agenda."""
+
+    id: str
+    carte_id: str
+    tableau_id: str
+    espace_id: str | None
+    titre: str
+    type: str | None = None
+    debut: str | None = None
+    lieu: str | None = None
+
+
+@router.get("/activites", response_model=list[ActivitePublieeOut])
+def activites_publiees(
+    user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
+) -> list[ActivitePublieeOut]:
+    """The real activities published from the caller's visible spaces (a card linked
+    to a non-cancelled evenement), so the collaboration calendar reflects them
+    exactly like the member agenda and the back office do."""
+    espaces = _visible_espace_ids(user)
+    if not espaces:
+        return []
+    rows = db.fetch_all(
+        "SELECT e.id, c.id AS carte_id, c.tableau_id, t.espace_id, e.titre, e.type, e.debut, e.lieu "
+        "FROM collab_carte c JOIN collab_tableau t ON t.id = c.tableau_id "
+        "JOIN evenement e ON e.id = c.evenement_id "
+        "WHERE c.evenement_id IS NOT NULL AND NOT e.annule AND t.espace_id = ANY(%s) "
+        "ORDER BY e.debut",
+        (espaces,),
+        role=user.role,
+    )
+    out: list[ActivitePublieeOut] = []
+    for r in rows:
+        debut = r["debut"]
+        out.append(
+            ActivitePublieeOut(
+                id=str(r["id"]),
+                carte_id=str(r["carte_id"]),
+                tableau_id=str(r["tableau_id"]),
+                espace_id=str(r["espace_id"]) if r.get("espace_id") else None,
+                titre=r["titre"],
+                type=r.get("type"),
+                debut=debut.isoformat() if hasattr(debut, "isoformat") else (str(debut) if debut else None),
+                lieu=r.get("lieu"),
+            )
+        )
+    return out
+
+
 @router.get("/stats", response_model=StatsGlobalesOut)
 def stats_globales(
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
