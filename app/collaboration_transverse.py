@@ -14,8 +14,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from . import db
-from .collaboration_cartes import _CARTE_COLS, CarteProtoOut, carte_out
-from .collaboration_espaces import MembreOut, _initials, _name_from_email
+from .collaboration_cartes import _CARTE_COLS, LECTEURS, CarteProtoOut, carte_out
+from .collaboration_espaces import MembreOut, _initials, _name_from_email, require_espace_role
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -242,6 +242,9 @@ def stats_globales(
 def stats_espace(
     espace_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
 ) -> StatsEspaceOut:
+    # Same space ACL as the space detail: only a member (or an admin, treated as a
+    # synthetic owner) may read a space's stats, never any space by id.
+    require_espace_role(espace_id, user, LECTEURS)
     tabs = db.fetch_one(
         "SELECT count(*) AS n FROM collab_tableau WHERE espace_id = %s AND NOT archive", (espace_id,), role=user.role
     )
