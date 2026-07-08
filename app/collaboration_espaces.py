@@ -332,6 +332,36 @@ def remove_membre(
     return _espace_out(espace_id, user.role)
 
 
+class RejoindreOut(BaseModel):
+    espace_id: str
+    espace_nom: str
+    statut: str
+
+
+@router.post("/rejoindre/{jeton}", response_model=RejoindreOut)
+def rejoindre(
+    jeton: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
+) -> RejoindreOut:
+    """Follow an invitation link: resolve the space by its invitation token and
+    file an access request for the signed-in member (or report that they are
+    already a member). Feeds the space "access requests" panel."""
+    e = db.fetch_one(
+        "SELECT id, nom FROM collab_espace WHERE invitation_jeton = %s AND NOT archive", (jeton,), role=user.role
+    )
+    if not e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="invalid invitation")
+    espace_id = str(e["id"])
+    if role_in_espace(espace_id, user) is not None:
+        return RejoindreOut(espace_id=espace_id, espace_nom=e["nom"], statut="deja_membre")
+    db.execute(
+        "INSERT INTO collab_demande_acces (espace_id, utilisateur_id) VALUES (%s, %s) "
+        "ON CONFLICT (espace_id, utilisateur_id) DO NOTHING",
+        (espace_id, user.id),
+        role=user.role,
+    )
+    return RejoindreOut(espace_id=espace_id, espace_nom=e["nom"], statut="demande")
+
+
 @router.post("/espaces/{espace_id}/demandes", response_model=EspaceOut, status_code=status.HTTP_201_CREATED)
 def demander_acces(
     espace_id: str,
