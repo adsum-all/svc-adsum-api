@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from . import activites, audit, db
@@ -284,6 +284,102 @@ def creer_activite(
     audit.log(user.id, user.role, "creation_activite_collaboration", "evenement", evenement_id,
               {"cible_type": payload.cible_type})
     return {"id": evenement_id}
+
+
+class ActiviteDetail(BaseModel):
+    id: str
+    titre: str
+    type: str | None = None
+    debut: str | None = None
+    fin: str | None = None
+    lieu: str | None = None
+    cible_type: str | None = None
+    cible_id: str | None = None
+    visibilite: str | None = None
+    annule: bool = False
+
+
+@router.get("/activites/{evenement_id}", response_model=ActiviteDetail)
+def detail_activite(
+    evenement_id: str,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
+) -> ActiviteDetail:
+    """One activity's editable fields, from the shared evenement table."""
+    r = db.fetch_one(
+        "SELECT id, titre, type, debut, fin, lieu, cible_type, cible_id, visibilite, annule "
+        "FROM evenement WHERE id = %s",
+        (evenement_id,),
+        role=user.role,
+    )
+    if not r:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="activity not found")
+    return ActiviteDetail(
+        id=str(r["id"]), titre=r["titre"], type=r.get("type"),
+        debut=r["debut"].isoformat() if hasattr(r["debut"], "isoformat") else (str(r["debut"]) if r["debut"] else None),
+        fin=r["fin"].isoformat() if hasattr(r["fin"], "isoformat") else (str(r["fin"]) if r["fin"] else None),
+        lieu=r.get("lieu"), cible_type=r.get("cible_type"),
+        cible_id=str(r["cible_id"]) if r.get("cible_id") else None,
+        visibilite=r.get("visibilite"), annule=bool(r.get("annule")),
+    )
+
+
+class ActivitePatch(BaseModel):
+    titre: TitleStr | None = None
+    type: ShortStr | None = None
+    debut: str | None = None
+    fin: str | None = None
+    lieu: LineStr | None = None
+    cible_type: ShortStr | None = None
+    cible_id: ShortStr | None = None
+    visibilite: ShortStr | None = None
+
+
+@router.patch("/activites/{evenement_id}")
+def modifier_activite(
+    evenement_id: str,
+    payload: ActivitePatch,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> dict[str, str]:
+    """Edit an activity from the collaboration app, whatever app created it (parity
+    with the back office). The same evenement row is updated, so the change shows in
+    every aligned calendar. Targeting is validated by the shared engine."""
+    fields = payload.model_dump(exclude_unset=True)
+    if "cible_type" in fields:
+        stored = activites.valider_cible(str(fields["cible_type"]), fields.get("cible_id"), user.role)
+        fields["cible_id"] = stored
+    if not fields:
+        return {"id": evenement_id}
+    cols = {"titre", "type", "debut", "fin", "lieu", "cible_type", "cible_id", "visibilite"}
+    fields = {k: v for k, v in fields.items() if k in cols}
+    sets = ", ".join(f"{k} = %s" for k in fields)
+    updated = db.execute(
+        f"UPDATE evenement SET {sets} WHERE id = %s RETURNING id",
+        (*fields.values(), evenement_id),
+        role=user.role,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="activity not found")
+    audit.log(user.id, user.role, "modification_activite_collaboration", "evenement", evenement_id,
+              {"champs": list(fields)})
+    return {"id": str(updated["id"])}
+
+
+@router.post("/activites/{evenement_id}/annuler")
+def annuler_activite(
+    evenement_id: str,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> dict[str, str]:
+    """Cancel an activity from the collaboration app (parity with the back office):
+    it is marked cancelled and leaves every calendar, but its history is kept."""
+    updated = db.execute(
+        "UPDATE evenement SET annule = true, annule_le = now() WHERE id = %s RETURNING id",
+        (evenement_id,),
+        role=user.role,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="activity not found")
+    audit.log(user.id, user.role, "annulation_activite_collaboration", "evenement", evenement_id, {})
+    return {"id": str(updated["id"])}
 
 
 @router.get("/stats", response_model=StatsGlobalesOut)
