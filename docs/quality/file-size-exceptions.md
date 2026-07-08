@@ -41,6 +41,11 @@ deployment-unblock constraint.
   a card as a real activity through the shared activites engine). Comments,
   reactions and checklists already live in collaboration_cartes_social.py; next
   split: extract the CarteProto builder helpers into collaboration_cartes_build.py.
+- app/collaboration_transverse.py (538 lines): cross-cutting collaboration domain
+  (notifications, profile, my-cards / calendar views, dashboards, search, and the
+  shared-calendar activities: list of the whole evenement programme plus create /
+  edit / cancel from collaboration). Next split: move the activities endpoints into
+  collaboration_activites.py.
 
 ## Rule
 
