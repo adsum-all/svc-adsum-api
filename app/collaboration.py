@@ -390,10 +390,12 @@ def publier_carte(
     if carte["publie"]:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="card already published")
     debut = carte["date_prevue"] or datetime.now(tz=UTC)
+    # session_ouverte is left to its schema default (closed): an activity is opened
+    # for attendance only when its session actually starts, never at publish time.
     evenement = db.execute(
         """
-        INSERT INTO evenement (titre, type, volet, debut, lieu, session_ouverte, ouvert_le, cree_par)
-        VALUES (%s, %s, 'A', %s, %s, true, now(), %s)
+        INSERT INTO evenement (titre, type, volet, debut, lieu, cree_par)
+        VALUES (%s, %s, 'A', %s, %s, %s)
         RETURNING id
         """,
         (carte["titre"], carte["type_activite"], debut, carte["lieu"], user.id),

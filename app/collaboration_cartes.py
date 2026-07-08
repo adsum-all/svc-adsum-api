@@ -15,9 +15,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import collaboration_notif, db
+from . import activites, audit, collaboration_notif, db
 from .collaboration_espaces import GERANTS, require_espace_role
-from .fields import ShortStr, TextStr, TitleStr
+from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -99,6 +99,8 @@ class CarteProtoOut(BaseModel):
     archive: bool
     modele: bool
     couverture_id: str | None = None
+    publie: bool = False
+    evenement_id: str | None = None
 
 
 class CarteIn(BaseModel):
@@ -138,7 +140,7 @@ class ArchiveIn(BaseModel):
 
 _CARTE_COLS = (
     "id, tableau_id, colonne_id, numero, titre, description, debut, echeance, rappel, "
-    "priorite, complexite, position, archive, modele, couverture_id"
+    "priorite, complexite, position, archive, modele, couverture_id, publie, evenement_id"
 )
 
 
@@ -312,6 +314,8 @@ def carte_out(row: dict[str, Any], role: str) -> CarteProtoOut:
         archive=bool(row["archive"]),
         modele=bool(row["modele"]),
         couverture_id=couverture_id,
+        publie=bool(row["publie"]),
+        evenement_id=str(row["evenement_id"]) if row["evenement_id"] else None,
     )
 
 
@@ -547,3 +551,91 @@ def delete_carte(
         (tableau_id,),
         role=user.role,
     )
+
+
+class PublierActiviteIn(BaseModel):
+    """Targeting for publishing a card as a real activity. ``general`` reaches the
+    whole membership; a unit target reaches that unit through the same diffusion
+    rules the back office uses. The date falls back to the card's own date."""
+
+    cible_type: ShortStr = "general"
+    cible_id: ShortStr | None = None
+    debut: str | None = None
+    lieu: LineStr | None = None
+    type: ShortStr | None = None
+    visibilite: ShortStr = "membres"
+
+
+@router.post("/cartes-espace/{carte_id}/publier", response_model=CarteProtoOut)
+def publier_carte_espace(
+    carte_id: str,
+    payload: PublierActiviteIn,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> CarteProtoOut:
+    """Publish a space card as a real activity through the shared activity engine.
+
+    Any active space member (owner, admin or member) with the platform
+    ``collaboration.gerer`` permission may publish; observers may not. The activity
+    lands in the ``evenement`` table exactly like a back-office or pilotage activity,
+    so it feeds the member agenda, attendance and questionnaires through the same
+    targeting. Space members are then notified. Publishing is idempotent: a card
+    already linked to an activity gets 409.
+    """
+    _, espace_id = _espace_of_carte(carte_id, user.role)
+    require_espace_role(espace_id, user, MEMBRES_ACTIFS)
+    carte = db.fetch_one(
+        "SELECT titre, type_activite, debut, echeance, date_prevue, lieu, publie, evenement_id "
+        "FROM collab_carte WHERE id = %s",
+        (carte_id,),
+        role=user.role,
+    )
+    if not carte:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="card not found")
+    if carte["publie"] or carte["evenement_id"]:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="card already published")
+    debut = payload.debut or carte["debut"] or carte["echeance"] or carte["date_prevue"]
+    if not debut:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="date de debut requise pour publier une activite"
+        )
+    evenement_id = activites.inserer_evenement(
+        titre=carte["titre"],
+        type_=payload.type or carte["type_activite"],
+        debut=debut,
+        lieu=payload.lieu or carte["lieu"],
+        cible_type=payload.cible_type,
+        cible_id=payload.cible_id,
+        visibilite=payload.visibilite,
+        cree_par=user.id,
+        role=user.role,
+    )
+    updated = db.execute(
+        "UPDATE collab_carte SET publie = true, evenement_id = %s, "
+        "type_activite = coalesce(%s, type_activite), maj_le = now() WHERE id = %s RETURNING id",
+        (evenement_id, payload.type, carte_id),
+        role=user.role,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="card not updated")
+    audit.log(
+        user.id, user.role, "publication_activite_collaboration", "evenement", evenement_id,
+        {"carte_id": carte_id, "espace_id": espace_id, "cible_type": payload.cible_type},
+    )
+    _notifier_publication(carte_id, espace_id, str(carte["titre"]), user)
+    return _fetch_carte(carte_id, user.role)
+
+
+def _notifier_publication(carte_id: str, espace_id: str, titre: str, user: UserMe) -> None:
+    """Tell every other space member the card was published as an activity."""
+    ctx = _ctx_carte(carte_id, user.role)
+    membres = db.fetch_all(
+        "SELECT utilisateur_id FROM collab_espace_membre WHERE espace_id = %s", (espace_id,), role=user.role
+    )
+    for m in membres:
+        uid = str(m["utilisateur_id"])
+        if uid == user.id:
+            continue
+        collaboration_notif.emettre(
+            uid, "publication", "collab_publication",
+            f"L'activite « {titre} » a ete publiee et ajoutee a l'agenda", carte_id, espace_id, ctx, user.role,
+        )

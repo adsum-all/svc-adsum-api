@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
-from . import audit, db, identite
+from . import activites, audit, db, identite
 from .fields import LineStr, ShortStr, TitleStr
 from .perimetre import PerimetreContext, Scope, require_perimetre
 
@@ -175,23 +175,19 @@ def creer_activite(payload: CreateActivite, ctx: Annotated[PerimetreContext, Dep
     """
     if payload.cible_type not in ("general", "coordination", "intendance", "tribu"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cible_type invalide")
-    if payload.cible_type != "general" and not payload.cible_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cible_id requis pour une activite ciblee")
     if not _cible_autorisee(ctx.scope, payload.cible_type, payload.cible_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="cible hors de votre perimetre")
-    cible_id = payload.cible_id if payload.cible_type != "general" else None
-    created = db.execute(
-        "INSERT INTO evenement (titre, type, mode, debut, fin, lieu, cible_type, cible_id, visibilite, cree_par) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-        (payload.titre, payload.type, payload.mode, payload.debut, payload.fin, payload.lieu,
-         payload.cible_type, cible_id, payload.visibilite, ctx.user.id),
-        role=ctx.user.role,
+    # Same activity engine as the back office and the collaboration spaces: it
+    # validates the target and lands the exact same evenement row shape.
+    evenement_id = activites.inserer_evenement(
+        titre=payload.titre, type_=payload.type, debut=payload.debut, fin=payload.fin,
+        lieu=payload.lieu, mode=payload.mode, cible_type=payload.cible_type,
+        cible_id=payload.cible_id, visibilite=payload.visibilite, cree_par=ctx.user.id, role=ctx.user.role,
     )
-    if not created:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="creation impossible")
-    audit.log(ctx.user.id, ctx.user.role, "creation_activite_perimetre", "evenement", str(created["id"]),
+    cible_id = payload.cible_id if payload.cible_type != "general" else None
+    audit.log(ctx.user.id, ctx.user.role, "creation_activite_perimetre", "evenement", evenement_id,
               {"cible_type": payload.cible_type, "cible_id": cible_id})
-    return {"id": str(created["id"])}
+    return {"id": evenement_id}
 
 
 @router.get("/tableau-de-bord")

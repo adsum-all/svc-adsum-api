@@ -36,8 +36,9 @@ deployment-unblock constraint.
 - app/fichiers.py (510 lines): identity-document storage domain (upload, encrypted
   content read, admin access with audit). To be split by extracting the
   encryption and storage helpers into a submodule.
-- app/collaboration_cartes.py (517 lines): rich collaboration card domain (the
-  nested CarteProto builder plus card CRUD, move, duplicate, archive). Comments,
+- app/collaboration_cartes.py (641 lines): rich collaboration card domain (the
+  nested CarteProto builder plus card CRUD, move, duplicate, archive, and publishing
+  a card as a real activity through the shared activites engine). Comments,
   reactions and checklists already live in collaboration_cartes_social.py; next
   split: extract the CarteProto builder helpers into collaboration_cartes_build.py.
 
