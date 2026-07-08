@@ -14,7 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import db
+from . import collaboration_notif, db
 from .collaboration_cartes import CommentaireProtoOut, _espace_of_carte
 from .collaboration_espaces import require_espace_role
 from .fields import LineStr, TextStr
@@ -80,15 +80,6 @@ def _resolve_mentions(corps: str, espace_id: str, role: str) -> list[str]:
     return matched
 
 
-def _notifier(utilisateur_id: str, type_notif: str, carte_id: str, espace_id: str, texte: str, role: str) -> None:
-    db.execute(
-        "INSERT INTO collab_notification (utilisateur_id, type, carte_id, espace_id, texte) "
-        "VALUES (%s, %s, %s, %s, %s)",
-        (utilisateur_id, type_notif, carte_id, espace_id, texte),
-        role=role,
-    )
-
-
 @router.post(
     "/cartes-espace/{carte_id}/commentaires",
     response_model=CommentaireProtoOut,
@@ -117,6 +108,8 @@ def ajouter_commentaire(
     )
     titre_row = db.fetch_one("SELECT titre FROM collab_carte WHERE id = %s", (carte_id,), role=user.role)
     titre = titre_row["titre"] if titre_row else ""
+    espace_nom = collaboration_notif.nom_espace(espace_id, user.role)
+    ctx = {"titre": titre, "espace": espace_nom}
     db.execute(
         "INSERT INTO collab_activite (carte_id, auteur_id, texte) VALUES (%s, %s, 'a commente la carte')",
         (carte_id, user.id),
@@ -131,7 +124,11 @@ def ajouter_commentaire(
             role=user.role,
         )
         if mid != user.id:
-            _notifier(mid, "mention", carte_id, espace_id, f"Vous etes mentionne dans (# {titre})", user.role)
+            # Mention: in-app + real channels (email / Telegram / WhatsApp).
+            collaboration_notif.emettre(
+                mid, "mention", "collab_mention", f"Vous etes mentionne dans « {titre} »",
+                carte_id, espace_id, ctx, user.role,
+            )
     suiveurs = db.fetch_all(
         "SELECT utilisateur_id FROM collab_carte_membre WHERE carte_id = %s AND role = 'suiveur'",
         (carte_id,),
@@ -140,7 +137,10 @@ def ajouter_commentaire(
     for s in suiveurs:
         sid = str(s["utilisateur_id"])
         if sid != user.id and sid not in mentions:
-            _notifier(sid, "carte_suivie", carte_id, espace_id, f"Nouveau commentaire sur (# {titre})", user.role)
+            # Follow notification: in-app only (high volume, off-channel would be noise).
+            collaboration_notif.emettre(
+                sid, "carte_suivie", None, f"Nouveau commentaire sur « {titre} »", carte_id, espace_id, None, user.role
+            )
     return CommentaireProtoOut(
         id=cid,
         auteur_id=str(created["auteur_id"]) if created["auteur_id"] else "",

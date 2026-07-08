@@ -66,6 +66,12 @@ _CATEGORY_PREF = {
     # Attendance survey ("sondage de pointage"): MANDATORY. None means the member
     # can never turn it off, because presence tracking is an administration duty.
     "sondage_activite": None,
+    # Collaboration (spaces): gated by the member "collaboration" preference so a
+    # member can mute collaboration noise (operational sensitivity).
+    "collab_mention": "collaboration",
+    "collab_assignation": "collaboration",
+    "collab_echeance": "collaboration",
+    "collab_publication": "collaboration",
 }
 
 # Minimal built-in fallbacks (FR/EN) used only if no template row exists yet.
@@ -389,6 +395,31 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     from .retention import scan_renouvellement
 
     result["retention_renouvellements"] = scan_renouvellement(role)
+
+    # 8) Collaboration card due-date reminders. The card carries a reminder offset
+    # (2j / 1j / day-of); on the matching day, its assignees and followers who map
+    # to a member get a real reminder (in-app + channels), deduped per card+day.
+    result["collab_echeances"] = 0
+    for c in db.fetch_all(
+        "SELECT c.id, c.titre, c.echeance FROM collab_carte c "
+        "WHERE c.echeance IS NOT NULL AND NOT c.archive AND coalesce(c.rappel, 'aucun') <> 'aucun' "
+        "AND c.echeance::date = CASE c.rappel WHEN '2j' THEN (now() + interval '2 days')::date "
+        "WHEN '1j' THEN (now() + interval '1 day')::date ELSE now()::date END",
+        (),
+        role=role,
+    ):
+        ech = c["echeance"].strftime("%d/%m/%Y") if c["echeance"] else ""
+        jalon = c["echeance"].strftime("%Y-%m-%d") if c["echeance"] else ""
+        for d in db.fetch_all(
+            "SELECT DISTINCT u.membre_id, m.prenoms FROM collab_carte_membre cm "
+            "JOIN utilisateur u ON u.id = cm.utilisateur_id JOIN membre m ON m.id = u.membre_id "
+            "WHERE cm.carte_id = %s AND u.membre_id IS NOT NULL AND m.statut = 'actif'",
+            (str(c["id"]),),
+            role=role,
+        ):
+            ctx = {"prenom": _prenom(d), "titre": c["titre"], "echeance": ech}
+            if notifier(str(d["membre_id"]), role, "collab_echeance", ctx, ref_id=f"{c['id']}:{jalon}", dedup=True):
+                result["collab_echeances"] += 1
 
     return {"ok": True, **result}
 
