@@ -339,8 +339,13 @@ def publier_carte(
     )
     if not evenement:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="event not created")
+    # The target column is no longer coupled to the exact name 'Publie' (columns
+    # are renameable): prefer a column named publie/publie (case and accent
+    # insensitive), otherwise fall back to the last column, so a published card
+    # always lands in a sensible end column even after a rename.
     publie_col = db.fetch_one(
-        "SELECT id FROM collab_colonne WHERE tableau_id = %s AND nom = 'Publie' LIMIT 1",
+        "SELECT id FROM collab_colonne WHERE tableau_id = %s "
+        "ORDER BY (lower(nom) IN ('publie', 'publié')) DESC, position DESC LIMIT 1",
         (str(carte["tableau_id"]),),
         role=user.role,
     )
