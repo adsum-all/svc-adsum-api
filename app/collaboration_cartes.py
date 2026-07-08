@@ -15,7 +15,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import db
+from . import collaboration_notif, db
 from .collaboration_espaces import GERANTS, require_espace_role
 from .fields import ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
@@ -163,6 +163,20 @@ def _espace_of_carte(carte_id: str, role: str) -> tuple[str, str]:
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="card not found")
     return str(row["tableau_id"]), str(row["espace_id"])
+
+
+def _ctx_carte(carte_id: str, role: str) -> dict[str, Any]:
+    """Card title, space name and space id, for notification context."""
+    row = db.fetch_one(
+        "SELECT c.titre, t.espace_id, e.nom AS espace FROM collab_carte c "
+        "JOIN collab_tableau t ON t.id = c.tableau_id JOIN collab_espace e ON e.id = t.espace_id "
+        "WHERE c.id = %s",
+        (carte_id,),
+        role=role,
+    )
+    if not row:
+        return {"titre": "", "espace": "", "espace_id": None}
+    return {"titre": row["titre"], "espace": row["espace"] or "", "espace_id": str(row["espace_id"])}
 
 
 def _pieces_for(where_col: str, ref_id: str, couverture_id: str | None, role: str) -> list[PieceOut]:
@@ -384,16 +398,34 @@ def _sync_carte_relations(cid: str, fields: dict[str, Any], user: UserMe) -> Non
             )
     for champ, role_val in (("assignes", "assigne"), ("suiveurs", "suiveur")):
         if champ in fields:
+            nouveaux = [str(u) for u in (fields.pop(champ) or [])]
+            avant = {
+                str(r["utilisateur_id"])
+                for r in db.fetch_all(
+                    "SELECT utilisateur_id FROM collab_carte_membre WHERE carte_id = %s AND role = %s",
+                    (cid, role_val),
+                    role=user.role,
+                )
+            }
             db.execute(
                 "DELETE FROM collab_carte_membre WHERE carte_id = %s AND role = %s", (cid, role_val), role=user.role
             )
-            for uid in fields.pop(champ) or []:
+            for uid in nouveaux:
                 db.execute(
                     "INSERT INTO collab_carte_membre (carte_id, utilisateur_id, role) VALUES (%s, %s, %s) "
                     "ON CONFLICT DO NOTHING",
                     (cid, uid, role_val),
                     role=user.role,
                 )
+            # Notify the newly assigned members (in-app + real channels).
+            if role_val == "assigne":
+                ctx = _ctx_carte(cid, user.role)
+                for uid in nouveaux:
+                    if uid not in avant and uid != user.id:
+                        collaboration_notif.emettre(
+                            uid, "assignation", "collab_assignation",
+                            f"La carte « {ctx['titre']} » vous a ete assignee", cid, ctx["espace_id"], ctx, user.role,
+                        )
 
 
 @router.patch("/cartes-espace/{carte_id}", response_model=CarteProtoOut)
