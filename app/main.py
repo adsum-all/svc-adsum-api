@@ -12,6 +12,7 @@ from .audit import router as audit_router
 from .auth import router as auth_router
 from .collaboration import router as collaboration_router
 from .collaboration_espaces import router as collaboration_espaces_router
+from .collaboration_tableaux import router as collaboration_tableaux_router
 from .comptage import comptage_public_router
 from .comptage import router as comptage_router
 from .config import settings
@@ -90,6 +91,7 @@ app.include_router(comptage_router)
 app.include_router(comptage_public_router)
 app.include_router(collaboration_router)
 app.include_router(collaboration_espaces_router)
+app.include_router(collaboration_tableaux_router)
 app.include_router(demandes_router)
 app.include_router(doublons_router)
 app.include_router(fichiers_router)

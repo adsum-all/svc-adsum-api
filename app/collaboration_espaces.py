@@ -121,7 +121,7 @@ def _initials(nom: str) -> str:
     return ("".join(p[0] for p in parts[:2]).upper()) or "AD"
 
 
-def _role_in_espace(espace_id: str, user: UserMe) -> str | None:
+def role_in_espace(espace_id: str, user: UserMe) -> str | None:
     """The signed-in user's role inside the space. Admins act as owners over
     every space (the back office controls everything)."""
     if user.role in ADMINS:
@@ -134,8 +134,8 @@ def _role_in_espace(espace_id: str, user: UserMe) -> str | None:
     return row["role"] if row else None
 
 
-def _require_role(espace_id: str, user: UserMe, allowed: tuple[str, ...]) -> str:
-    role = _role_in_espace(espace_id, user)
+def require_espace_role(espace_id: str, user: UserMe, allowed: tuple[str, ...]) -> str:
+    role = role_in_espace(espace_id, user)
     if role is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="not a member of this space")
     if role not in allowed:
@@ -231,7 +231,7 @@ def list_espaces(user: Annotated[UserMe, Depends(require_permission("collaborati
 def get_espace(
     espace_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
 ) -> EspaceOut:
-    _require_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
+    require_espace_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
     return _espace_out(espace_id, user.role)
 
 
@@ -269,7 +269,7 @@ def update_espace(
     payload: EspacePatch,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EspaceOut:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         return _espace_out(espace_id, user.role)
@@ -291,7 +291,7 @@ def add_membre(
     payload: MembreIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EspaceOut:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     db.execute(
         "INSERT INTO collab_espace_membre (espace_id, utilisateur_id, role) VALUES (%s, %s, %s) "
         "ON CONFLICT (espace_id, utilisateur_id) DO UPDATE SET role = EXCLUDED.role",
@@ -308,7 +308,7 @@ def change_role(
     payload: RolePatch,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EspaceOut:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     db.execute(
         "UPDATE collab_espace_membre SET role = %s WHERE espace_id = %s AND utilisateur_id = %s",
         (payload.role, espace_id, membre_id),
@@ -323,7 +323,7 @@ def remove_membre(
     membre_id: str,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EspaceOut:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     db.execute(
         "DELETE FROM collab_espace_membre WHERE espace_id = %s AND utilisateur_id = %s",
         (espace_id, membre_id),
@@ -354,7 +354,7 @@ def accepter_demande(
     payload: AccepterIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EspaceOut:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     demande = db.fetch_one(
         "SELECT utilisateur_id FROM collab_demande_acces WHERE id = %s AND espace_id = %s",
         (demande_id, espace_id),
@@ -378,7 +378,7 @@ def refuser_demande(
     demande_id: str,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EspaceOut:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     db.execute(
         "DELETE FROM collab_demande_acces WHERE id = %s AND espace_id = %s",
         (demande_id, espace_id),
@@ -393,7 +393,7 @@ def create_etiquette(
     payload: EtiquetteIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EtiquetteOut:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     created = db.execute(
         "INSERT INTO collab_etiquette (espace_id, nom, couleur, par_defaut, position) "
         "VALUES (%s, %s, %s, %s, (SELECT coalesce(max(position), -1) + 1 FROM collab_etiquette WHERE espace_id = %s)) "
@@ -415,7 +415,7 @@ def update_etiquette(
     payload: EtiquettePatch,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EtiquetteOut:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
@@ -440,7 +440,7 @@ def delete_etiquette(
     etiquette_id: str,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> None:
-    _require_role(espace_id, user, GERANTS)
+    require_espace_role(espace_id, user, GERANTS)
     db.execute(
         "DELETE FROM collab_etiquette WHERE id = %s AND espace_id = %s",
         (etiquette_id, espace_id),
