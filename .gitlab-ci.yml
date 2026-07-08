@@ -16,7 +16,7 @@ variables:
 # variable VERCEL_TOKEN is set (repo already holds .vercel/project.json).
 include:
   - project: 'sr-media-ai/adsum/deployment/ci-templates'
-    ref: develop
+    ref: main
     file:
       - '/templates/python-ci.yml'
       - '/templates/security.yml'
