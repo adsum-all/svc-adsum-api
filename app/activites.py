@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from . import audit, db
+from .sanitize import sanitize_html
 
 # Organisational units a targeted activity can address, mapped to their table.
 CIBLE_UNITES = {
@@ -162,17 +163,20 @@ def creer_evenement_complet(payload: Any, cree_par: str, role: str | None) -> st
     ``occurrences`` makes it a series sharing a serie_id). Mirrors the back office."""
     primary, liens_json = _liens_normalises(payload)
     cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails = cible_store(payload, role)
+    description = sanitize_html(payload.description)
+    intervenants = [x.strip() for x in payload.intervenants if x and x.strip()][:30]
+    principal = (payload.intervenant_principal or "").strip() or None
     created = db.execute(
         "INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, "
         "visibilite, cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails, "
-        "fenetre_reponse_heures, fuseau_horaire, cree_par) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::text[], %s, %s, %s) "
-        "RETURNING id",
+        "fenetre_reponse_heures, fuseau_horaire, description, intervenant_principal, intervenants, cree_par) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::text[], %s, %s, %s, %s, "
+        "%s::text[], %s) RETURNING id",
         (
             payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
             payload.mode, primary, liens_json, payload.type_diffusion, payload.visibilite,
             payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-            payload.fenetre_reponse_heures, payload.fuseau_horaire, cree_par,
+            payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, cree_par,
         ),
         role=role,
     )
@@ -216,16 +220,20 @@ def mettre_a_jour_evenement_complet(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     primary, liens_json = _liens_normalises(payload)
     cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails = cible_store(payload, role)
+    description = sanitize_html(payload.description)
+    intervenants = [x.strip() for x in payload.intervenants if x and x.strip()][:30]
+    principal = (payload.intervenant_principal or "").strip() or None
     db.execute(
         "UPDATE evenement SET titre=%s, type=%s, volet=%s, debut=%s, fin=%s, lieu=%s, mode=%s, "
         "lien_session=%s, liens=%s::jsonb, type_diffusion=%s, visibilite=%s, cible_type=%s, "
         "cible_id=%s, cible_genre=%s, cible_age_min=%s, cible_age_max=%s, cible_emails=%s::text[], "
-        "fenetre_reponse_heures=%s, fuseau_horaire=%s WHERE id=%s",
+        "fenetre_reponse_heures=%s, fuseau_horaire=%s, description=%s, intervenant_principal=%s, "
+        "intervenants=%s::text[] WHERE id=%s",
         (
             payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
             payload.mode, primary, liens_json, payload.type_diffusion, payload.visibilite,
             payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-            payload.fenetre_reponse_heures, payload.fuseau_horaire, evenement_id,
+            payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, evenement_id,
         ),
         role=role,
     )
@@ -235,12 +243,13 @@ def mettre_a_jour_evenement_complet(
                 "UPDATE evenement SET titre=%s, type=%s, volet=%s, lieu=%s, mode=%s, "
                 "lien_session=%s, liens=%s::jsonb, type_diffusion=%s, visibilite=%s, "
                 "cible_type=%s, cible_id=%s, cible_genre=%s, cible_age_min=%s, cible_age_max=%s, "
-                "cible_emails=%s::text[], fenetre_reponse_heures=%s, fuseau_horaire=%s WHERE id=%s",
+                "cible_emails=%s::text[], fenetre_reponse_heures=%s, fuseau_horaire=%s, description=%s, "
+                "intervenant_principal=%s, intervenants=%s::text[] WHERE id=%s",
                 (
                     payload.titre, payload.type, payload.volet, payload.lieu, payload.mode,
                     primary, liens_json, payload.type_diffusion, payload.visibilite,
                     payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-                    payload.fenetre_reponse_heures, payload.fuseau_horaire, other,
+                    payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, other,
                 ),
                 role=role,
             )
