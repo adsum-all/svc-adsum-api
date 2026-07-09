@@ -9,6 +9,7 @@ and only http/https/mailto links are kept.
 """
 from __future__ import annotations
 
+import html
 from html.parser import HTMLParser
 
 # Formatting tags a description may contain. Everything else is removed (its text
@@ -18,7 +19,9 @@ _ALLOWED_TAGS = {
     "h1", "h2", "h3", "h4", "blockquote", "a", "span", "div",
 }
 _VOID = {"br"}
-_ALLOWED_ATTRS = {"a": {"href", "title", "target", "rel"}}
+# "rel" is deliberately not accepted from the input: a canonical rel is always
+# emitted for links (see _attrs), so accepting it too would duplicate the attribute.
+_ALLOWED_ATTRS = {"a": {"href", "title", "target"}}
 _SAFE_URL_SCHEMES = ("http://", "https://", "mailto:", "tel:")
 
 
@@ -55,7 +58,9 @@ class _Sanitizer(HTMLParser):
             self.out.append(f"</{t}>")
 
     def handle_data(self, data: str) -> None:
-        self.out.append(data.replace("<", "&lt;").replace(">", "&gt;"))
+        # convert_charrefs=True already decoded entities, so re-escape & as well as
+        # < > (html.escape covers all three; quote=False keeps text nodes readable).
+        self.out.append(html.escape(data, quote=False))
 
 
 def sanitize_html(value: str | None) -> str | None:

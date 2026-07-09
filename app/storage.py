@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json as _json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .config import settings
@@ -65,13 +66,23 @@ def signed_upload_url(bucket: str, path: str, upsert: bool = False) -> dict[str,
     }
 
 
-def signed_download_url(bucket: str, path: str, expires_in: int = 3600) -> str:
-    """Return a short-lived signed URL to GET a private object."""
+def signed_download_url(bucket: str, path: str, expires_in: int = 3600, download: str | None = None) -> str:
+    """Return a short-lived signed URL to GET a private object.
+
+    When ``download`` is set, the URL forces ``Content-Disposition: attachment``
+    with that filename (Supabase ``download`` query parameter), so a file whose
+    content type could otherwise render/execute in the browser is downloaded
+    instead. Leave it None for objects meant to render inline (e.g. member photos).
+    """
     res = _request("POST", f"/object/sign/{bucket}/{path}", {"expiresIn": expires_in})
     signed = str(res.get("signedURL") or res.get("signedUrl") or "")
     if not signed:
         raise StorageError("no signed url returned")
-    return f"{settings.supabase_url.rstrip('/')}/storage/v1{signed}"
+    url = f"{settings.supabase_url.rstrip('/')}/storage/v1{signed}"
+    if download:
+        sep = "&" if "?" in url else "?"
+        url += f"{sep}download={urllib.parse.quote(download)}"
+    return url
 
 
 def upload_bytes(bucket: str, path: str, data: bytes, content_type: str = "application/octet-stream") -> None:

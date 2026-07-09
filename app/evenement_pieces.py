@@ -9,6 +9,10 @@ Two storage modes, transparent to the client (which always sends a data URL):
   path; reads mint a short-lived signed URL. This keeps base64 blobs out of the
   database. Existing inline rows keep working (``storage_path`` is NULL for them).
 
+Security: active-content types (HTML, SVG, XML) are refused; only a small allowlist
+of types is ever served inline, everything else is served as an attachment download,
+so a hostile file can never execute from the storage origin.
+
 The back office and the collaboration app expose their own routes (each with its own
 permission) that all call these helpers, so behaviour is identical on both sides.
 """
@@ -30,6 +34,20 @@ from .config import settings
 _MAX_DATA_URL = 3_500_000
 # Signed download URLs are minted per read; an hour comfortably covers a page view.
 _SIGNED_URL_TTL = 3600
+
+# Content types allowed to render inline in the browser. None of them can carry
+# active content. Anything else is served as an attachment download instead.
+_INLINE_SAFE_TYPES = frozenset(
+    {
+        "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp",
+        "application/pdf", "text/plain",
+    }
+)
+# Active-content types are refused outright, in both storage and inline modes, so a
+# script-bearing attachment can never be stored or served.
+_DANGEROUS_TYPES = frozenset(
+    {"text/html", "application/xhtml+xml", "image/svg+xml", "application/xml", "text/xml"}
+)
 
 
 class PieceEvenementOut(BaseModel):
@@ -57,12 +75,16 @@ def _bucket() -> str:
 
 def _url_for(r: dict[str, Any]) -> str:
     """Resolve the URL a client can fetch: a signed URL for object-backed rows, or
-    the stored inline data URL otherwise. A storage failure degrades to an empty
-    URL rather than raising, so listing the other attachments still succeeds."""
+    the stored inline data URL otherwise. Non-inline types are forced to download
+    (attachment). A storage failure degrades to an empty URL rather than raising."""
     path = r.get("storage_path")
     if path:
+        nom = str(r.get("nom") or "piece")
+        download = None if (r.get("type") or "") in _INLINE_SAFE_TYPES else nom
         try:
-            return storage.signed_download_url(settings.storage_bucket_evenements, str(path), _SIGNED_URL_TTL)
+            return storage.signed_download_url(
+                settings.storage_bucket_evenements, str(path), _SIGNED_URL_TTL, download=download
+            )
         except (storage.StorageError, OSError):  # URLError (DNS/connection) subclasses OSError
             return ""
     return r.get("url") or ""
@@ -83,8 +105,7 @@ def _row(r: dict[str, Any]) -> PieceEvenementOut:
 def lister_pieces(evenement_id: str, role: str | None) -> list[PieceEvenementOut]:
     # ``storage_path`` only exists once migration 0104 is applied, which the owner
     # does together with setting the bucket. In inline mode the column is never
-    # referenced, so the read works with or without the migration (no ordering
-    # hazard when deploying the API before opting into object storage).
+    # referenced, so the read works with or without the migration.
     cols = "id, nom, type, taille, url, storage_path, cree_le" if _bucket() else "id, nom, type, taille, url, cree_le"
     rows = db.fetch_all(
         f"SELECT {cols} FROM evenement_piece WHERE evenement_id = %s ORDER BY cree_le",
@@ -94,17 +115,38 @@ def lister_pieces(evenement_id: str, role: str | None) -> list[PieceEvenementOut
     return [_row(r) for r in rows]
 
 
-def _decode_data_url(data_url: str) -> tuple[bytes, str]:
-    """Return the raw bytes and MIME type of a ``data:<mime>;base64,<payload>`` URL."""
-    header, _, payload = data_url.partition(",")
-    mime = header[5:].split(";", 1)[0] if header.startswith("data:") else ""
+def _data_url_mime(data_url: str) -> str:
+    """Declared MIME type of a data URL, without decoding the payload."""
+    header = data_url.split(",", 1)[0]
+    return header[5:].split(";", 1)[0].strip().lower() if header.startswith("data:") else ""
+
+
+def _reject_active_content(mime: str, declared: str) -> None:
+    """Refuse attachments whose type can execute script (HTML, SVG, XML)."""
+    for candidate in (mime, declared):
+        if (candidate or "").split(";", 1)[0].strip().lower() in _DANGEROUS_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="type de fichier non autorisé (contenu potentiellement actif)",
+            )
+
+
+def _stored_content_type(mime: str, declared: str) -> str:
+    """Content type to store and serve: the real one when it is on the inline
+    allowlist, else a neutral octet-stream (which is served as a download)."""
+    effective = (mime or declared or "").split(";", 1)[0].strip().lower()
+    return effective if effective in _INLINE_SAFE_TYPES else "application/octet-stream"
+
+
+def _decode_data_url(data_url: str) -> bytes:
+    """Return the raw bytes of a ``data:<mime>;base64,<payload>`` URL."""
+    payload = data_url.split(",", 1)[1] if "," in data_url else ""
     try:
-        raw = base64.b64decode(payload, validate=True)
+        return base64.b64decode(payload, validate=True)
     except ValueError as exc:  # binascii.Error is a ValueError subclass
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="pièce invalide (encodage base64)"
         ) from exc
-    return raw, mime
 
 
 def _inserer_inline(
@@ -150,26 +192,41 @@ def ajouter_piece(evenement_id: str, payload: PieceEvenementIn, cree_par: str, r
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="fichier trop volumineux (max ~2,5 Mo)"
         )
     nom = (payload.nom or "piece").strip()[:200]
-    type_ = (payload.type or "")[:120]
-    taille = int(payload.taille or 0)
+    declared = (payload.type or "")[:120]
+    mime = _data_url_mime(payload.data_url)
+    _reject_active_content(mime, declared)
     bucket = _bucket()
     if bucket:
-        # Object-storage mode: upload the decoded bytes, persist only the path. On a
-        # storage failure fall back to the inline data URL so an upload never breaks.
-        raw, mime = _decode_data_url(payload.data_url)
+        # Object-storage mode: upload the decoded bytes with a validated content type,
+        # persist only the path and the real byte size. A storage failure (including a
+        # network error) falls back to the inline path so an upload never breaks.
+        raw = _decode_data_url(payload.data_url)
+        content_type = _stored_content_type(mime, declared)
         piece_id = str(uuid.uuid4())
         path = f"{evenement_id}/{piece_id}"
         try:
-            storage.upload_bytes(bucket, path, raw, type_ or mime or "application/octet-stream")
-            return _row(_inserer_storage(evenement_id, piece_id, nom, type_, taille, path, cree_par, role))
-        except storage.StorageError:
-            pass
-    return _row(_inserer_inline(evenement_id, nom, type_, taille, payload.data_url, cree_par, role))
+            storage.upload_bytes(bucket, path, raw, content_type)
+        except (storage.StorageError, OSError):
+            pass  # fall through to the inline insert below
+        else:
+            try:
+                return _row(_inserer_storage(evenement_id, piece_id, nom, content_type, len(raw), path, cree_par, role))
+            except Exception:
+                storage.delete_object(bucket, path)  # no orphan object on a failed insert
+                raise
+    taille = int(payload.taille or 0)
+    return _row(_inserer_inline(evenement_id, nom, declared, taille, payload.data_url, cree_par, role))
 
 
-def supprimer_piece(piece_id: str, role: str | None) -> None:
-    if _bucket():
-        row = db.fetch_one("SELECT storage_path FROM evenement_piece WHERE id = %s", (piece_id,), role=role)
-        if row and row.get("storage_path"):
-            storage.delete_object(settings.storage_bucket_evenements, str(row["storage_path"]))
+def supprimer_piece(piece_id: str, role: str | None) -> dict[str, str] | None:
+    """Delete an attachment (and its object in storage mode). Returns the parent
+    event id and the file name so the caller can write an audit record, or None if
+    the attachment did not exist."""
+    cols = "evenement_id, nom, storage_path" if _bucket() else "evenement_id, nom"
+    row = db.fetch_one(f"SELECT {cols} FROM evenement_piece WHERE id = %s", (piece_id,), role=role)
+    if not row:
+        return None
+    if row.get("storage_path") and settings.storage_bucket_evenements:
+        storage.delete_object(settings.storage_bucket_evenements, str(row["storage_path"]))
     db.execute("DELETE FROM evenement_piece WHERE id = %s", (piece_id,), role=role)
+    return {"evenement_id": str(row["evenement_id"]), "nom": str(row.get("nom") or "")}
