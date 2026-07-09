@@ -217,6 +217,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/collaboration/activites/{evenement_id}/pieces': 'collaboration.superviser',
     'POST /api/v1/collaboration/activites/{evenement_id}/pieces': 'collaboration.gerer',
     'DELETE /api/v1/collaboration/activites/pieces/{piece_id}': 'collaboration.gerer',
+    'POST /api/v1/collaboration/activites/{evenement_id}/occurrences': 'collaboration.gerer',
     'GET /api/v1/collaboration/stats': 'collaboration.superviser',
     'GET /api/v1/collaboration/espaces/{espace_id}/stats': 'collaboration.superviser',
     'GET /api/v1/collaboration/recherche': 'collaboration.superviser',
