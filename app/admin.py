@@ -348,6 +348,7 @@ def list_evenements(user: Annotated[UserMe, Depends(require_permission("evenemen
                e.lien_session, e.liens, e.type_diffusion, e.visibilite, e.cible_type, e.cible_id,
                e.annule, e.annule_motif, e.fuseau_horaire, e.serie_id, e.fenetre_reponse_heures,
                e.cible_genre, e.cible_age_min, e.cible_age_max, e.cible_emails,
+               e.description, e.intervenant_principal, e.intervenants,
                CASE e.cible_type
                  WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
@@ -398,6 +399,9 @@ def _evenement_out(r: dict[str, object]) -> EvenementOut:
         fuseau_horaire=r.get("fuseau_horaire") or "Africa/Abidjan",
         serie_id=str(r["serie_id"]) if r.get("serie_id") else None,
         fenetre_reponse_heures=r.get("fenetre_reponse_heures"),
+        description=r.get("description") if isinstance(r.get("description"), str) else None,
+        intervenant_principal=r.get("intervenant_principal") if isinstance(r.get("intervenant_principal"), str) else None,
+        intervenants=[str(x) for x in (r.get("intervenants") or [])],
     )
 
 
@@ -425,6 +429,7 @@ def _lire_evenement(evenement_id: str, role: str | None) -> EvenementOut:
                e.lien_session, e.liens, e.type_diffusion, e.visibilite, e.cible_type, e.cible_id,
                e.annule, e.annule_motif, e.fuseau_horaire, e.serie_id, e.fenetre_reponse_heures,
                e.cible_genre, e.cible_age_min, e.cible_age_max, e.cible_emails,
+               e.description, e.intervenant_principal, e.intervenants,
                CASE e.cible_type
                  WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)

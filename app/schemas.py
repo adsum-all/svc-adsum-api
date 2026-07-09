@@ -162,6 +162,11 @@ class EvenementOut(BaseModel):
     # Per-activity response-window override (hours after end); None = global default.
     # Surfaced so the edit form preserves it instead of silently resetting it.
     fenetre_reponse_heures: int | None = None
+    # Editorial content and human contributors, edited from the back office or the
+    # collaboration app and shown in the activity detail.
+    description: str | None = None
+    intervenant_principal: str | None = None
+    intervenants: list[str] = []
     # Server-computed lifecycle (source of truth for time-gated UI actions).
     phase: str = "a_venir"  # a_venir | bientot | en_cours | termine
     joignable: bool = False  # the join button may show (in window and a link is available)
@@ -696,6 +701,11 @@ class CreateEvenement(BaseModel):
     # working per date. `recurrence` records the rule for display, no computation.
     occurrences: list[OccurrenceIn] = Field(default_factory=list, max_length=103)
     recurrence: dict[str, object] | None = None
+    # Editorial content: a rich description (a constrained HTML subset, sanitised
+    # server side) and the human contributors (main speaker plus secondary ones).
+    description: str | None = Field(default=None, max_length=20000)
+    intervenant_principal: str | None = Field(default=None, max_length=200)
+    intervenants: list[str] = Field(default_factory=list, max_length=30)
 
 
 class VerifyResult(BaseModel):
