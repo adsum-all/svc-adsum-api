@@ -14,7 +14,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import collaboration_notif, db
+from . import attachments_core as att
+from . import collaboration_notif, db, storage
 from .collaboration_cartes import CommentaireProtoOut, _espace_of_carte
 from .collaboration_espaces import require_espace_role
 from .fields import LineStr, TextStr
@@ -241,3 +242,91 @@ def basculer_item(
         (item_id, payload.checklist_id),
         role=user.role,
     )
+
+
+@router.patch("/commentaires/{commentaire_id}", response_model=CommentaireProtoOut)
+def modifier_commentaire(
+    commentaire_id: str,
+    payload: CommentaireIn,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> CommentaireProtoOut:
+    row = db.fetch_one(
+        "SELECT carte_id, auteur_id FROM collab_commentaire WHERE id = %s", (commentaire_id,), role=user.role
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="comment not found")
+    carte_id = str(row["carte_id"])
+    espace_id = _espace_id_or_403(carte_id, user, COMMENTATEURS)
+    if str(row["auteur_id"]) != user.id:  # only the author edits their own comment
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="not the comment author")
+    updated = db.execute(
+        "UPDATE collab_commentaire SET corps = %s, edite_le = now() WHERE id = %s "
+        "RETURNING id, auteur_id, corps, cree_le, edite_le",
+        (payload.corps, commentaire_id),
+        role=user.role,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="comment not updated")
+    before = {
+        str(r["utilisateur_id"])
+        for r in db.fetch_all(
+            "SELECT utilisateur_id FROM collab_commentaire_mention WHERE commentaire_id = %s",
+            (commentaire_id,),
+            role=user.role,
+        )
+    }
+    db.execute("DELETE FROM collab_commentaire_mention WHERE commentaire_id = %s", (commentaire_id,), role=user.role)
+    mentions = _resolve_mentions(payload.corps, espace_id, user.role)
+    titre_row = db.fetch_one("SELECT titre FROM collab_carte WHERE id = %s", (carte_id,), role=user.role)
+    titre = titre_row["titre"] if titre_row else ""
+    ctx = {"titre": titre, "espace": collaboration_notif.nom_espace(espace_id, user.role)}
+    for mid in mentions:
+        db.execute(
+            "INSERT INTO collab_commentaire_mention (commentaire_id, utilisateur_id) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING",
+            (commentaire_id, mid),
+            role=user.role,
+        )
+        if mid != user.id and mid not in before:  # notify only the newly added mentions
+            collaboration_notif.emettre(
+                mid, "mention", "collab_mention", f"Vous etes mentionne dans « {titre} »",
+                carte_id, espace_id, ctx, user.role,
+            )
+    return CommentaireProtoOut(
+        id=str(updated["id"]),
+        auteur_id=str(updated["auteur_id"]) if updated["auteur_id"] else "",
+        corps=updated["corps"],
+        cree_le=updated["cree_le"].isoformat() if updated["cree_le"] else None,
+        edite_le=updated["edite_le"].isoformat() if updated["edite_le"] else None,
+        reactions=[],
+        pieces=[],
+        lu_par=[user.id],
+        mentions=mentions,
+    )
+
+
+@router.delete("/commentaires/{commentaire_id}", status_code=status.HTTP_204_NO_CONTENT)
+def supprimer_commentaire(
+    commentaire_id: str,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> None:
+    row = db.fetch_one(
+        "SELECT carte_id, auteur_id FROM collab_commentaire WHERE id = %s", (commentaire_id,), role=user.role
+    )
+    if not row:
+        return
+    carte_id = str(row["carte_id"])
+    # The author may delete their own comment; otherwise a space owner/admin may.
+    if str(row["auteur_id"]) == user.id:
+        _espace_id_or_403(carte_id, user, COMMENTATEURS)
+    else:
+        _espace_id_or_403(carte_id, user, ("proprietaire", "admin"))
+    if att.bucket():
+        for p in db.fetch_all(
+            "SELECT storage_path FROM collab_piece WHERE commentaire_id = %s AND storage_path IS NOT NULL",
+            (commentaire_id,),
+            role=user.role,
+        ):
+            storage.delete_object(att.bucket(), str(p["storage_path"]))
+    db.execute("DELETE FROM collab_piece WHERE commentaire_id = %s", (commentaire_id,), role=user.role)
+    db.execute("DELETE FROM collab_commentaire WHERE id = %s", (commentaire_id,), role=user.role)

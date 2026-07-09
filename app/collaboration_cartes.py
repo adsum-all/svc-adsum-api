@@ -15,7 +15,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import activites, audit, collaboration_notif, db
+from . import activites, attachments_core, audit, collaboration_notif, db
 from .collaboration_espaces import GERANTS, require_espace_role
 from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
@@ -182,8 +182,16 @@ def _ctx_carte(carte_id: str, role: str) -> dict[str, Any]:
 
 
 def _pieces_for(where_col: str, ref_id: str, couverture_id: str | None, role: str) -> list[PieceOut]:
+    # storage_path only exists once migration 0105 is applied (together with the
+    # bucket). In inline mode the column is never referenced, so this works with or
+    # without the migration. where_col is a controlled literal, never user input.
+    cols = (
+        "id, nom, taille, type, url, storage_path, cree_le"
+        if attachments_core.bucket()
+        else "id, nom, taille, type, url, cree_le"
+    )
     rows = db.fetch_all(
-        f"SELECT id, nom, taille, type, url, cree_le FROM collab_piece WHERE {where_col} = %s ORDER BY cree_le",
+        f"SELECT {cols} FROM collab_piece WHERE {where_col} = %s ORDER BY cree_le",
         (ref_id,),
         role=role,
     )
@@ -194,7 +202,7 @@ def _pieces_for(where_col: str, ref_id: str, couverture_id: str | None, role: st
             taille=int(p["taille"]),
             type=p["type"],
             cree_le=_iso(p["cree_le"]),
-            data_url=p["url"],
+            data_url=attachments_core.served_url(p.get("url"), p.get("storage_path"), p["nom"], p.get("type") or ""),
             couverture=(couverture_id is not None and str(p["id"]) == couverture_id),
         )
         for p in rows
