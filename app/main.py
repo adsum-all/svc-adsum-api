@@ -16,6 +16,7 @@ from .collaboration_cartes_social import router as collaboration_cartes_social_r
 from .collaboration_checklists import router as collaboration_checklists_router
 from .collaboration_espaces import router as collaboration_espaces_router
 from .collaboration_pieces import router as collaboration_pieces_router
+from .collaboration_presence import router as collaboration_presence_router
 from .collaboration_tableaux import router as collaboration_tableaux_router
 from .collaboration_transverse import router as collaboration_transverse_router
 from .comptage import comptage_public_router
@@ -101,6 +102,7 @@ app.include_router(collaboration_cartes_router)
 app.include_router(collaboration_cartes_social_router)
 app.include_router(collaboration_pieces_router)
 app.include_router(collaboration_checklists_router)
+app.include_router(collaboration_presence_router)
 app.include_router(collaboration_transverse_router)
 app.include_router(demandes_router)
 app.include_router(doublons_router)
