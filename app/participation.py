@@ -53,7 +53,7 @@ FENETRE_FIN_SQL = (
     "coalesce(e.fin, e.debut + interval '1 day') + make_interval(hours => coalesce("
     "e.fenetre_reponse_heures, "
     "(SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'questionnaire_fenetre_heures'), "
-    "6))"
+    "5))"
 )
 
 
