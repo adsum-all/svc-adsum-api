@@ -8,6 +8,7 @@ global member (it would leak into the other apps); it returns the resolved membe
 """
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -311,32 +312,36 @@ def annuler_activite(
 
 @router.get("/activites/{evenement_id}/pieces", response_model=list[evenement_pieces.PieceEvenementOut])
 def lister_pieces_activite(
-    evenement_id: str,
+    evenement_id: uuid.UUID,
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
 ) -> list[evenement_pieces.PieceEvenementOut]:
     """Attachments of an activity (images and files), shared with the back office."""
-    return evenement_pieces.lister_pieces(evenement_id, user.role)
+    return evenement_pieces.lister_pieces(str(evenement_id), user.role)
 
 
 @router.post("/activites/{evenement_id}/pieces", response_model=evenement_pieces.PieceEvenementOut,
              status_code=status.HTTP_201_CREATED)
 def ajouter_piece_activite(
-    evenement_id: str,
+    evenement_id: uuid.UUID,
     payload: evenement_pieces.PieceEvenementIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> evenement_pieces.PieceEvenementOut:
     """Attach an image or a file to an activity from the collaboration app."""
-    piece = evenement_pieces.ajouter_piece(evenement_id, payload, user.id, user.role)
-    audit.log(user.id, user.role, "ajout_piece_activite", "evenement", evenement_id, {"nom": payload.nom})
+    piece = evenement_pieces.ajouter_piece(str(evenement_id), payload, user.id, user.role)
+    audit.log(user.id, user.role, "ajout_piece_activite", "evenement", str(evenement_id), {"nom": payload.nom})
     return piece
 
 
 @router.delete("/activites/pieces/{piece_id}", status_code=status.HTTP_204_NO_CONTENT)
 def supprimer_piece_activite(
-    piece_id: str,
+    piece_id: uuid.UUID,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> None:
-    evenement_pieces.supprimer_piece(piece_id, user.role)
+    info = evenement_pieces.supprimer_piece(str(piece_id), user.role)
+    if info:
+        audit.log(
+            user.id, user.role, "suppression_piece_activite", "evenement", info["evenement_id"], {"nom": info["nom"]}
+        )
 
 
 class AjoutOccurrencesIn(BaseModel):

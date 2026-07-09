@@ -9,6 +9,7 @@ each query, not by RLS alone.
 # ruff: noqa: E501
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 import psycopg
@@ -519,30 +520,32 @@ def annuler_evenement(
 
 @router.get("/evenements/{evenement_id}/pieces", response_model=list[evenement_pieces.PieceEvenementOut])
 def lister_pieces_evenement(
-    evenement_id: str,
+    evenement_id: uuid.UUID,
     user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))],
 ) -> list[evenement_pieces.PieceEvenementOut]:
     """Attachments of an activity, shared with the collaboration app (same helper)."""
-    return evenement_pieces.lister_pieces(evenement_id, user.role)
+    return evenement_pieces.lister_pieces(str(evenement_id), user.role)
 
 
 @router.post("/evenements/{evenement_id}/pieces", response_model=evenement_pieces.PieceEvenementOut, status_code=status.HTTP_201_CREATED)
 def ajouter_piece_evenement(
-    evenement_id: str,
+    evenement_id: uuid.UUID,
     payload: evenement_pieces.PieceEvenementIn,
     user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
 ) -> evenement_pieces.PieceEvenementOut:
-    piece = evenement_pieces.ajouter_piece(evenement_id, payload, user.id, user.role)
-    audit.log(user.id, user.role, "ajout_piece_evenement", "evenement", evenement_id, {"nom": payload.nom})
+    piece = evenement_pieces.ajouter_piece(str(evenement_id), payload, user.id, user.role)
+    audit.log(user.id, user.role, "ajout_piece_evenement", "evenement", str(evenement_id), {"nom": payload.nom})
     return piece
 
 
 @router.delete("/evenements/pieces/{piece_id}", status_code=status.HTTP_204_NO_CONTENT)
 def supprimer_piece_evenement(
-    piece_id: str,
+    piece_id: uuid.UUID,
     user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
 ) -> None:
-    evenement_pieces.supprimer_piece(piece_id, user.role)
+    info = evenement_pieces.supprimer_piece(str(piece_id), user.role)
+    if info:
+        audit.log(user.id, user.role, "suppression_piece_evenement", "evenement", info["evenement_id"], {"nom": info["nom"]})
 
 
 @router.post("/evenements/{evenement_id}/reactiver", response_model=EvenementOut)
