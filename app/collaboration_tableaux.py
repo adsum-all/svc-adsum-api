@@ -93,6 +93,10 @@ class ColonnePatch(BaseModel):
     archivee: bool | None = None
 
 
+class OrdreColonnesIn(BaseModel):
+    ordre: list[str]
+
+
 def _espace_of_tableau(tableau_id: str, role: str) -> str:
     row = db.fetch_one("SELECT espace_id FROM collab_tableau WHERE id = %s", (tableau_id,), role=role)
     if not row:
@@ -353,3 +357,19 @@ def delete_colonne(
     espace_id = _espace_of_tableau(str(row["tableau_id"]), user.role)
     require_espace_role(espace_id, user, GERANTS)
     db.execute("DELETE FROM collab_colonne WHERE id = %s", (colonne_id,), role=user.role)
+
+
+@router.post("/tableaux/{tableau_id}/colonnes/ordre", status_code=status.HTTP_204_NO_CONTENT)
+def reordonner_colonnes(
+    tableau_id: str,
+    payload: OrdreColonnesIn,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> None:
+    espace_id = _espace_of_tableau(tableau_id, user.role)
+    require_espace_role(espace_id, user, GERANTS)
+    for index, colonne_id in enumerate(payload.ordre):
+        db.execute(
+            "UPDATE collab_colonne SET position = %s WHERE id = %s AND tableau_id = %s",
+            (index, colonne_id, tableau_id),
+            role=user.role,
+        )
