@@ -33,6 +33,7 @@ class ChecklistRenameIn(BaseModel):
 class ItemPatchIn(BaseModel):
     texte: str | None = None
     assigne_id: str | None = None
+    assignes: list[str] | None = None
     echeance: str | None = None
 
 
@@ -67,6 +68,35 @@ def _auth(carte_id: str, user: UserMe) -> str:
     _, espace_id = _espace_of_carte(carte_id, user.role)
     require_espace_role(espace_id, user, MEMBRES_ACTIFS)
     return espace_id
+
+
+def _require_membre(espace_id: str, uid: str, role: str) -> None:
+    member = db.fetch_one(
+        "SELECT 1 FROM collab_espace_membre WHERE espace_id = %s AND utilisateur_id = %s",
+        (espace_id, uid),
+        role=role,
+    )
+    if not member:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="assignee not a space member")
+
+
+def _sync_item_assignes(item_id: str, espace_id: str, assignes: list[str] | None, role: str) -> None:
+    """Replace an item's assignee set (validated members) and keep the legacy
+    single assigne_id in sync as the first assignee."""
+    ids = [a for a in dict.fromkeys(assignes or []) if a]
+    for a in ids:
+        _require_membre(espace_id, a, role)
+    db.execute("DELETE FROM collab_item_assigne WHERE item_id = %s", (item_id,), role=role)
+    for a in ids:
+        db.execute(
+            "INSERT INTO collab_item_assigne (item_id, utilisateur_id) VALUES (%s, %s::uuid) ON CONFLICT DO NOTHING",
+            (item_id, a),
+            role=role,
+        )
+    db.execute(
+        "UPDATE collab_checklist_item SET assigne_id = %s::uuid WHERE id = %s", (ids[0] if ids else None, item_id),
+        role=role,
+    )
 
 
 @router.patch("/checklists/{checklist_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -117,19 +147,11 @@ def modifier_item(
         db.execute(
             "UPDATE collab_checklist_item SET texte = %s WHERE id = %s", (fields["texte"], item_id), role=user.role
         )
-    if "assigne_id" in fields:
-        assignee = fields["assigne_id"] or None
-        if assignee:
-            member = db.fetch_one(
-                "SELECT 1 FROM collab_espace_membre WHERE espace_id = %s AND utilisateur_id = %s",
-                (espace_id, assignee),
-                role=user.role,
-            )
-            if not member:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="assignee not a space member")
-        db.execute(
-            "UPDATE collab_checklist_item SET assigne_id = %s::uuid WHERE id = %s", (assignee, item_id), role=user.role
-        )
+    if "assignes" in fields:
+        # Multiple assignees replace the whole set (and keep the legacy single column).
+        _sync_item_assignes(item_id, espace_id, fields["assignes"], user.role)
+    elif "assigne_id" in fields:
+        _sync_item_assignes(item_id, espace_id, [fields["assigne_id"]] if fields["assigne_id"] else [], user.role)
     if "echeance" in fields:
         db.execute(
             "UPDATE collab_checklist_item SET echeance = %s::timestamptz WHERE id = %s",
