@@ -10,15 +10,15 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from . import activites, audit, db
+from .admin import _lire_evenement
 from .collaboration_cartes import _CARTE_COLS, LECTEURS, CarteProtoOut, carte_out
 from .collaboration_espaces import MembreOut, _initials, _name_from_email, require_espace_role
-from .fields import LineStr, ShortStr, TitleStr
 from .permissions_rbac import require_permission
-from .schemas import UserMe
+from .schemas import CreateEvenement, EvenementOut, UserMe
 
 router = APIRouter(prefix="/api/v1/collaboration", tags=["collaboration-transverse"])
 
@@ -254,114 +254,41 @@ def activites_publiees(
     return out
 
 
-class ActiviteIn(BaseModel):
-    """Create a real activity from the collaboration app. Same engine and same
-    evenement row as the back office and pilotage, so it appears in every calendar."""
-
-    titre: TitleStr
-    type: ShortStr | None = None
-    debut: str
-    fin: str | None = None
-    lieu: LineStr | None = None
-    cible_type: ShortStr = "general"
-    cible_id: ShortStr | None = None
-    visibilite: ShortStr = "membres"
-
-
 @router.post("/activites", status_code=status.HTTP_201_CREATED)
 def creer_activite(
-    payload: ActiviteIn,
+    payload: CreateEvenement,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> dict[str, str]:
-    """Program an activity directly from the collaboration app, through the shared
-    activity engine (same evenement row as the back office and pilotage), so it is
-    immediately visible in every aligned calendar."""
-    evenement_id = activites.inserer_evenement(
-        titre=payload.titre, type_=payload.type, debut=payload.debut, fin=payload.fin,
-        lieu=payload.lieu, cible_type=payload.cible_type, cible_id=payload.cible_id,
-        visibilite=payload.visibilite, cree_par=user.id, role=user.role,
-    )
-    audit.log(user.id, user.role, "creation_activite_collaboration", "evenement", evenement_id,
-              {"cible_type": payload.cible_type})
+    """Program an activity from the collaboration app with the FULL event form (same
+    fields, targeting, diffusion, response window, recurrence as the back office),
+    through the shared engine, so it is immediately visible in every aligned
+    calendar and gets the same automations."""
+    evenement_id = activites.creer_evenement_complet(payload, user.id, user.role)
     return {"id": evenement_id}
 
 
-class ActiviteDetail(BaseModel):
-    id: str
-    titre: str
-    type: str | None = None
-    debut: str | None = None
-    fin: str | None = None
-    lieu: str | None = None
-    cible_type: str | None = None
-    cible_id: str | None = None
-    visibilite: str | None = None
-    annule: bool = False
-
-
-@router.get("/activites/{evenement_id}", response_model=ActiviteDetail)
+@router.get("/activites/{evenement_id}", response_model=EvenementOut)
 def detail_activite(
     evenement_id: str,
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
-) -> ActiviteDetail:
-    """One activity's editable fields, from the shared evenement table."""
-    r = db.fetch_one(
-        "SELECT id, titre, type, debut, fin, lieu, cible_type, cible_id, visibilite, annule "
-        "FROM evenement WHERE id = %s",
-        (evenement_id,),
-        role=user.role,
-    )
-    if not r:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="activity not found")
-    return ActiviteDetail(
-        id=str(r["id"]), titre=r["titre"], type=r.get("type"),
-        debut=r["debut"].isoformat() if hasattr(r["debut"], "isoformat") else (str(r["debut"]) if r["debut"] else None),
-        fin=r["fin"].isoformat() if hasattr(r["fin"], "isoformat") else (str(r["fin"]) if r["fin"] else None),
-        lieu=r.get("lieu"), cible_type=r.get("cible_type"),
-        cible_id=str(r["cible_id"]) if r.get("cible_id") else None,
-        visibilite=r.get("visibilite"), annule=bool(r.get("annule")),
-    )
+) -> EvenementOut:
+    """One activity's full details (same shape as the back office), so the
+    collaboration edit form is pre-filled with every field."""
+    return _lire_evenement(evenement_id, user.role)
 
 
-class ActivitePatch(BaseModel):
-    titre: TitleStr | None = None
-    type: ShortStr | None = None
-    debut: str | None = None
-    fin: str | None = None
-    lieu: LineStr | None = None
-    cible_type: ShortStr | None = None
-    cible_id: ShortStr | None = None
-    visibilite: ShortStr | None = None
-
-
-@router.patch("/activites/{evenement_id}")
+@router.put("/activites/{evenement_id}", response_model=EvenementOut)
 def modifier_activite(
     evenement_id: str,
-    payload: ActivitePatch,
+    payload: CreateEvenement,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
-) -> dict[str, str]:
-    """Edit an activity from the collaboration app, whatever app created it (parity
-    with the back office). The same evenement row is updated, so the change shows in
-    every aligned calendar. Targeting is validated by the shared engine."""
-    fields = payload.model_dump(exclude_unset=True)
-    if "cible_type" in fields:
-        stored = activites.valider_cible(str(fields["cible_type"]), fields.get("cible_id"), user.role)
-        fields["cible_id"] = stored
-    if not fields:
-        return {"id": evenement_id}
-    cols = {"titre", "type", "debut", "fin", "lieu", "cible_type", "cible_id", "visibilite"}
-    fields = {k: v for k, v in fields.items() if k in cols}
-    sets = ", ".join(f"{k} = %s" for k in fields)
-    updated = db.execute(
-        f"UPDATE evenement SET {sets} WHERE id = %s RETURNING id",
-        (*fields.values(), evenement_id),
-        role=user.role,
-    )
-    if not updated:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="activity not found")
-    audit.log(user.id, user.role, "modification_activite_collaboration", "evenement", evenement_id,
-              {"champs": list(fields)})
-    return {"id": str(updated["id"])}
+    portee: str = Query(default="cette_occurrence", pattern="^(cette_occurrence|toute_la_serie)$"),
+) -> EvenementOut:
+    """Edit an activity from the collaboration app with the full form, whatever app
+    created it (parity with the back office). The same shared engine updates the same
+    evenement row, so the change shows in every aligned calendar."""
+    activites.mettre_a_jour_evenement_complet(evenement_id, payload, portee, user.id, user.role)
+    return _lire_evenement(evenement_id, user.role)
 
 
 @router.post("/activites/{evenement_id}/annuler")
@@ -380,6 +307,36 @@ def annuler_activite(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="activity not found")
     audit.log(user.id, user.role, "annulation_activite_collaboration", "evenement", evenement_id, {})
     return {"id": str(updated["id"])}
+
+
+class UniteOut(BaseModel):
+    id: str
+    nom: str
+
+
+class CiblesOut(BaseModel):
+    coordinations: list[UniteOut]
+    commissions: list[UniteOut]
+    intendances: list[UniteOut]
+    tribus: list[UniteOut]
+
+
+@router.get("/cibles", response_model=CiblesOut)
+def cibles(
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))]
+) -> CiblesOut:
+    """The organisational units an activity can target, so the collaboration event
+    form offers the same audience choices as the back office."""
+    def _unites(table: str) -> list[UniteOut]:
+        rows = db.fetch_all(f"SELECT id, nom FROM {table} ORDER BY nom", (), role=user.role)
+        return [UniteOut(id=str(r["id"]), nom=r["nom"]) for r in rows]
+
+    return CiblesOut(
+        coordinations=_unites("coordination"),
+        commissions=_unites("commission"),
+        intendances=_unites("intendance"),
+        tribus=_unites("tribu"),
+    )
 
 
 @router.get("/stats", response_model=StatsGlobalesOut)
