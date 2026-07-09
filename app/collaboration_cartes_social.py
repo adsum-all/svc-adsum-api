@@ -76,7 +76,8 @@ def _resolve_mentions(corps: str, espace_id: str, role: str) -> list[str]:
     for r in rows:
         local = (r["email"].split("@")[0] or "").lower()
         nom = (r["nom_affiche"] or "").lower().replace(" ", "")
-        if any(tok in (local, nom) or local.startswith(tok) or (nom and nom.startswith(tok)) for tok in tokens):
+        # Exact handle match only (no prefix), to avoid mass over-notification.
+        if any(tok in (local, nom) for tok in tokens):
             matched.append(str(r["id"]))
     return matched
 
