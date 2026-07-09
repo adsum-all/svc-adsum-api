@@ -11,14 +11,14 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import activites, audit, db, evenement_pieces
 from .admin import _lire_evenement
 from .collaboration_cartes import _CARTE_COLS, LECTEURS, CarteProtoOut, carte_out
 from .collaboration_espaces import MembreOut, _initials, _name_from_email, require_espace_role
 from .permissions_rbac import require_permission
-from .schemas import CreateEvenement, EvenementOut, UserMe
+from .schemas import CreateEvenement, EvenementOut, OccurrenceIn, UserMe
 
 router = APIRouter(prefix="/api/v1/collaboration", tags=["collaboration-transverse"])
 
@@ -337,6 +337,21 @@ def supprimer_piece_activite(
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> None:
     evenement_pieces.supprimer_piece(piece_id, user.role)
+
+
+class AjoutOccurrencesIn(BaseModel):
+    occurrences: list[OccurrenceIn] = Field(default_factory=list, max_length=104)
+
+
+@router.post("/activites/{evenement_id}/occurrences")
+def ajouter_occurrences_activite(
+    evenement_id: str,
+    payload: AjoutOccurrencesIn,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> dict[str, int]:
+    """Append dates to an activity's series from collaboration (additive), through
+    the same shared engine as the back office."""
+    return activites.ajouter_occurrences_serie(evenement_id, payload.occurrences, user.id, user.role)
 
 
 class UniteOut(BaseModel):
