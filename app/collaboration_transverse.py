@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from . import activites, audit, db
+from . import activites, audit, db, evenement_pieces
 from .admin import _lire_evenement
 from .collaboration_cartes import _CARTE_COLS, LECTEURS, CarteProtoOut, carte_out
 from .collaboration_espaces import MembreOut, _initials, _name_from_email, require_espace_role
@@ -307,6 +307,36 @@ def annuler_activite(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="activity not found")
     audit.log(user.id, user.role, "annulation_activite_collaboration", "evenement", evenement_id, {})
     return {"id": str(updated["id"])}
+
+
+@router.get("/activites/{evenement_id}/pieces", response_model=list[evenement_pieces.PieceEvenementOut])
+def lister_pieces_activite(
+    evenement_id: str,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
+) -> list[evenement_pieces.PieceEvenementOut]:
+    """Attachments of an activity (images and files), shared with the back office."""
+    return evenement_pieces.lister_pieces(evenement_id, user.role)
+
+
+@router.post("/activites/{evenement_id}/pieces", response_model=evenement_pieces.PieceEvenementOut,
+             status_code=status.HTTP_201_CREATED)
+def ajouter_piece_activite(
+    evenement_id: str,
+    payload: evenement_pieces.PieceEvenementIn,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> evenement_pieces.PieceEvenementOut:
+    """Attach an image or a file to an activity from the collaboration app."""
+    piece = evenement_pieces.ajouter_piece(evenement_id, payload, user.id, user.role)
+    audit.log(user.id, user.role, "ajout_piece_activite", "evenement", evenement_id, {"nom": payload.nom})
+    return piece
+
+
+@router.delete("/activites/pieces/{piece_id}", status_code=status.HTTP_204_NO_CONTENT)
+def supprimer_piece_activite(
+    piece_id: str,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
+) -> None:
+    evenement_pieces.supprimer_piece(piece_id, user.role)
 
 
 class UniteOut(BaseModel):

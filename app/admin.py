@@ -15,7 +15,7 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from . import activites, audit, db, identifiants, identite
+from . import activites, audit, db, evenement_pieces, identifiants, identite
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
 from .permissions_rbac import require_permission
 from .schemas import (
@@ -515,6 +515,34 @@ def annuler_evenement(
             notifies += 1
     audit.log(user.id, user.role, "annulation_evenement", "evenement", evenement_id, {"motif": payload.motif, "notifies": notifies, "portee": portee, "activites": len(ids)})
     return _lire_evenement(evenement_id, user.role)
+
+
+@router.get("/evenements/{evenement_id}/pieces", response_model=list[evenement_pieces.PieceEvenementOut])
+def lister_pieces_evenement(
+    evenement_id: str,
+    user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))],
+) -> list[evenement_pieces.PieceEvenementOut]:
+    """Attachments of an activity, shared with the collaboration app (same helper)."""
+    return evenement_pieces.lister_pieces(evenement_id, user.role)
+
+
+@router.post("/evenements/{evenement_id}/pieces", response_model=evenement_pieces.PieceEvenementOut, status_code=status.HTTP_201_CREATED)
+def ajouter_piece_evenement(
+    evenement_id: str,
+    payload: evenement_pieces.PieceEvenementIn,
+    user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
+) -> evenement_pieces.PieceEvenementOut:
+    piece = evenement_pieces.ajouter_piece(evenement_id, payload, user.id, user.role)
+    audit.log(user.id, user.role, "ajout_piece_evenement", "evenement", evenement_id, {"nom": payload.nom})
+    return piece
+
+
+@router.delete("/evenements/pieces/{piece_id}", status_code=status.HTTP_204_NO_CONTENT)
+def supprimer_piece_evenement(
+    piece_id: str,
+    user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
+) -> None:
+    evenement_pieces.supprimer_piece(piece_id, user.role)
 
 
 @router.post("/evenements/{evenement_id}/reactiver", response_model=EvenementOut)

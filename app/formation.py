@@ -35,9 +35,9 @@ def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
 def _fenetre_heures(role: str) -> int:
     row = db.fetch_one("SELECT valeur FROM parametre WHERE cle = 'questionnaire_fenetre_heures'", (), role=role)
     try:
-        return int(row["valeur"]) if row and row["valeur"] is not None else 6
+        return int(row["valeur"]) if row and row["valeur"] is not None else 5
     except (TypeError, ValueError):
-        return 6
+        return 5
 
 
 # --- Admin: session link and live session ----------------------------------
