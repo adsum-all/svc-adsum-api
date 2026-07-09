@@ -16,11 +16,11 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import activites, attachments_core, audit, collaboration_notif, db
+from . import activites, attachments_core, audit, collaboration_notif, db, storage
 from .collaboration_espaces import GERANTS, require_espace_role
 from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
-from .sanitize import sanitize_html
+from .sanitize import sanitize_html, text_content
 from .schemas import UserMe
 
 _MENTION_RE = re.compile(r"@([\w.\-]{2,40})")
@@ -43,7 +43,9 @@ def _resolve_mentions_espace(texte: str, espace_id: str, role: str) -> list[str]
     for r in rows:
         local = (r["email"].split("@")[0] or "").lower()
         nom = (r["nom_affiche"] or "").lower().replace(" ", "")
-        if any(tok in (local, nom) or local.startswith(tok) or (nom and nom.startswith(tok)) for tok in tokens):
+        # Exact handle match only: a prefix like @ma must NOT notify every member whose
+        # name/e-mail begins with it (over-notification on paid channels, harassment).
+        if any(tok in (local, nom) for tok in tokens):
             matched.append(str(r["id"]))
     return matched
 
@@ -395,12 +397,22 @@ def list_cartes_archivees(
     return [carte_out(r, user.role) for r in rows]
 
 
+def _valider_colonne(colonne_id: str, tableau_id: str, role: str) -> None:
+    """Guarantee a column belongs to the given board, so a card can never be created
+    or moved into a column of another board (which would make it unreachable)."""
+    if not db.fetch_one(
+        "SELECT 1 FROM collab_colonne WHERE id = %s AND tableau_id = %s", (colonne_id, tableau_id), role=role
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="colonne invalide pour ce tableau")
+
+
 @router.post("/cartes-espace", response_model=CarteProtoOut, status_code=status.HTTP_201_CREATED)
 def create_carte(
     payload: CarteIn, user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))]
 ) -> CarteProtoOut:
     espace_id = _espace_of_tableau(payload.tableau_id, user.role)
     require_espace_role(espace_id, user, MEMBRES_ACTIFS)
+    _valider_colonne(payload.colonne_id, payload.tableau_id, user.role)
     created = db.execute(
         "INSERT INTO collab_carte (tableau_id, colonne_id, titre, position, numero, cree_par) "
         "VALUES (%s, %s, %s, "
@@ -479,11 +491,17 @@ def update_carte(
     payload: CartePatch,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> CarteProtoOut:
-    _, espace_id = _espace_of_carte(carte_id, user.role)
+    tableau_id, espace_id = _espace_of_carte(carte_id, user.role)
     require_espace_role(espace_id, user, MEMBRES_ACTIFS)
     fields = payload.model_dump(exclude_unset=True)
+    if fields.get("colonne_id"):
+        _valider_colonne(fields["colonne_id"], tableau_id, user.role)
     description_maj = "description" in fields
+    ancienne_desc = ""
     if description_maj:
+        # Snapshot the old description so only newly-added mentions are notified.
+        prev = db.fetch_one("SELECT description FROM collab_carte WHERE id = %s", (carte_id,), role=user.role)
+        ancienne_desc = (prev["description"] if prev else "") or ""
         # The description is authored as rich HTML: sanitise it (allowlist) so nothing
         # executable is stored, then render it back through the same allowlist.
         fields["description"] = sanitize_html(fields["description"]) or ""
@@ -497,15 +515,18 @@ def update_carte(
         )
     if description_maj and fields.get("description"):
         # Tagging in the description notifies mentioned space members (in-app + real
-        # channels), like a comment mention. Best effort, never blocks the save.
+        # channels). Mentions are read from visible text only (not attribute values),
+        # and only members newly mentioned since the previous save are notified, with
+        # dedup so overlapping edits never fan out twice.
         titre_row = db.fetch_one("SELECT titre FROM collab_carte WHERE id = %s", (carte_id,), role=user.role)
         titre = titre_row["titre"] if titre_row else ""
         ctx = {"titre": titre, "espace": collaboration_notif.nom_espace(espace_id, user.role)}
-        for mid in _resolve_mentions_espace(fields["description"], espace_id, user.role):
-            if mid != user.id:
+        deja = set(_resolve_mentions_espace(text_content(ancienne_desc), espace_id, user.role))
+        for mid in _resolve_mentions_espace(text_content(fields["description"]), espace_id, user.role):
+            if mid != user.id and mid not in deja:
                 collaboration_notif.emettre(
                     mid, "mention", "collab_mention", f"Vous etes mentionne dans « {titre} »",
-                    carte_id, espace_id, ctx, user.role,
+                    carte_id, espace_id, ctx, user.role, dedup=True,
                 )
     return _fetch_carte(carte_id, user.role)
 
@@ -516,8 +537,9 @@ def move_carte(
     payload: MoveIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> CarteProtoOut:
-    _, espace_id = _espace_of_carte(carte_id, user.role)
+    tableau_id, espace_id = _espace_of_carte(carte_id, user.role)
     require_espace_role(espace_id, user, MEMBRES_ACTIFS)
+    _valider_colonne(payload.colonne_id, tableau_id, user.role)
     db.execute(
         "UPDATE collab_carte SET colonne_id = %s, position = %s, maj_le = now() WHERE id = %s",
         (payload.colonne_id, payload.position, carte_id),
@@ -603,6 +625,17 @@ def delete_carte(
 ) -> None:
     tableau_id, espace_id = _espace_of_carte(carte_id, user.role)
     require_espace_role(espace_id, user, GERANTS)
+    # The DB cascade removes the card's pieces and its comments' pieces, but not the
+    # storage objects. Sweep them first (RGPD erasure), before the rows disappear.
+    bucket = attachments_core.bucket()
+    if bucket:
+        for p in db.fetch_all(
+            "SELECT storage_path FROM collab_piece WHERE storage_path IS NOT NULL AND (carte_id = %s "
+            "OR commentaire_id IN (SELECT id FROM collab_commentaire WHERE carte_id = %s))",
+            (carte_id, carte_id),
+            role=user.role,
+        ):
+            storage.delete_object(bucket, str(p["storage_path"]))
     db.execute("DELETE FROM collab_carte WHERE id = %s", (carte_id,), role=user.role)
     db.execute(
         "UPDATE collab_tableau SET compteur_cartes = greatest(compteur_cartes - 1, 0) WHERE id = %s",

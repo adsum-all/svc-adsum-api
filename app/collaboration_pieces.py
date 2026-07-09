@@ -159,9 +159,9 @@ def supprimer_piece(
     if carte_id:
         _, espace_id = _espace_of_carte(carte_id, user.role)
         require_espace_role(espace_id, user, MEMBRES_ACTIFS)
-    if row.get("storage_path") and att.bucket():
-        storage.delete_object(att.bucket(), str(row["storage_path"]))
-    # A cover pointing at this piece is cleared so the card keeps no dangling ref.
+    # Remove the DB row first (clearing any cover ref), then the storage object
+    # best-effort. This way a partial failure leaves at worst a recoverable orphan
+    # object, never a dangling row whose signed URL would 404.
     if carte_id:
         db.execute(
             "UPDATE collab_carte SET couverture_id = NULL WHERE id = %s AND couverture_id = %s",
@@ -169,6 +169,11 @@ def supprimer_piece(
             role=user.role,
         )
     db.execute("DELETE FROM collab_piece WHERE id = %s", (str(piece_id),), role=user.role)
+    if row.get("storage_path") and att.bucket():
+        try:
+            storage.delete_object(att.bucket(), str(row["storage_path"]))
+        except (storage.StorageError, OSError):
+            pass
     if carte_id:
         audit.log(user.id, user.role, "suppression_piece_carte", "collab_carte", carte_id, {"nom": row.get("nom")})
 

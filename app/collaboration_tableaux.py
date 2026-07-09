@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import db
+from . import attachments_core, db, storage
 from .collaboration_espaces import GERANTS, require_espace_role
 from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
@@ -267,6 +267,19 @@ def delete_tableau(
 ) -> None:
     espace_id = _espace_of_tableau(tableau_id, user.role)
     require_espace_role(espace_id, user, GERANTS)
+    # Cascade removes every card and its pieces; sweep their storage objects first
+    # (RGPD erasure), before the rows disappear.
+    bucket = attachments_core.bucket()
+    if bucket:
+        for p in db.fetch_all(
+            "SELECT p.storage_path FROM collab_piece p "
+            "LEFT JOIN collab_commentaire cm ON cm.id = p.commentaire_id "
+            "JOIN collab_carte c ON c.id = coalesce(p.carte_id, cm.carte_id) "
+            "WHERE p.storage_path IS NOT NULL AND c.tableau_id = %s",
+            (tableau_id,),
+            role=user.role,
+        ):
+            storage.delete_object(bucket, str(p["storage_path"]))
     db.execute("DELETE FROM collab_tableau WHERE id = %s", (tableau_id,), role=user.role)
 
 
@@ -367,9 +380,15 @@ def reordonner_colonnes(
 ) -> None:
     espace_id = _espace_of_tableau(tableau_id, user.role)
     require_espace_role(espace_id, user, GERANTS)
-    for index, colonne_id in enumerate(payload.ordre):
-        db.execute(
-            "UPDATE collab_colonne SET position = %s WHERE id = %s AND tableau_id = %s",
-            (index, colonne_id, tableau_id),
-            role=user.role,
-        )
+    # One atomic reindex of EVERY column of the board: listed columns take the client
+    # order, omitted ones keep their prior order after them, so positions stay unique
+    # 0..N-1 even if the ordre list is partial/duplicated or two gerants race.
+    db.execute(
+        "UPDATE collab_colonne c SET position = sub.new_pos FROM ("
+        "  SELECT id, row_number() OVER ("
+        "    ORDER BY array_position(%s::uuid[], id) NULLS LAST, position, id) - 1 AS new_pos"
+        "  FROM collab_colonne WHERE tableau_id = %s"
+        ") sub WHERE c.id = sub.id AND c.tableau_id = %s",
+        (payload.ordre, tableau_id, tableau_id),
+        role=user.role,
+    )

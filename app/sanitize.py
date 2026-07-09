@@ -71,6 +71,28 @@ class _Sanitizer(HTMLParser):
         self.out.append(html.escape(data, quote=False))
 
 
+class _TextExtractor(HTMLParser):
+    """Collect only the visible text nodes, dropping tags and every attribute value
+    (so @tokens inside href/src/alt/title are never mistaken for mentions)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def text_content(value: str | None) -> str:
+    """Plain visible text of an HTML string (no tags, no attribute values)."""
+    if not value:
+        return ""
+    parser = _TextExtractor()
+    parser.feed(value)
+    parser.close()
+    return "".join(parser.parts)
+
+
 def sanitize_html(value: str | None) -> str | None:
     """Return a safe HTML string keeping only the allowlisted tags/attributes, or
     None for empty input."""
