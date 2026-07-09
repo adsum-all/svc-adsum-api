@@ -214,6 +214,8 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'DELETE /api/v1/collaboration/checklist-items/{item_id}': 'collaboration.gerer',
     'POST /api/v1/collaboration/checklist-items/{item_id}/convertir': 'collaboration.gerer',
     'POST /api/v1/collaboration/tableaux/{tableau_id}/colonnes/ordre': 'collaboration.gerer',
+    'POST /api/v1/collaboration/cartes-espace/{carte_id}/presence': 'collaboration.superviser',
+    'DELETE /api/v1/collaboration/cartes-espace/{carte_id}/presence': 'collaboration.superviser',
     'GET /api/v1/collaboration/notifications': 'collaboration.superviser',
     'POST /api/v1/collaboration/notifications/{notif_id}/lue': 'collaboration.superviser',
     'POST /api/v1/collaboration/notifications/toutes-lues': 'collaboration.superviser',
