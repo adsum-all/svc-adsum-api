@@ -27,9 +27,9 @@ deployment-unblock constraint.
   declaration, per-event statistics, global trends, per-member analytics). To be
   split into member endpoints and admin statistics, keeping FENETRE_FIN_SQL as
   the single shared window formula.
-- app/admin.py (709 lines): central back-office admin surface (member governance,
-  events, organisation, permissions). The recurring-activity series endpoint was
-  already split out into evenements_series.py; next split: separate member
+- app/admin.py (575 lines): central back-office admin surface (member governance,
+  events, organisation, permissions). The event create/update logic now lives in the
+  shared activites engine (reused by collaboration); next split: separate member
   governance from the events endpoints.
 - app/membres.py (556 lines): member-facing endpoints (profile, card, agenda,
   participation). To be split by extracting the agenda/events endpoints.
