@@ -9,6 +9,7 @@ archive. Comments, reactions and checklist mutations live in
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -19,7 +20,32 @@ from . import activites, attachments_core, audit, collaboration_notif, db
 from .collaboration_espaces import GERANTS, require_espace_role
 from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
+from .sanitize import sanitize_html
 from .schemas import UserMe
+
+_MENTION_RE = re.compile(r"@([\w.\-]{2,40})")
+
+
+def _resolve_mentions_espace(texte: str, espace_id: str, role: str) -> list[str]:
+    """Match @tokens in text (comment or description HTML) against the space
+    members' display name or e-mail local part; return the matched account ids."""
+    tokens = {t.lower() for t in _MENTION_RE.findall(texte or "")}
+    if not tokens:
+        return []
+    rows = db.fetch_all(
+        "SELECT u.id, u.email, m.nom_affiche FROM collab_espace_membre em "
+        "JOIN utilisateur u ON u.id = em.utilisateur_id LEFT JOIN membre m ON m.id = u.membre_id "
+        "WHERE em.espace_id = %s",
+        (espace_id,),
+        role=role,
+    )
+    matched: list[str] = []
+    for r in rows:
+        local = (r["email"].split("@")[0] or "").lower()
+        nom = (r["nom_affiche"] or "").lower().replace(" ", "")
+        if any(tok in (local, nom) or local.startswith(tok) or (nom and nom.startswith(tok)) for tok in tokens):
+            matched.append(str(r["id"]))
+    return matched
 
 router = APIRouter(prefix="/api/v1/collaboration", tags=["collaboration-cartes"])
 
@@ -59,7 +85,8 @@ class ChecklistItemOut(BaseModel):
     id: str
     texte: str
     fait: bool
-    assigne_id: str | None = None
+    assigne_id: str | None = None  # kept for backward compatibility (first assignee)
+    assignes: list[str] = []
     echeance: str | None = None
 
 
@@ -251,8 +278,13 @@ def _checklists_for(carte_id: str, role: str) -> list[ChecklistOut]:
     for cl in lists:
         clid = str(cl["id"])
         items = db.fetch_all(
-            "SELECT id, texte, fait, assigne_id, echeance FROM collab_checklist_item "
-            "WHERE checklist_id = %s ORDER BY position",
+            "SELECT ci.id, ci.texte, ci.fait, ci.assigne_id, ci.echeance, "
+            "COALESCE(array_agg(ia.utilisateur_id::text) FILTER (WHERE ia.utilisateur_id IS NOT NULL), '{}') "
+            "AS assignes "
+            "FROM collab_checklist_item ci LEFT JOIN collab_item_assigne ia ON ia.item_id = ci.id "
+            "WHERE ci.checklist_id = %s "
+            "GROUP BY ci.id, ci.texte, ci.fait, ci.assigne_id, ci.echeance, ci.position "
+            "ORDER BY ci.position",
             (clid,),
             role=role,
         )
@@ -266,6 +298,7 @@ def _checklists_for(carte_id: str, role: str) -> list[ChecklistOut]:
                         texte=it["texte"],
                         fait=bool(it["fait"]),
                         assigne_id=str(it["assigne_id"]) if it["assigne_id"] else None,
+                        assignes=[str(a) for a in (it["assignes"] or [])],
                         echeance=_iso(it["echeance"]),
                     )
                     for it in items
@@ -449,6 +482,11 @@ def update_carte(
     _, espace_id = _espace_of_carte(carte_id, user.role)
     require_espace_role(espace_id, user, MEMBRES_ACTIFS)
     fields = payload.model_dump(exclude_unset=True)
+    description_maj = "description" in fields
+    if description_maj:
+        # The description is authored as rich HTML: sanitise it (allowlist) so nothing
+        # executable is stored, then render it back through the same allowlist.
+        fields["description"] = sanitize_html(fields["description"]) or ""
     _sync_carte_relations(carte_id, fields, user)
     if fields:
         sets = ", ".join(f"{key} = %s" for key in fields)
@@ -457,6 +495,18 @@ def update_carte(
             (*fields.values(), carte_id),
             role=user.role,
         )
+    if description_maj and fields.get("description"):
+        # Tagging in the description notifies mentioned space members (in-app + real
+        # channels), like a comment mention. Best effort, never blocks the save.
+        titre_row = db.fetch_one("SELECT titre FROM collab_carte WHERE id = %s", (carte_id,), role=user.role)
+        titre = titre_row["titre"] if titre_row else ""
+        ctx = {"titre": titre, "espace": collaboration_notif.nom_espace(espace_id, user.role)}
+        for mid in _resolve_mentions_espace(fields["description"], espace_id, user.role):
+            if mid != user.id:
+                collaboration_notif.emettre(
+                    mid, "mention", "collab_mention", f"Vous etes mentionne dans « {titre} »",
+                    carte_id, espace_id, ctx, user.role,
+                )
     return _fetch_carte(carte_id, user.role)
 
 
