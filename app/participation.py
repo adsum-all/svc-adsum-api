@@ -47,7 +47,7 @@ _SEUIL_EVAL = 3
 # Single source of truth for the response window: the real end of the session
 # (or debut + 1 day when no end is set) plus the per-event duration when the
 # administration set one, else the global admin parameter
-# questionnaire_fenetre_heures, else 6 hours. Every read (display), write
+# questionnaire_fenetre_heures, else 5 hours. Every read (display), write
 # (submission guard) and reminder must use this same formula.
 FENETRE_FIN_SQL = (
     "coalesce(e.fin, e.debut + interval '1 day') + make_interval(hours => coalesce("
@@ -144,7 +144,7 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     if payload.modalite is not None and payload.modalite not in _MODALITES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="modalite must be presentiel or en_ligne")
     # Attendance window, enforced server-side with the same formula the display
-    # uses (per-event duration, else the admin parameter, else 6 hours). No one
+    # uses (per-event duration, else the admin parameter, else 5 hours). No one
     # can declare for a future event, nor once the window is over.
     ev = db.fetch_one(
         f"SELECT e.debut, (e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
