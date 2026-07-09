@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
     storage_bucket_photos: str = "member-photos"
     storage_bucket_documents: str = "member-documents"
+    # Optional private bucket for activity attachments (images, files). When set
+    # (ADSUM_STORAGE_BUCKET_EVENEMENTS, e.g. "evenement-pieces"), attachments are
+    # stored as objects and served through short-lived signed URLs instead of
+    # inline data URLs, keeping base64 blobs out of the database. When empty, the
+    # inline data URL behaviour is used (backward compatible, no bucket required).
+    storage_bucket_evenements: str = ""
     # Encryption key for identity documents at rest (Fernet). Mandatory in
     # production: when environment is production the API fails closed if it is
     # unset. Outside production a key is derived from jwt_secret so local
