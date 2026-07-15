@@ -13,9 +13,11 @@ def test_matrice_lists_the_full_catalogue() -> None:
     matrice = groupes._matrice_permissions()
     cles = {p["cle"] for p in matrice["permissions"]}
     assert cles == set(CATALOGUE)
-    # Each permission carries the four descriptive fields the UI needs.
+    # Each permission carries the descriptive fields the UI needs, including the
+    # human explanation (description) and boundary (limite).
     for p in matrice["permissions"]:
-        assert set(p) == {"cle", "domaine", "libelle", "risque", "portee"}
+        assert set(p) == {"cle", "domaine", "libelle", "risque", "portee", "description", "limite"}
+        assert p["description"] and p["limite"]  # every permission is documented
 
 
 def test_matrice_domaines_are_unique_and_sorted() -> None:

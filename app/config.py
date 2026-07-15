@@ -32,7 +32,11 @@ class Settings(BaseSettings):
     # E-mail gateway, provider switchable by the business at any time (no lock-in).
     # ADSUM_EMAIL_PROVIDER: console | smtp | brevo | resend
     email_provider: str = "console"
-    email_from: str = "saintgabrielsacerdoceroyal@ikmail.com"
+    # Default sender must be an address the provider actually accepts. The ikmail
+    # address is NOT a validated Brevo sender (Brevo rejects it with "sender not
+    # valid"), so it must never be the fallback: use the validated single sender.
+    # The live value is admin-managed in integration_config and overrides this.
+    email_from: str = "saintgabrielsacerdoceroyal@gmail.com"
     email_from_name: str = "Sacerdoce Royal"
     email_api_key: str = ""
     email_smtp_host: str = ""
@@ -93,7 +97,24 @@ class Settings(BaseSettings):
     # trusted device is re-verified more often. 2FA itself is always on when the
     # baseline is enforced; this is a real, honest strengthening the member controls.
     mfa_trust_days_strict: int = 7
+    # Technical (applicative) super-admin accounts: 2FA is always imposed and a trusted
+    # device only shortens the challenge to a 72 h (3-day) window, never more. These are
+    # the most privileged accounts, so they re-verify at least every three days.
+    mfa_trust_days_technique: int = 3
     mfa_baseline_enforced: bool = False
+    # Staff (any role beyond a plain member) MUST use 2FA: it is mandatory for anyone
+    # with access to apps beyond the member app. A plain member who has not opted in is
+    # only recommended to, and is forced after this grace period (days from account
+    # creation). During the grace no code is ever sent to a non-opted-in member.
+    mfa_grace_jours: int = 30
+    mfa_staff_obligatoire: bool = True
+    # RECETTE ONLY: when true, accounts on the demo domain (@exemple.com) skip the login
+    # one-time code, so throwaway demonstration profiles (which have no real inbox and no
+    # Telegram) can be signed in to test each role. Default false, so it is inert unless
+    # explicitly enabled (ADSUM_DEMO_LOGIN_ENABLED=1) for a recette, and it NEVER relaxes
+    # 2FA for a real account: the exemption is scoped to the @exemple.com throwaway domain.
+    demo_login_enabled: bool = False
+    demo_login_domain: str = "@exemple.com"
 
     @property
     def is_production(self) -> bool:
@@ -111,3 +132,13 @@ settings = Settings()
 # offline (account takeover), so the API refuses to run without it.
 if not settings.jwt_secret.strip():
     raise RuntimeError("ADSUM_JWT_SECRET is required and must not be empty (fail-closed).")
+
+# Staff 2FA is a hard security requirement, not a tunable in production: staff have
+# access to apps beyond the member app, so disabling their mandatory 2FA would allow
+# account takeover with a password alone. The toggle stays available outside
+# production (tests, local), but the live deployment refuses to start with it off.
+if settings.is_production and not settings.mfa_staff_obligatoire:
+    raise RuntimeError(
+        "ADSUM_MFA_STAFF_OBLIGATOIRE must not be disabled in production (fail-closed): "
+        "two-factor authentication is mandatory for staff."
+    )

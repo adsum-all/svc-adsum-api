@@ -44,9 +44,12 @@ def _matrice_permissions() -> dict[str, object]:
     """
     from . import permissions_data
 
+    details = permissions_data.PERMISSION_DETAILS
     permissions = [
         {"cle": cle, "domaine": meta["domaine"], "libelle": meta["libelle"],
-         "risque": meta["risque"], "portee": meta["portee"]}
+         "risque": meta["risque"], "portee": meta["portee"],
+         "description": details.get(cle, {}).get("description", ""),
+         "limite": details.get(cle, {}).get("limite", "")}
         for cle, meta in sorted(permissions_data.CATALOGUE.items())
     ]
     domaines = sorted({meta["domaine"] for meta in permissions_data.CATALOGUE.values()})

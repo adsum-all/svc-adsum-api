@@ -3,9 +3,25 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.temps import DEFAULT_TZ, formater_instant, zone_valide
+from app.temps import DEFAULT_TZ, formater_instant, local_datetime, zone_valide
 
 _NOON_UTC = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
+
+
+def test_local_datetime_shifts_day_across_midnight() -> None:
+    """The notification date bug: a late-evening UTC instant is the NEXT day in a
+    positive-offset zone. local_datetime must reflect that, so a reminder never
+    tells a member the wrong day."""
+    inst = datetime(2026, 7, 10, 23, 0, tzinfo=UTC)
+    abidjan = local_datetime(inst, "Africa/Abidjan")  # UTC+0
+    paris = local_datetime(inst, "Europe/Paris")      # UTC+2 in July
+    assert (abidjan.day, abidjan.hour) == (10, 23)
+    assert (paris.day, paris.hour) == (11, 1)
+
+
+def test_local_datetime_naive_is_utc() -> None:
+    naive = datetime(2026, 7, 10, 23, 0)
+    assert local_datetime(naive, "Europe/Paris").day == 11
 
 
 def test_paris_summer_is_local_time_with_country() -> None:

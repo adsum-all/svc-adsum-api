@@ -22,7 +22,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import db, visibilite
+from . import db, evenement_pieces, temps, visibilite
 from .auth import current_user
 from .permissions_rbac import require_permission
 from .schemas import UserMe
@@ -71,6 +71,19 @@ class ParticipationIn(BaseModel):
     avis: str | None = None
     note: int | None = None
     valider: bool = False
+
+
+@router.get("/membres/me/evenements/{evenement_id}/pieces", response_model=list[evenement_pieces.PieceEvenementOut])
+def mes_pieces_evenement(
+    evenement_id: str, ctx: Annotated[tuple[str, str], Depends(_membre)]
+) -> list[evenement_pieces.PieceEvenementOut]:
+    """Public attachments of an activity, for a member who can see that activity. A
+    document is meant to be read: the member opens it inside the app, never leaving it,
+    and may download it explicitly. Only returned when the event is visible to the member."""
+    membre_id, role = ctx
+    if not visibilite.evenement_visible_membre(evenement_id, membre_id, role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
+    return evenement_pieces.lister_pieces(evenement_id, role)
 
 
 @router.get("/membres/me/evenements/{evenement_id}/participation")
@@ -169,7 +182,7 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     # The form only opens once the activity has started: no one can declare
     # participation to an event that has not happened yet.
     if not existing and not ev["demarree"]:
-        quand = ev["debut"].strftime("%d/%m/%Y à %Hh%M") if ev["debut"] else ""
+        quand = temps.formater_instant(ev["debut"], ev.get("fuseau_horaire")) if ev["debut"] else ""
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"le formulaire sera disponible au début de l'activité ({quand})")
     # The form closes after the activity: a member who did not declare in time can
     # no longer create a record (an admin correction remains possible server-side).

@@ -152,7 +152,9 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
         """
         SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode,
                e.session_ouverte, e.lien_session, e.liens, e.type_diffusion, e.visibilite,
-               e.cible_type, e.cible_id,
+               e.cible_type, e.cible_id, e.type_evenement_id, te.couleur AS couleur,
+               te.nom AS type_evenement_nom,
+               e.description, e.intervenant_principal, e.intervenants,
                CASE e.cible_type
                  WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
@@ -175,6 +177,7 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
         FROM evenement e
         JOIN membre m ON m.id = %s
         LEFT JOIN intendance mi ON mi.id = m.intendance_id
+        LEFT JOIN type_evenement te ON te.id = e.type_evenement_id
         WHERE e.debut >= now() - interval '30 days'
           AND """ + visibilite.CIBLE_PREDICATE + """
         ORDER BY e.debut ASC
@@ -191,6 +194,12 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                 id=str(r["id"]),
                 titre=r["titre"],
                 type=r["type"],
+                type_evenement_id=str(r["type_evenement_id"]) if r.get("type_evenement_id") else None,
+                couleur=r.get("couleur"),
+                type_evenement_nom=r.get("type_evenement_nom"),
+                description=r.get("description") if isinstance(r.get("description"), str) else None,
+                intervenant_principal=r.get("intervenant_principal") if isinstance(r.get("intervenant_principal"), str) else None,
+                intervenants=[str(x) for x in (r.get("intervenants") or [])],
                 volet=r["volet"],
                 debut=r["debut"],
                 fin=r["fin"],

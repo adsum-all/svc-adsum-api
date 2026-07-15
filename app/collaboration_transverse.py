@@ -16,14 +16,13 @@ from pydantic import BaseModel, Field
 
 from . import activites, audit, db, evenement_pieces
 from .admin import _lire_evenement
-from .collaboration_cartes import _CARTE_COLS, LECTEURS, CarteProtoOut, carte_out
+from .collaboration_cartes import _CARTE_COLS, LECTEURS, CarteProtoOut, assemble_cartes
 from .collaboration_espaces import MembreOut, _initials, _name_from_email, require_espace_role
 from .permissions_rbac import require_permission
 from .schemas import CreateEvenement, EvenementOut, OccurrenceIn, UserMe
 
 router = APIRouter(prefix="/api/v1/collaboration", tags=["collaboration-transverse"])
 
-ADMINS = ("super_admin", "admin")
 _TERMINEE = r"termin|publi|fait"
 # Card columns qualified with the c. alias, for queries that join collab_tableau
 # (the bare "id" would be ambiguous). Result keys stay the base column names.
@@ -84,15 +83,19 @@ class ResultatRecherche(BaseModel):
 
 
 def _visible_espace_ids(user: UserMe) -> list[str]:
-    if user.role in ADMINS:
+    """Spaces the user may search across and see aggregate stats for: strictly the ones
+    they are an explicit member of. No member-admin bypass, otherwise global search and
+    stats would leak card titles from spaces the admin was never added to. A TECHNICAL
+    super-admin (acces_technique_global) searches all spaces (support role)."""
+    if user.acces_technique_global:
         rows = db.fetch_all("SELECT id FROM collab_espace WHERE NOT archive", (), role=user.role)
-    else:
-        rows = db.fetch_all(
-            "SELECT e.id FROM collab_espace e JOIN collab_espace_membre m ON m.espace_id = e.id "
-            "WHERE m.utilisateur_id = %s AND NOT e.archive",
-            (user.id,),
-            role=user.role,
-        )
+        return [str(r["id"]) for r in rows]
+    rows = db.fetch_all(
+        "SELECT e.id FROM collab_espace e JOIN collab_espace_membre m ON m.espace_id = e.id "
+        "WHERE m.utilisateur_id = %s AND NOT e.archive",
+        (user.id,),
+        role=user.role,
+    )
     return [str(r["id"]) for r in rows]
 
 
@@ -174,7 +177,7 @@ def mes_cartes(
         (user.id, espaces),
         role=user.role,
     )
-    return [_carte_echeance(r, user.role) for r in rows]
+    return _cartes_echeance(rows, user.role)
 
 
 @router.get("/cartes-echeance", response_model=list[CarteEcheanceOut])
@@ -192,12 +195,17 @@ def cartes_echeance(
         (espaces,),
         role=user.role,
     )
-    return [_carte_echeance(r, user.role) for r in rows]
+    return _cartes_echeance(rows, user.role)
 
 
-def _carte_echeance(row: dict[str, Any], role: str) -> CarteEcheanceOut:
-    base = carte_out(row, role)
-    return CarteEcheanceOut(**base.model_dump(), espace_id=str(row["_espace"]) if row.get("_espace") else None)
+def _cartes_echeance(rows: list[dict[str, Any]], role: str) -> list[CarteEcheanceOut]:
+    """Assemble a set of due-date cards in one batched pass (single connection and a
+    single bulk attachment signing), then carry each card's space id."""
+    cards = assemble_cartes(rows, role)
+    return [
+        CarteEcheanceOut(**base.model_dump(), espace_id=str(row["_espace"]) if row.get("_espace") else None)
+        for row, base in zip(rows, cards, strict=True)
+    ]
 
 
 class ActivitePublieeOut(BaseModel):
@@ -210,6 +218,8 @@ class ActivitePublieeOut(BaseModel):
     espace_id: str | None = None
     titre: str
     type: str | None = None
+    type_evenement_nom: str | None = None
+    couleur: str | None = None
     cible_type: str | None = None
     debut: str | None = None
     lieu: str | None = None
@@ -227,8 +237,10 @@ def activites_publiees(
     are shown read-only. No space scoping here: the whole fraternity's programme."""
     rows = db.fetch_all(
         "SELECT e.id, e.titre, e.type, e.cible_type, e.debut, e.lieu, "
+        "te.nom AS type_evenement_nom, te.couleur AS couleur, "
         "c.id AS carte_id, c.tableau_id, t.espace_id "
         "FROM evenement e "
+        "LEFT JOIN type_evenement te ON te.id = e.type_evenement_id "
         "LEFT JOIN collab_carte c ON c.evenement_id = e.id "
         "LEFT JOIN collab_tableau t ON t.id = c.tableau_id "
         "WHERE NOT e.annule "
@@ -247,6 +259,8 @@ def activites_publiees(
                 espace_id=str(r["espace_id"]) if r.get("espace_id") else None,
                 titre=r["titre"],
                 type=r.get("type"),
+                type_evenement_nom=r.get("type_evenement_nom"),
+                couleur=r.get("couleur") if isinstance(r.get("couleur"), str) else None,
                 cible_type=r.get("cible_type"),
                 debut=debut.isoformat() if hasattr(debut, "isoformat") else (str(debut) if debut else None),
                 lieu=r.get("lieu"),

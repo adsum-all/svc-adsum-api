@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from . import audit, db
 from .fields import ShortStr
-from .permissions_rbac import require_permission
+from .permissions_rbac import require_permission, require_permission_ecriture
 from .schemas import UserMe
 from .security import hash_password
 
@@ -292,7 +292,7 @@ def _remplacer_permissions_groupe(groupe_id: str, perms: list[str], role: str) -
 
 
 @router.post("/groupes", response_model=GroupeOut, status_code=status.HTTP_201_CREATED)
-def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> GroupeOut:
+def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.systeme"))]) -> GroupeOut:
     """Create a custom access group.
 
     Two modes. A 'role' group grants a known platform role (an admin cannot create
@@ -328,7 +328,7 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_per
 
 
 @router.patch("/groupes/{groupe_id}", response_model=GroupeOut)
-def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> GroupeOut:
+def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.systeme"))]) -> GroupeOut:
     """Edit a custom group: label, description, active state, and for a permissions
     group its granted set. System groups are read-only (their behaviour is relied
     upon platform-wide); attempting to edit one is refused."""
@@ -366,7 +366,7 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
 
 
 @router.delete("/groupes/{groupe_id}", status_code=status.HTTP_200_OK)
-def delete_groupe(groupe_id: str, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> dict[str, object]:
+def delete_groupe(groupe_id: str, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.systeme"))]) -> dict[str, object]:
     """Delete a custom group. A system group is never deleted; a group that still
     has members is refused (409) so nobody silently loses access: remove the
     members first. Deletion is audited."""
@@ -426,7 +426,7 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permi
 
 
 @router.post("/membres/{membre_id}/groupes")
-def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
+def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.administrer"))]) -> dict[str, object]:
     """Add a member to an access group, on a global or scoped perimeter.
 
     A global membership elevates the account's back-office role; a scoped one
@@ -465,7 +465,7 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
 
 
 @router.delete("/membres/{membre_id}/groupes/{appartenance_id}", status_code=status.HTTP_200_OK)
-def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
+def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.administrer"))]) -> dict[str, object]:
     """Remove ONE membership (a group on a given perimeter) and re-sync the role.
 
     Targets a single ``membre_groupe`` row so multi-membership is respected. The

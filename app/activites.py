@@ -121,6 +121,16 @@ def valider_cible_complet(cible_type: str, cible_id: str | None, role: str | Non
     return cible_id
 
 
+def _valider_type_evenement(type_evenement_id: str | None, role: str | None) -> str | None:
+    """Validate the optional catalogue event type: it must reference an existing row.
+    An unknown id is rejected (400) rather than silently stored as a dangling link."""
+    if not type_evenement_id:
+        return None
+    if not db.fetch_one("SELECT id FROM type_evenement WHERE id = %s", (type_evenement_id,), role=role):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type d'evenement inconnu")
+    return type_evenement_id
+
+
 def cible_store(payload: Any, role: str | None) -> tuple[str | None, str | None, int | None, int | None, list[str]]:
     """Validate and normalise the full targeting to store: the unit id (or None),
     the gender/age refinements and the de-duplicated e-mail list (only for 'liste')."""
@@ -166,14 +176,15 @@ def creer_evenement_complet(payload: Any, cree_par: str, role: str | None) -> st
     description = sanitize_html(payload.description)
     intervenants = [x.strip() for x in payload.intervenants if x and x.strip()][:30]
     principal = (payload.intervenant_principal or "").strip() or None
+    type_evenement_id = _valider_type_evenement(getattr(payload, "type_evenement_id", None), role)
     created = db.execute(
-        "INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, "
-        "visibilite, cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails, "
+        "INSERT INTO evenement (titre, type, type_evenement_id, volet, debut, fin, lieu, mode, lien_session, liens, "
+        "type_diffusion, visibilite, cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails, "
         "fenetre_reponse_heures, fuseau_horaire, description, intervenant_principal, intervenants, cree_par) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::text[], %s, %s, %s, %s, "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::text[], %s, %s, %s, %s, "  # noqa: E501
         "%s::text[], %s) RETURNING id",
         (
-            payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
+            payload.titre, payload.type, type_evenement_id, payload.volet, payload.debut, payload.fin, payload.lieu,
             payload.mode, primary, liens_json, payload.type_diffusion, payload.visibilite,
             payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
             payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, cree_par,
@@ -193,12 +204,12 @@ def creer_evenement_complet(payload: Any, cree_par: str, role: str | None) -> st
         )
         for occ in payload.occurrences:
             db.execute(
-                "INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, "
+                "INSERT INTO evenement (titre, type, type_evenement_id, volet, debut, fin, lieu, mode, lien_session, liens, "  # noqa: E501
                 "type_diffusion, visibilite, cible_type, cible_id, fenetre_reponse_heures, fuseau_horaire, "
                 "serie_id, cree_par) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
-                    payload.titre, payload.type, payload.volet, occ.debut, occ.fin, payload.lieu,
+                    payload.titre, payload.type, type_evenement_id, payload.volet, occ.debut, occ.fin, payload.lieu,
                     occ.mode or payload.mode, primary, liens_json, payload.type_diffusion, payload.visibilite,
                     payload.cible_type, cible_id, payload.fenetre_reponse_heures, payload.fuseau_horaire,
                     master_id, cree_par,
@@ -223,14 +234,15 @@ def mettre_a_jour_evenement_complet(
     description = sanitize_html(payload.description)
     intervenants = [x.strip() for x in payload.intervenants if x and x.strip()][:30]
     principal = (payload.intervenant_principal or "").strip() or None
+    type_evenement_id = _valider_type_evenement(getattr(payload, "type_evenement_id", None), role)
     db.execute(
-        "UPDATE evenement SET titre=%s, type=%s, volet=%s, debut=%s, fin=%s, lieu=%s, mode=%s, "
+        "UPDATE evenement SET titre=%s, type=%s, type_evenement_id=%s, volet=%s, debut=%s, fin=%s, lieu=%s, mode=%s, "
         "lien_session=%s, liens=%s::jsonb, type_diffusion=%s, visibilite=%s, cible_type=%s, "
         "cible_id=%s, cible_genre=%s, cible_age_min=%s, cible_age_max=%s, cible_emails=%s::text[], "
         "fenetre_reponse_heures=%s, fuseau_horaire=%s, description=%s, intervenant_principal=%s, "
         "intervenants=%s::text[] WHERE id=%s",
         (
-            payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
+            payload.titre, payload.type, type_evenement_id, payload.volet, payload.debut, payload.fin, payload.lieu,
             payload.mode, primary, liens_json, payload.type_diffusion, payload.visibilite,
             payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
             payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, evenement_id,
@@ -240,13 +252,13 @@ def mettre_a_jour_evenement_complet(
     if portee == "toute_la_serie":
         for other in (i for i in serie_ids(evenement_id, portee, role) if i != evenement_id):
             db.execute(
-                "UPDATE evenement SET titre=%s, type=%s, volet=%s, lieu=%s, mode=%s, "
+                "UPDATE evenement SET titre=%s, type=%s, type_evenement_id=%s, volet=%s, lieu=%s, mode=%s, "
                 "lien_session=%s, liens=%s::jsonb, type_diffusion=%s, visibilite=%s, "
                 "cible_type=%s, cible_id=%s, cible_genre=%s, cible_age_min=%s, cible_age_max=%s, "
                 "cible_emails=%s::text[], fenetre_reponse_heures=%s, fuseau_horaire=%s, description=%s, "
                 "intervenant_principal=%s, intervenants=%s::text[] WHERE id=%s",
                 (
-                    payload.titre, payload.type, payload.volet, payload.lieu, payload.mode,
+                    payload.titre, payload.type, type_evenement_id, payload.volet, payload.lieu, payload.mode,
                     primary, liens_json, payload.type_diffusion, payload.visibilite,
                     payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
                     payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, other,

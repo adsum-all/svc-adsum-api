@@ -57,3 +57,44 @@ def require_permission(permission: str):
         return user
 
     return _dep
+
+
+# The access-governance tables (membre_application_acces, membre_groupe, groupe_acces,
+# groupe_permission, membre_application_role) are meant to be written only by an admin BASE
+# role (super_admin/admin), matching the RLS write policies of migrations 0068/0134/0135. The
+# intended RLS session role is the account's base role (utilisateur.role), not the
+# effective/group-derived role.
+ROLES_ECRITURE_ACCES = ("super_admin", "admin")
+
+
+def assert_role_ecriture_acces(user: UserMe) -> None:
+    """Reject a caller whose base role is not admin. This application-layer check is the
+    EFFECTIVE enforcer of the admin-only rule: the API connects with the schema owner role,
+    which is exempt from RLS on the tables declared ENABLE-only (membre_groupe, groupe_acces,
+    groupe_permission, cf. 0068/0076) and, per ADR-0002, the backend/service role bypasses
+    RLS generally. So without this check a non-admin base role holding a governance
+    permission by delegation (a 'permissions' group) could actually write those tables. Do
+    NOT relax this guard expecting RLS to catch the role: for the role dimension RLS is
+    intent, not a runtime backstop. (The 0138 trigger IS a real backstop, but only for the
+    visibility invariant, and runs even under the owner/BYPASSRLS connection.)"""
+    if user.role not in ROLES_ECRITURE_ACCES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="reserve aux administrateurs (super_admin, admin)",
+        )
+
+
+def require_permission_ecriture(permission: str):
+    """FastAPI dependency for governance WRITE endpoints: holds ``permission`` AND has an
+    admin base role, so the endpoint authority matches the RLS write policy of the
+    access-governance tables it mutates. Depends directly on ``current_user`` (a module-level
+    name so the stringized annotation resolves under ``from __future__ import annotations``)
+    and performs both checks inline."""
+
+    def _dep(user: Annotated[UserMe, Depends(current_user)]) -> UserMe:
+        if permission not in permissions_effectives(user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="permission requise absente")
+        assert_role_ecriture_acces(user)
+        return user
+
+    return _dep

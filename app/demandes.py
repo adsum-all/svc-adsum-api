@@ -274,6 +274,108 @@ def my_demandes(ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) 
     return [_demande_row(r) for r in rows]
 
 
+class ActionAttendueOut(BaseModel):
+    """One request that awaits the member's own action, with the timing signals
+    the app needs to nudge discreetly and escalate over time."""
+
+    id: str
+    reference: str = ""
+    sujet: str
+    statut: str
+    statut_libelle: str
+    # Days elapsed since the request entered a member-action state (maj_le), so
+    # the reminder can grow calmly with age instead of nagging from minute one.
+    depuis_jours: int = 0
+    echeance: datetime | None = None
+    # Days left before the response deadline (negative once it has passed); null
+    # when the state carries no deadline (a document request, for instance).
+    echeance_jours: int | None = None
+    # Server-decided urgency so the client never invents thresholds:
+    # "normale" | "elevee" | "critique".
+    urgence: str = "normale"
+
+
+class ActionsAttenduesOut(BaseModel):
+    """Compact summary powering the discreet 'an action awaits you' surfaces."""
+
+    total: int = 0
+    plus_ancienne_jours: int = 0
+    urgence_max: str = "normale"
+    # Direct-link target when exactly one action is pending; null when several
+    # (the app then opens the list so nothing is hidden behind a single link).
+    cible_unique_id: str | None = None
+    items: list[ActionAttendueOut] = []
+
+
+# The only two states where the ball is in the member's court: the administration
+# asked for a document, or unlocked fields for the member to correct themselves.
+_STATUTS_ACTION_MEMBRE = ("pieces_demandees", "attente_membre")
+
+
+def _urgence_action(depuis_jours: int, echeance_jours: int | None) -> str:
+    """Escalate on real signals: a passed or very near deadline, or a request the
+    member has been sitting on for several days. Kept server-side so every surface
+    (app banner, badges) speaks with one voice."""
+    if (echeance_jours is not None and echeance_jours < 0) or depuis_jours >= 7:
+        return "critique"
+    if (echeance_jours is not None and echeance_jours <= 2) or depuis_jours >= 3:
+        return "elevee"
+    return "normale"
+
+
+@router.get("/membres/me/demandes/en-attente", response_model=ActionsAttenduesOut)
+def my_demandes_en_attente(ctx: Annotated[tuple[str, str, str], Depends(_require_membre)]) -> ActionsAttenduesOut:
+    """Summarise the requests waiting on the member's own action (documents asked,
+    or fields unlocked for a correction). Computed live from the demande rows
+    (statut + maj_le + echeance_reponse), so there is no separate counter that
+    could drift out of sync with the tickets."""
+    membre_id, role, _ = ctx
+    rows = db.fetch_all(
+        """
+        SELECT d.id, d.reference, d.numero, d.sujet, d.statut, d.echeance_reponse,
+               FLOOR(EXTRACT(EPOCH FROM (now() - d.maj_le)) / 86400)::int AS depuis_jours,
+               CASE WHEN d.echeance_reponse IS NULL THEN NULL
+                    ELSE FLOOR(EXTRACT(EPOCH FROM (d.echeance_reponse - now())) / 86400)::int END AS echeance_jours
+        FROM demande d
+        WHERE d.membre_id = %s AND d.statut = ANY(%s)
+        ORDER BY d.echeance_reponse ASC NULLS LAST, d.maj_le ASC
+        """,
+        (membre_id, list(_STATUTS_ACTION_MEMBRE)),
+        role=role,
+    )
+    items: list[ActionAttendueOut] = []
+    for r in rows:
+        depuis = max(0, int(r.get("depuis_jours") or 0))
+        raw_ech = r.get("echeance_jours")
+        ech_j = int(raw_ech) if raw_ech is not None else None
+        items.append(
+            ActionAttendueOut(
+                id=str(r["id"]),
+                reference=_numero(r),
+                sujet=str(r.get("sujet") or ""),
+                statut=str(r["statut"]),
+                statut_libelle=STATUTS_LISIBLES.get(str(r["statut"]), str(r["statut"])),
+                depuis_jours=depuis,
+                echeance=r.get("echeance_reponse"),  # type: ignore[arg-type]
+                echeance_jours=ech_j,
+                urgence=_urgence_action(depuis, ech_j),
+            )
+        )
+    # Most urgent first for every surface: critique > elevee > normale, then oldest.
+    rang = {"critique": 0, "elevee": 1, "normale": 2}
+    items.sort(key=lambda a: (rang[a.urgence], -a.depuis_jours))
+    plus_ancienne = max((a.depuis_jours for a in items), default=0)
+    urgence_max = items[0].urgence if items else "normale"
+    cible = items[0].id if len(items) == 1 else None
+    return ActionsAttenduesOut(
+        total=len(items),
+        plus_ancienne_jours=plus_ancienne,
+        urgence_max=urgence_max,
+        cible_unique_id=cible,
+        items=items,
+    )
+
+
 def _validated_document_id(document_id: str | None, membre_id: str, role: str) -> str | None:
     """Ensure an attached document belongs to the current member, else reject.
 

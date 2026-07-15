@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
 from . import db
+from .membre_filters import exclusion_technique
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -67,7 +68,7 @@ def list_inscriptions(
     rows = db.fetch_all(
         "SELECT id, matricule, prenoms, nom, email, statut_inscription, soumis_le, decision_le, "
         "(SELECT count(*) FROM document d WHERE d.membre_id = membre.id) AS nb_documents "
-        f"FROM membre WHERE statut_inscription IN ({placeholders}) "
+        f"FROM membre WHERE statut_inscription IN ({placeholders}) AND {exclusion_technique('membre')} "
         "ORDER BY COALESCE(soumis_le, decision_le) DESC NULLS LAST, matricule DESC",
         tuple(statuts),
         role=user.role,
@@ -139,7 +140,7 @@ def compteurs_inscriptions(
     """One count per lifecycle stage, to badge the registration tabs at a glance."""
     rows = db.fetch_all(
         "SELECT statut_inscription AS s, count(*) AS n FROM membre "
-        "WHERE statut_inscription IS NOT NULL GROUP BY statut_inscription",
+        f"WHERE statut_inscription IS NOT NULL AND {exclusion_technique('membre')} GROUP BY statut_inscription",
         (),
         role=user.role,
     )

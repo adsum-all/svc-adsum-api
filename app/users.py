@@ -51,7 +51,12 @@ def _to_out(row: dict[str, object]) -> UtilisateurOut:
 def list_utilisateurs(
     user: Annotated[UserMe, Depends(require_permission("comptes.administrer"))]
 ) -> list[UtilisateurOut]:
-    rows = db.fetch_all(f"{_SELECT} ORDER BY u.role ASC, u.email ASC", (), role=user.role)
+    # Technical (applicative) super-admins are managed ONLY on their dedicated page and
+    # never surface in the general access-and-groups roster.
+    rows = db.fetch_all(
+        f"{_SELECT} WHERE u.acces_technique_global = false ORDER BY u.role ASC, u.email ASC",
+        (), role=user.role,
+    )
     return [_to_out(r) for r in rows]
 
 
@@ -122,6 +127,17 @@ def update_utilisateur(
     payload: UpdateUtilisateur,
     user: Annotated[UserMe, Depends(require_permission("comptes.systeme"))],
 ) -> UtilisateurOut:
+    # A technical (applicative) super-admin is administered ONLY on its dedicated page,
+    # never from the general access-and-groups surface.
+    tech = db.fetch_one(
+        "SELECT 1 FROM utilisateur WHERE id = %s AND acces_technique_global = true",
+        (utilisateur_id,), role=user.role,
+    )
+    if tech:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="compte technique: a gerer uniquement dans la page des super-admins techniques",
+        )
     fields = payload.model_dump(exclude_unset=True)
     if fields:
         # Capture the prior values so the audit trail records the actual change

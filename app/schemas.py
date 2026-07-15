@@ -11,8 +11,16 @@ _UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    # The member signs in with an identifier: their e-mail (default), OR their ADSUM
+    # matricule, OR their member code. ``email`` is kept for backward compatibility
+    # (older clients) and may now carry any of the three; ``identifiant`` is the
+    # explicit field for the alternative methods. One of the two must be provided.
+    email: str | None = Field(default=None, max_length=200)
+    identifiant: str | None = Field(default=None, max_length=200)
     password: str = Field(min_length=1, max_length=128)
+
+    def resolve_identifiant(self) -> str:
+        return (self.identifiant or self.email or "").strip()
 
 
 class TokenResponse(BaseModel):
@@ -36,6 +44,12 @@ class LoginResponse(BaseModel):
     doit_changer_mdp: bool = False
     # Which channel the code was sent on (telegram / email), for a clear message.
     canal: str | None = None
+    # Canonical e-mail of the authenticated account. Returned only once the
+    # password has been validated, so a client that signed in with a matricule or
+    # member code can drive the e-mail based first-login OTP flow with the real
+    # address instead of the typed identifier. Never returned on the otp_required
+    # branch (no token, first factor only).
+    email: str | None = None
 
 
 class UserMe(BaseModel):
@@ -44,6 +58,15 @@ class UserMe(BaseModel):
     role: str
     membre_id: str | None = None
     session_id: str | None = None
+    # A technical/support super-admin (applicative account, not a member) with a stable,
+    # server-side global-access authorization. Grants a total content bypass across apps
+    # and Collaboration, WITHOUT membership. Never derived from the role or an e-mail: a
+    # member super-admin has this false and stays membership-scoped for content.
+    acces_technique_global: bool = False
+    # Graduated privilege level of a technical account (lecteur, developpeur, mainteneur,
+    # admin, super); None for a non-technical account. Governs who may administer the
+    # technical-user roster and lifecycle (admin/super only) and protects the top level.
+    niveau_technique: str | None = None
 
 
 class FonctionPublique(BaseModel):
@@ -135,6 +158,11 @@ class EvenementOut(BaseModel):
     id: str
     titre: str
     type: str | None = None
+    # Administrable event type from the catalogue, its display name and its unique colour
+    # (used to distinguish events on the member calendar). None = no catalogue type set.
+    type_evenement_id: str | None = None
+    type_evenement_nom: str | None = None
+    couleur: str | None = None
     volet: str
     debut: datetime
     fin: datetime | None = None
@@ -462,6 +490,8 @@ class TribuOut(BaseModel):
 
     id: str
     nom: str
+    description: str | None = None
+    publie: bool = True
     patriarche: str | None = None  # biblical reference (kept for context)
     patriarche_membre_id: str | None = None
     patriarche_nom: str | None = None  # current human titulaire, resolved
@@ -629,6 +659,9 @@ class StatistiquesOut(BaseModel):
     par_cheminement: list[dict[str, object]]
     entrees_mensuelles: list[dict[str, object]]
     membres_a_verifier: list[dict[str, object]]
+    # Distribution of activities by administrable event type (nom, couleur, total,
+    # pourcentage), so the dashboard shows how activities split across types over time.
+    par_type_evenement: list[dict[str, object]] = []
 
 
 class CommissionOut(BaseModel):
@@ -669,6 +702,8 @@ class CreateEvenement(BaseModel):
 
     titre: str = Field(min_length=1)
     type: str | None = None
+    # Administrable event type from the catalogue (drives the calendar colour).
+    type_evenement_id: str | None = Field(default=None, pattern=_UUID_RE)
     volet: str = Field(default="A", pattern="^(A|B)$")
     debut: datetime
     fin: datetime | None = None

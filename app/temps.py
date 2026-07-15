@@ -63,6 +63,14 @@ def _zone(fuseau: str | None) -> ZoneInfo:
         return ZoneInfo(DEFAULT_TZ)
 
 
+def local_datetime(instant: datetime, fuseau: str | None) -> datetime:
+    """Convert an absolute instant to the given IANA zone, so a ``strftime`` renders
+    the correct local date and time (never raw UTC). A naive instant is assumed UTC."""
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=ZoneInfo("UTC"))
+    return instant.astimezone(_zone(fuseau))
+
+
 def formater_instant(instant: datetime | None, fuseau: str | None, avec_zone: bool = True) -> str:
     """Format an absolute instant in the recipient's zone, in French.
 

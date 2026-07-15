@@ -15,6 +15,8 @@ security-critical helpers so the policy is defined once.
 from __future__ import annotations
 
 import base64
+import urllib.parse
+from typing import Any
 
 from fastapi import HTTPException, status
 
@@ -32,6 +34,10 @@ INLINE_SAFE_TYPES = frozenset(
     {
         "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp",
         "application/pdf", "text/plain",
+        # Audio notes (moderator channel): safe to serve inline so <audio> can play
+        # them; they carry no active content.
+        "audio/webm", "audio/mp4", "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
+        "audio/ogg", "audio/x-m4a", "audio/m4a", "audio/aac", "audio/flac",
     }
 )
 # Active-content types are refused outright so a script-bearing file is never stored.
@@ -108,3 +114,39 @@ def served_url(url: str | None, storage_path: str | None, nom: str, type_: str) 
     if storage_path:
         return signed_url(str(storage_path), nom, type_)
     return url or ""
+
+
+def _with_download(url: str, nom: str, type_: str) -> str:
+    """Force an attachment download for non-inline types, matching ``signed_url``."""
+    if (type_ or "") in INLINE_SAFE_TYPES:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}download={urllib.parse.quote(nom or 'piece')}"
+
+
+def served_urls(rows: list[dict[str, Any]]) -> dict[str, str]:
+    """Resolve the fetch URL for many piece rows at once, keyed by piece id.
+
+    Object-backed rows (those with a ``storage_path``) are signed in a single bulk
+    request instead of one network round trip per piece, which dominated board
+    load time. Inline rows return their stored data URL directly. A row the storage
+    backend could not sign maps to an empty string, exactly like ``served_url``."""
+    out: dict[str, str] = {}
+    objects: list[dict[str, Any]] = []
+    for p in rows:
+        pid = str(p["id"])
+        if p.get("storage_path"):
+            objects.append(p)
+        else:
+            out[pid] = p.get("url") or ""
+    if not objects:
+        return out
+    paths = [str(p["storage_path"]) for p in objects]
+    try:
+        signed = storage.signed_download_urls(bucket(), paths, SIGNED_URL_TTL)
+    except (storage.StorageError, OSError):  # URLError (DNS/connection) subclasses OSError
+        signed = {}
+    for p in objects:
+        base = signed.get(str(p["storage_path"]), "")
+        out[str(p["id"])] = _with_download(base, p["nom"], p.get("type") or "") if base else ""
+    return out

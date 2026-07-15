@@ -82,6 +82,22 @@ def telegram_username() -> str:
     return integration_value("telegram_bot_username")
 
 
+def telegram_instruction_token() -> str:
+    """Token of the DEDICATED instruction bot (distinct from the notification bot).
+    Falls back to the notification bot token until a separate one is configured, so
+    ingestion keeps working; configure telegram_instruction_bot_token to separate."""
+    return integration_value("telegram_instruction_bot_token") or telegram_token()
+
+
+def telegram_instruction_username() -> str:
+    return integration_value("telegram_instruction_bot_username") or telegram_username()
+
+
+def telegram_instruction_dedie() -> bool:
+    """True when a separate instruction bot token is actually configured."""
+    return bool(integration_value("telegram_instruction_bot_token"))
+
+
 # --- Channel availability ---------------------------------------------------
 
 def telegram_configured() -> bool:
@@ -100,7 +116,10 @@ def sms_configured() -> bool:
 
 # --- Individual channel sends -----------------------------------------------
 
-def send_telegram(chat_id: str, message: Message) -> bool:
+def send_telegram(chat_id: str, message: Message, contexte: str | None = None) -> bool:
+    """Send a Telegram message. ``contexte`` tags the stored message id so a specific
+    class of message (e.g. a login code, ``contexte='otp:login_2fa'``) can later be
+    deleted precisely, without touching ordinary notifications."""
     token = telegram_token()
     if not token or not chat_id:
         return False
@@ -109,11 +128,11 @@ def send_telegram(chat_id: str, message: Message) -> bool:
     text = f"<b>{_esc(message.titre)}</b>\n{_esc(message.corps_text)}"[:4000]
     ok, body = _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, {})
     if ok:
-        _record_telegram_message(str(chat_id), body)
+        _record_telegram_message(str(chat_id), body, contexte)
     return ok
 
 
-def _record_telegram_message(chat_id: str, body: dict[str, object]) -> None:
+def _record_telegram_message(chat_id: str, body: dict[str, object], contexte: str | None = None) -> None:
     """Store the outgoing message id so it can later be auto-deleted. Best-effort:
     a bookkeeping failure must never affect the delivery that already succeeded."""
     try:
@@ -122,8 +141,8 @@ def _record_telegram_message(chat_id: str, body: dict[str, object]) -> None:
         if message_id is None:
             return
         db.execute(
-            "INSERT INTO telegram_message (chat_id, message_id) VALUES (%s, %s)",
-            (chat_id, int(message_id)),
+            "INSERT INTO telegram_message (chat_id, message_id, contexte) VALUES (%s, %s, %s)",
+            (chat_id, int(message_id), contexte),
             role=None,
         )
     except Exception:  # noqa: BLE001 - never break a successful send
@@ -138,6 +157,31 @@ def delete_telegram_message(chat_id: str, message_id: int) -> bool:
     url = f"{settings.telegram_api_base}/bot{token}/deleteMessage"
     ok, _ = _post_json(url, {"chat_id": chat_id, "message_id": message_id}, {})
     return ok
+
+
+def delete_tracked(chat_id: str, contexte: str, role: str | None = None) -> int:
+    """Delete every still-live tracked message for a chat with the given context,
+    then mark them purged. Used to remove a one-time code from the chat once it has
+    been used (or superseded by a new one), so the secret does not linger. Returns
+    how many Telegram confirmed deleted. Best-effort: never raises to the caller."""
+    try:
+        rows = db.fetch_all(
+            "SELECT id, message_id FROM telegram_message "
+            "WHERE chat_id = %s AND contexte = %s AND supprime_le IS NULL",
+            (str(chat_id), contexte),
+            role=role,
+        )
+    except Exception:  # noqa: BLE001 - bookkeeping table may be mid-migration
+        return 0
+    deleted = 0
+    for r in rows or []:
+        if delete_telegram_message(str(chat_id), int(r["message_id"])):
+            deleted += 1
+        try:
+            db.execute("UPDATE telegram_message SET supprime_le = now() WHERE id = %s", (str(r["id"]),), role=role)
+        except Exception:  # noqa: BLE001
+            pass
+    return deleted
 
 
 def purge_old_telegram(role: str | None, retention_days: int | None = None, limit: int = 500) -> dict[str, int]:
@@ -245,7 +289,7 @@ def _record_echec(membre_id: str, role: str | None, type_cle: str, canal: str, d
         pass
 
 
-def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params: list[str] | None = None, critique: bool = False) -> list[str]:
+def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params: list[str] | None = None, critique: bool = False, canaux_autorises: set[str] | None = None) -> list[str]:
     """Deliver a message to a member over every opted-in, configured channel.
 
     Always records an in-app notification. Returns the list of channels used.
@@ -279,9 +323,16 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
     ) or {}
 
     def autorise(canal: str) -> bool:
-        # Critical messages ignore both the admin kill-switch and the member's
-        # channel preference; other messages honour both.
-        return critique or (canal_actif(canal) and bool(prefs.get(canal)))
+        # Critical messages ignore the admin kill-switch, the master channel switch
+        # and the per-group matrix: security must reach the member on every channel.
+        if critique:
+            return True
+        # Per-group matrix (when provided by notifier): the member turned this push
+        # channel off for this notification group. In-app is unaffected (sent above).
+        if canaux_autorises is not None and canal not in canaux_autorises:
+            return False
+        # Master channel switch + admin kill-switch.
+        return canal_actif(canal) and bool(prefs.get(canal))
 
     # 2) E-mail (existing gateway).
     if autorise("email") and contact.get("email"):
