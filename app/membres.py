@@ -53,28 +53,20 @@ def _notify(
     type_: str,
     titre: str,
     corps: str,
-    email: str | None = None,
 ) -> None:
-    """Create a real in-app notification and, when an e-mail is known, send it too."""
-    db.execute(
-        """
-        INSERT INTO notification (membre_id, type, titre, corps, lu, cree_le)
-        VALUES (%s, %s, %s, %s, false, now())
-        """,
-        (membre_id, type_, titre, corps),
-        role=role,
-    )
-    target = email
-    if target is None:
-        row = db.fetch_one("SELECT email FROM utilisateur WHERE membre_id = %s", (membre_id,), role=role)
-        target = str(row["email"]) if row and row.get("email") else None
-    if target:
-        try:
-            from .email_gateway import send_notification
+    """Deliver a member notification through the SAME dispatch as every other notification,
+    so the member's channel preferences are honored: the in-app entry is always recorded,
+    but the e-mail (and Telegram) go out ONLY if the member has that channel enabled. This
+    replaces the previous direct e-mail send that ignored the member's On/Off switches (a
+    member who turned e-mail off kept receiving these e-mails)."""
+    from . import channels
+    from .notifications import canaux_autorises
 
-            send_notification(target, titre, corps)
-        except Exception:
-            pass
+    active = db.fetch_one("SELECT sensibilite FROM type_notification WHERE cle = %s", (type_,), role=role)
+    sensibilite = (active or {}).get("sensibilite") or "operationnel"
+    autorises = canaux_autorises(membre_id, role, type_, sensibilite)
+    msg = channels.Message(titre=titre, corps_text=corps, type_notif=type_)
+    channels.dispatch(membre_id, role, msg, critique=(sensibilite == "critique"), canaux_autorises=autorises)
 
 
 def require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:

@@ -96,12 +96,17 @@ def _notifier_emetteur(mid: str, texte: str, role: str) -> None:
     left it), if their Telegram is linked. Never breaks the workflow."""
     try:
         row = db.fetch_one(
-            "SELECT m.telegram_chat_id AS chat FROM collab_canal_message cm "
+            "SELECT m.id AS membre_id, m.telegram_chat_id AS chat FROM collab_canal_message cm "
             "JOIN utilisateur u ON u.id = cm.auteur_id JOIN membre m ON m.id = u.membre_id "
             "WHERE cm.id = %s", (mid,), role=role,
         )
         chat = row and row.get("chat")
         if not chat:
+            return
+        # Honor the member's Telegram preference: a member who turned Telegram off does not
+        # get this update (the On/Off switch applies to every channel path, uniformly).
+        pref = db.fetch_one("SELECT telegram FROM preference_notification WHERE membre_id = %s", (row["membre_id"],), role=role)
+        if pref is not None and not pref.get("telegram"):
             return
         from .channels import Message, send_telegram
         send_telegram(str(chat), Message(titre="ADSUM Canal", corps_text=texte), contexte=f"instruction:{mid}")
