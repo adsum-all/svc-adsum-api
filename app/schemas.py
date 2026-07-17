@@ -95,6 +95,10 @@ class MembreProfile(BaseModel):
     nom_pastoral: str | None = None
     nom_pastoral_affiche: str | None = None
     fonction_perimetre: str | None = None
+    # Shepherd SELF-DECLARATION made at registration, pending administration
+    # review; distinct from the granted est_berger consecration flag.
+    berger_declare: bool = False
+    berger_nom_declare: str | None = None
     fonctions: list[FonctionPublique] = []
     telephone: str | None = None
     indicatif_telephone: str | None = None
