@@ -31,7 +31,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from . import audit, db
+from . import audit, db, ratelimit, temps
 from .config import settings
 from .participation import FENETRE_FIN_SQL, upsert_participation
 
@@ -121,7 +121,7 @@ def _phone_matches(in_indicatif: str, in_numero: str, stored_indicatif: str | No
 
 def _event_or_404(evenement_id: str) -> dict[str, object]:
     row = db.fetch_one(
-        f"SELECT e.id, e.titre, e.lieu, e.debut, e.fin, e.emargement_externe, "
+        f"SELECT e.id, e.titre, e.lieu, e.debut, e.fin, e.fuseau_horaire, e.emargement_externe, "
         f"coalesce(e.type_diffusion, 'aucun') AS type_diffusion, "
         f"(e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
         f"(e.debut IS NOT NULL AND now() > {FENETRE_FIN_SQL}) AS cloture, "
@@ -136,7 +136,7 @@ def _event_or_404(evenement_id: str) -> dict[str, object]:
 
 def _guard_window(ev: dict[str, object]) -> None:
     if not ev["demarree"]:
-        quand = ev["debut"].strftime("%d/%m/%Y à %Hh%M") if ev["debut"] else ""
+        quand = temps.formater_instant(ev["debut"], ev.get("fuseau_horaire")) if ev["debut"] else ""
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"l'émargement ouvrira au début de l'activité ({quand})")
     if ev["cloture"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="l'émargement de cette activité est clôturé")
@@ -259,27 +259,38 @@ def _identifier_par_telephone(indicatif: str, telephone: str, nom: str) -> dict[
 
 
 @router.post("/emargement/{evenement_id}/identifier", response_model=IdentiteOut)
-def identifier(evenement_id: str, payload: IdentifierIn) -> IdentiteOut:
+def identifier(evenement_id: str, payload: IdentifierIn, request: Request) -> IdentiteOut:
     """Identify a member, matricule first then phone + last name, and issue a bound token.
 
     Matricule is the priority mode (a member's own assigned, communicated code);
     when it is not provided, the dial code + phone + last name triple is used as a
     fallback. The two modes are never required together. On failure the message is
     uniform so the endpoint cannot confirm whether a matricule, phone or name exists.
+    A per-IP anti-enumeration guard throttles repeated FAILURES only (so a live event
+    behind one venue IP is never blocked), which bounds harvesting names/matricules by
+    iterating the sequential matricule space.
     """
     ev = _event_or_404(evenement_id)
     _guard_window(ev)
-    if payload.matricule and payload.matricule.strip():
-        m = _identifier_par_matricule(payload.matricule)
-    elif payload.code_membre and payload.code_membre.strip():
-        m = _identifier_par_code_membre(payload.code_membre)
-    elif payload.indicatif and payload.telephone and payload.nom:
-        m = _identifier_par_telephone(payload.indicatif, payload.telephone, payload.nom)
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Fournissez votre matricule, votre code membre, ou votre indicatif, votre numéro et votre nom.",
-        )
+    ratelimit.emargement_guard(request)
+    try:
+        if payload.matricule and payload.matricule.strip():
+            m = _identifier_par_matricule(payload.matricule)
+        elif payload.code_membre and payload.code_membre.strip():
+            m = _identifier_par_code_membre(payload.code_membre)
+        elif payload.indicatif and payload.telephone and payload.nom:
+            m = _identifier_par_telephone(payload.indicatif, payload.telephone, payload.nom)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Fournissez votre matricule, votre code membre, ou votre indicatif, votre numéro et votre nom.",
+            )
+    except HTTPException as exc:
+        # A failed identification (not found / ambiguous) feeds the anti-enumeration
+        # counter; a malformed request (400) does not.
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            ratelimit.emargement_failure(request)
+        raise
     membre_id = str(m["id"])
     existing = db.fetch_one(
         "SELECT statut, valide FROM participation WHERE evenement_id = %s AND membre_id = %s",

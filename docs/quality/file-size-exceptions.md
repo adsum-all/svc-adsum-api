@@ -27,15 +27,49 @@ deployment-unblock constraint.
   declaration, per-event statistics, global trends, per-member analytics). To be
   split into member endpoints and admin statistics, keeping FENETRE_FIN_SQL as
   the single shared window formula.
-- app/admin.py (709 lines): central back-office admin surface (member governance,
-  events, organisation, permissions). The recurring-activity series endpoint was
-  already split out into evenements_series.py; next split: separate member
+- app/admin.py (575 lines): central back-office admin surface (member governance,
+  events, organisation, permissions). The event create/update logic now lives in the
+  shared activites engine (reused by collaboration); next split: separate member
   governance from the events endpoints.
 - app/membres.py (556 lines): member-facing endpoints (profile, card, agenda,
   participation). To be split by extracting the agenda/events endpoints.
+- app/groupes.py (513 lines): access-group domain (role sync, escalation guards,
+  membership perimeters, application tagging). The read-only views already live
+  in groupes_lecture.py; next split: extract the account-role synchronisation
+  helpers (_sync_account_role and guards) into a submodule.
 - app/fichiers.py (510 lines): identity-document storage domain (upload, encrypted
   content read, admin access with audit). To be split by extracting the
   encryption and storage helpers into a submodule.
+- app/collaboration_transverse.py (550 lines): cross-cutting collaboration domain
+  (notifications, profile, my-cards / calendar views, dashboards, search, and the
+  shared-calendar activities: list of the whole evenement programme plus create /
+  edit / cancel from collaboration). The my-cards and calendar views now assemble
+  their cards through the shared batched reader (assemble_cartes). Next split: move
+  the activities endpoints into collaboration_activites.py.
+- app/collaboration_espaces.py (503 lines): collaboration space domain (space CRUD,
+  membership and roles, labels, access requests, and the space-role guard reused by
+  every card endpoint). The space payload now carries each member's display name and
+  initials (single utilisateur+membre join) so the assignee picker shows every space
+  member, not only staff. Next split: extract the membership/access-request endpoints
+  into collaboration_espaces_membres.py.
+
+- app/auth.py (696 lines): authentication and session domain (login, OTP/MFA, device
+  trust, token issuance, current-user resolution). To be split by extracting the OTP/MFA
+  and device-trust helpers into an auth_mfa.py submodule.
+- app/collaboration_canal.py (802 lines): instruction-channel domain (channel notes,
+  instruction workflow, moderation, emitters). PRIORITY debt: it exceeds the 750 absolute
+  maximum and must be split first, by extracting the instruction workflow and moderation
+  into dedicated submodules.
+- app/collaboration_tableaux.py (605 lines): collaboration boards domain (board CRUD,
+  columns, per-board instruction sync). To be split by extracting the column and
+  instruction-sync logic into collaboration_tableaux_colonnes.py.
+- app/formation.py (521 lines): questionnaire availability and member notification
+  preferences (per-group channel matrix, master switches, week-start and questionnaire
+  window parameters). To be split by extracting the admin parameter endpoints.
+
+The rich collaboration card domain used to be listed here at 641 lines; it was split
+under 500 (497) by extracting the nested-card assembly into collaboration_cartes_read.py,
+so app/collaboration_cartes.py is no longer an exception.
 
 ## Rule
 

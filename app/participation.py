@@ -22,7 +22,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from . import db, visibilite
+from . import db, evenement_pieces, temps, visibilite
 from .auth import current_user
 from .permissions_rbac import require_permission
 from .schemas import UserMe
@@ -47,13 +47,13 @@ _SEUIL_EVAL = 3
 # Single source of truth for the response window: the real end of the session
 # (or debut + 1 day when no end is set) plus the per-event duration when the
 # administration set one, else the global admin parameter
-# questionnaire_fenetre_heures, else 6 hours. Every read (display), write
+# questionnaire_fenetre_heures, else 5 hours. Every read (display), write
 # (submission guard) and reminder must use this same formula.
 FENETRE_FIN_SQL = (
     "coalesce(e.fin, e.debut + interval '1 day') + make_interval(hours => coalesce("
     "e.fenetre_reponse_heures, "
     "(SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'questionnaire_fenetre_heures'), "
-    "6))"
+    "5))"
 )
 
 
@@ -71,6 +71,19 @@ class ParticipationIn(BaseModel):
     avis: str | None = None
     note: int | None = None
     valider: bool = False
+
+
+@router.get("/membres/me/evenements/{evenement_id}/pieces", response_model=list[evenement_pieces.PieceEvenementOut])
+def mes_pieces_evenement(
+    evenement_id: str, ctx: Annotated[tuple[str, str], Depends(_membre)]
+) -> list[evenement_pieces.PieceEvenementOut]:
+    """Public attachments of an activity, for a member who can see that activity. A
+    document is meant to be read: the member opens it inside the app, never leaving it,
+    and may download it explicitly. Only returned when the event is visible to the member."""
+    membre_id, role = ctx
+    if not visibilite.evenement_visible_membre(evenement_id, membre_id, role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
+    return evenement_pieces.lister_pieces(evenement_id, role)
 
 
 @router.get("/membres/me/evenements/{evenement_id}/participation")
@@ -144,10 +157,10 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     if payload.modalite is not None and payload.modalite not in _MODALITES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="modalite must be presentiel or en_ligne")
     # Attendance window, enforced server-side with the same formula the display
-    # uses (per-event duration, else the admin parameter, else 6 hours). No one
+    # uses (per-event duration, else the admin parameter, else 5 hours). No one
     # can declare for a future event, nor once the window is over.
     ev = db.fetch_one(
-        f"SELECT e.debut, (e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
+        f"SELECT e.debut, e.fuseau_horaire, (e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
         f"(e.debut IS NOT NULL AND now() > {FENETRE_FIN_SQL}) AS cloture "
         "FROM evenement e WHERE e.id = %s",
         (evenement_id,),
@@ -169,11 +182,14 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     # The form only opens once the activity has started: no one can declare
     # participation to an event that has not happened yet.
     if not existing and not ev["demarree"]:
-        quand = ev["debut"].strftime("%d/%m/%Y à %Hh%M") if ev["debut"] else ""
+        quand = temps.formater_instant(ev["debut"], ev.get("fuseau_horaire")) if ev["debut"] else ""
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"le formulaire sera disponible au début de l'activité ({quand})")
-    # The form closes after the activity: a member who did not declare in time can
-    # no longer create a record (an admin correction remains possible server-side).
-    if not existing and ev["cloture"]:
+    # The form closes after the activity: once closed, neither a new record nor the
+    # validation/update of an existing draft is accepted (a member who did not declare
+    # in time missed the window, like the external emargement guard). A scanned member
+    # is exempt: their on-site presence is already proven. An admin correction remains
+    # possible server-side.
+    if ev["cloture"] and not (existing and existing["source"] == "scan"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le formulaire de présence de cette activité est clôturé.")
 
     scanned = bool(existing) and existing["source"] == "scan"

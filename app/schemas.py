@@ -11,8 +11,16 @@ _UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    # The member signs in with an identifier: their e-mail (default), OR their ADSUM
+    # matricule, OR their member code. ``email`` is kept for backward compatibility
+    # (older clients) and may now carry any of the three; ``identifiant`` is the
+    # explicit field for the alternative methods. One of the two must be provided.
+    email: str | None = Field(default=None, max_length=200)
+    identifiant: str | None = Field(default=None, max_length=200)
     password: str = Field(min_length=1, max_length=128)
+
+    def resolve_identifiant(self) -> str:
+        return (self.identifiant or self.email or "").strip()
 
 
 class TokenResponse(BaseModel):
@@ -36,6 +44,12 @@ class LoginResponse(BaseModel):
     doit_changer_mdp: bool = False
     # Which channel the code was sent on (telegram / email), for a clear message.
     canal: str | None = None
+    # Canonical e-mail of the authenticated account. Returned only once the
+    # password has been validated, so a client that signed in with a matricule or
+    # member code can drive the e-mail based first-login OTP flow with the real
+    # address instead of the typed identifier. Never returned on the otp_required
+    # branch (no token, first factor only).
+    email: str | None = None
 
 
 class UserMe(BaseModel):
@@ -44,6 +58,15 @@ class UserMe(BaseModel):
     role: str
     membre_id: str | None = None
     session_id: str | None = None
+    # A technical/support super-admin (applicative account, not a member) with a stable,
+    # server-side global-access authorization. Grants a total content bypass across apps
+    # and Collaboration, WITHOUT membership. Never derived from the role or an e-mail: a
+    # member super-admin has this false and stays membership-scoped for content.
+    acces_technique_global: bool = False
+    # Graduated privilege level of a technical account (lecteur, developpeur, mainteneur,
+    # admin, super); None for a non-technical account. Governs who may administer the
+    # technical-user roster and lifecycle (admin/super only) and protects the top level.
+    niveau_technique: str | None = None
 
 
 class FonctionPublique(BaseModel):
@@ -135,6 +158,11 @@ class EvenementOut(BaseModel):
     id: str
     titre: str
     type: str | None = None
+    # Administrable event type from the catalogue, its display name and its unique colour
+    # (used to distinguish events on the member calendar). None = no catalogue type set.
+    type_evenement_id: str | None = None
+    type_evenement_nom: str | None = None
+    couleur: str | None = None
     volet: str
     debut: datetime
     fin: datetime | None = None
@@ -162,6 +190,11 @@ class EvenementOut(BaseModel):
     # Per-activity response-window override (hours after end); None = global default.
     # Surfaced so the edit form preserves it instead of silently resetting it.
     fenetre_reponse_heures: int | None = None
+    # Editorial content and human contributors, edited from the back office or the
+    # collaboration app and shown in the activity detail.
+    description: str | None = None
+    intervenant_principal: str | None = None
+    intervenants: list[str] = []
     # Server-computed lifecycle (source of truth for time-gated UI actions).
     phase: str = "a_venir"  # a_venir | bientot | en_cours | termine
     joignable: bool = False  # the join button may show (in window and a link is available)
@@ -457,6 +490,8 @@ class TribuOut(BaseModel):
 
     id: str
     nom: str
+    description: str | None = None
+    publie: bool = True
     patriarche: str | None = None  # biblical reference (kept for context)
     patriarche_membre_id: str | None = None
     patriarche_nom: str | None = None  # current human titulaire, resolved
@@ -480,6 +515,10 @@ class UtilisateurOut(BaseModel):
     membre_id: str | None = None
     membre_nom: str | None = None
     dernier_login: datetime | None = None
+    # Number of ACTIVE global group memberships. The platform roster derives from
+    # this too, so a member holding only a permission-mode group (cached role stays
+    # 'membre') is still listed as having platform access.
+    groupes_globaux: int = 0
 
 
 class CreateUtilisateur(BaseModel):
@@ -624,6 +663,9 @@ class StatistiquesOut(BaseModel):
     par_cheminement: list[dict[str, object]]
     entrees_mensuelles: list[dict[str, object]]
     membres_a_verifier: list[dict[str, object]]
+    # Distribution of activities by administrable event type (nom, couleur, total,
+    # pourcentage), so the dashboard shows how activities split across types over time.
+    par_type_evenement: list[dict[str, object]] = []
 
 
 class CommissionOut(BaseModel):
@@ -664,6 +706,8 @@ class CreateEvenement(BaseModel):
 
     titre: str = Field(min_length=1)
     type: str | None = None
+    # Administrable event type from the catalogue (drives the calendar colour).
+    type_evenement_id: str | None = Field(default=None, pattern=_UUID_RE)
     volet: str = Field(default="A", pattern="^(A|B)$")
     debut: datetime
     fin: datetime | None = None
@@ -674,9 +718,13 @@ class CreateEvenement(BaseModel):
     type_diffusion: str = Field(default="aucun", pattern="^(embed|externe|aucun)$")
     visibilite: str = Field(default="membres", pattern="^(public|membres|prive)$")
     # Targeting has a primary audience and optional refinements that combine (AND).
-    # Primary: 'general' (everyone), an organisational unit (needs cible_id), the
-    # 'bergers', the 'responsables', or a 'liste' of e-mails (needs cible_emails).
-    cible_type: str = Field(default="general", pattern="^(general|coordination|commission|intendance|tribu|bergers|responsables|liste)$")  # noqa: E501
+    # The primary audience is a STABLE CODE from the administrable referential
+    # ``cible_activite`` (seeded with general, the four organisational units,
+    # bergers, responsables, patriarches, liste; extensible without code change).
+    # Only the slug shape is enforced here; existence and 'actif' status are
+    # validated server-side against the referential, and the database FK plus the
+    # coherence trigger guarantee integrity in depth.
+    cible_type: str = Field(default="general", pattern="^[a-z][a-z0-9_]{1,39}$")
     cible_id: str | None = Field(default=None, pattern=_UUID_RE)
     # Refinements: restrict the primary audience by gender and/or age range.
     cible_genre: str | None = Field(default=None, pattern="^(homme|femme)$")
@@ -696,6 +744,11 @@ class CreateEvenement(BaseModel):
     # working per date. `recurrence` records the rule for display, no computation.
     occurrences: list[OccurrenceIn] = Field(default_factory=list, max_length=103)
     recurrence: dict[str, object] | None = None
+    # Editorial content: a rich description (a constrained HTML subset, sanitised
+    # server side) and the human contributors (main speaker plus secondary ones).
+    description: str | None = Field(default=None, max_length=20000)
+    intervenant_principal: str | None = Field(default=None, max_length=200)
+    intervenants: list[str] = Field(default_factory=list, max_length=30)
 
 
 class VerifyResult(BaseModel):

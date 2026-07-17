@@ -122,6 +122,98 @@ def retire_fonction(cle: str, user: Annotated[UserMe, Depends(require_permission
     return {"ok": True, "cle": cle}
 
 
+class ReaffecterFonctionIn(BaseModel):
+    # Target active function to move the holders to, or null to clear the function
+    # from its holders (remove their membre_fonction rows).
+    cible_cle: str | None = None
+
+
+@router.get("/admin/fonctions/{cle}/dependances")
+def dependances_fonction(
+    cle: str, user: Annotated[UserMe, Depends(require_permission("fonctions.consulter"))]
+) -> dict[str, object]:
+    """How many members currently hold this function (with a sample), and the active
+    functions it can be reassigned to, so the administration can resolve the holders
+    before deactivating a title instead of leaving them pointing at a dead key."""
+    if not db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (cle,), role=user.role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown function")
+    n = int((db.fetch_one("SELECT count(*) AS n FROM membre_fonction WHERE fonction_cle = %s", (cle,)) or {}).get("n") or 0)
+    ech = [
+        str(r["nom"]) for r in db.fetch_all(
+            "SELECT m.nom_affiche AS nom FROM membre_fonction mf JOIN membre m ON m.id = mf.membre_id "
+            "WHERE mf.fonction_cle = %s AND m.nom_affiche IS NOT NULL ORDER BY m.nom_affiche LIMIT 6",
+            (cle,),
+        )
+    ]
+    cibles = [
+        {"cle": r["cle"], "nom": r["libelle_h"]} for r in db.fetch_all(
+            "SELECT cle, libelle_h FROM fonction_honorifique WHERE cle <> %s AND actif = true ORDER BY ordre, cle",
+            (cle,), role=user.role,
+        )
+    ]
+    return {"cle": cle, "porteurs": n, "supprimable": n == 0, "echantillon": ech, "cibles": cibles}
+
+
+@router.post("/admin/fonctions/{cle}/reaffecter")
+def reaffecter_fonction(
+    cle: str, payload: ReaffecterFonctionIn,
+    user: Annotated[UserMe, Depends(require_permission("fonctions.gerer"))],
+) -> dict[str, object]:
+    """Move every holder of this function to a target active function, or detach them
+    (remove the holder rows) when no target is given. Keeps the compact mirror on
+    ``membre`` correct via ``sync_principale``. This is what unblocks a clean
+    deactivation/retirement of a title."""
+    if not db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (cle,), role=user.role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown function")
+    cible = (payload.cible_cle or "").strip().lower() or None
+    if cible:
+        if cible == cle:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="la cible doit differer de la source")
+        if cible in fonctions_membre.TITRES_INTERDITS:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="titre de consecration non affectable")
+        if not db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s AND actif = true", (cible,), role=user.role):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="fonction cible inconnue ou inactive")
+    porteurs = int((db.fetch_one("SELECT count(*) AS n FROM membre_fonction WHERE fonction_cle = %s", (cle,)) or {}).get("n") or 0)
+    membres = [str(r["membre_id"]) for r in db.fetch_all("SELECT DISTINCT membre_id FROM membre_fonction WHERE fonction_cle = %s", (cle,))]
+    if cible:
+        # Avoid a duplicate holder row when a member already has the target function.
+        db.execute(
+            "DELETE FROM membre_fonction WHERE fonction_cle = %s AND membre_id IN "
+            "(SELECT membre_id FROM membre_fonction WHERE fonction_cle = %s)",
+            (cle, cible),
+        )
+        db.execute("UPDATE membre_fonction SET fonction_cle = %s, maj_le = now() WHERE fonction_cle = %s", (cible, cle))
+    else:
+        db.execute("DELETE FROM membre_fonction WHERE fonction_cle = %s", (cle,))
+    for mid in membres:
+        fonctions_membre.sync_principale(mid, user.role)
+    audit.log(user.id, user.role, "reaffectation_fonction", "fonction_honorifique", cle,
+              {"cible": cible, "porteurs": porteurs})
+    return {"reaffectes": porteurs, "cible_cle": cible}
+
+
+@router.delete("/admin/fonctions/{cle}/definitif")
+def supprimer_fonction_definitif(
+    cle: str, user: Annotated[UserMe, Depends(require_permission("fonctions.gerer"))]
+) -> dict[str, object]:
+    """Definitive HARD delete of a title (distinct from the reversible deactivation).
+    There is no FK on ``fonction_cle`` (the link from ``membre_fonction`` is by
+    convention), so the row is only removed when it has zero holders: otherwise we
+    refuse with 409 and the operator must reassign or detach the holders first
+    (``/reaffecter``). Irreversible once done, and fully audited."""
+    if not db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (cle,), role=user.role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown function")
+    porteurs = int((db.fetch_one("SELECT count(*) AS n FROM membre_fonction WHERE fonction_cle = %s", (cle,)) or {}).get("n") or 0)
+    if porteurs > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Suppression definitive impossible : {porteurs} porteur(s) utilisent encore ce titre. Reaffectez-les ou detachez-les d'abord.",
+        )
+    db.execute("DELETE FROM fonction_honorifique WHERE cle = %s", (cle,), role=user.role)
+    audit.log(user.id, user.role, "suppression_definitive_fonction", "fonction_honorifique", cle, {})
+    return {"ok": True, "cle": cle, "definitif": True}
+
+
 @router.put("/admin/membres/{membre_id}/fonction")
 def valider_fonction_membre(
     membre_id: str, payload: MembreFonctionIn, user: Annotated[UserMe, Depends(require_permission("membres.gerer"))]

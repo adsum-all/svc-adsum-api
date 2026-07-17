@@ -90,6 +90,41 @@ def otp_failure(email: str, purpose: str) -> None:
         return
 
 
+_EMARG_FAIL_MAX = 12
+_EMARG_FAIL_WINDOW = 600
+
+
+def _emarg_key(ip: str | None) -> str:
+    return f"emarg-fail:{ip or 'unknown'}"
+
+
+def emargement_guard(request: Request) -> None:
+    """Anti-enumeration guard for the PUBLIC emargement identification: refuse an IP
+    that produced too many FAILED identifications recently (matricule/code guessing).
+    Only failures count, never successes, so a busy event where many members check in
+    from one venue IP is never throttled: only an enumerator (who generates a stream
+    of 404s harvesting names/matricules) is blocked. Fails open on a DB hiccup."""
+    ip = client_ip(request)
+    try:
+        row = db.fetch_one(
+            "SELECT count(*) AS n FROM auth_attempt WHERE endpoint = %s AND cree_le > now() - (%s || ' seconds')::interval",
+            (_emarg_key(ip), str(_EMARG_FAIL_WINDOW)),
+        )
+    except Exception:  # noqa: BLE001 - the guard must never break a legitimate check-in
+        return
+    if row and int(row["n"]) >= _EMARG_FAIL_MAX:
+        raise _TOO_MANY
+
+
+def emargement_failure(request: Request) -> None:
+    """Record one failed emargement identification for the per-IP anti-enumeration counter."""
+    ip = client_ip(request)
+    try:
+        db.execute("INSERT INTO auth_attempt (ip, endpoint) VALUES (%s, %s)", (ip, _emarg_key(ip)))
+    except Exception:  # noqa: BLE001 - best effort
+        return
+
+
 def throttle_action(key: str, max_in_window: int, window: int) -> bool:
     """Generic per-key throttle, IP-independent, backed by the auth_attempt table.
 

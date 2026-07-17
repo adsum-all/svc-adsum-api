@@ -20,8 +20,17 @@ from .schemas import UserMe
 router = APIRouter(prefix="/api/v1/admin/membres", tags=["gestion"])
 
 
-# Child tables that reference a member, deleted before the member on erasure.
-_CHILD_TABLES = ("notification", "document", "presence", "recensement_reponse", "comptage_ligne")
+# Child tables referencing a member with a blocking FK (NO ACTION / RESTRICT): they must
+# be deleted BEFORE the member, otherwise the final DELETE raises. Every FK that is
+# ON DELETE CASCADE / SET NULL is handled by the database and is intentionally absent
+# here. comptage_ligne is optional and best-effort (it may not exist on every install).
+_CHILD_TABLES = (
+    "notification", "document", "presence", "recensement_reponse",
+    "engagement", "jeton_qr", "comptage_ligne",
+)
+# NO ACTION references that must be NULLED (not deleted): the row belongs to another
+# entity that survives (e.g. a commission whose responsable is this member).
+_NULL_REFS = (("commission", "responsable_id"),)
 
 
 def _notify(membre_id: str, role: str, titre: str, corps: str) -> None:
@@ -115,28 +124,104 @@ def connexions(membre_id: str, user: Annotated[UserMe, Depends(require_permissio
     ]
 
 
+@router.get("/{membre_id}/suppression-apercu")
+def apercu_suppression(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.administrer"))]) -> dict[str, object]:
+    """Pre-flight for an RGPD erasure: what the member currently holds, so the operator
+    sees the impact (titles/functions carried, memberships, responsibilities, records)
+    and can choose an alternative (archive/deactivate/suspend) before an irreversible
+    deletion, exactly like the level/function deletion resolver."""
+    m = db.fetch_one(
+        "SELECT prenoms, nom, statut, est_berger, nom_pastoral, fonction_cle FROM membre WHERE id = %s",
+        (membre_id,), role=user.role,
+    )
+    if not m:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+
+    def _count(sql: str) -> int:
+        try:
+            return int((db.fetch_one(sql, (membre_id,)) or {}).get("n") or 0)
+        except Exception:  # noqa: BLE001 - an optional table must not break the preview
+            return 0
+
+    fonctions = [
+        str(r["libelle"]) for r in db.fetch_all(
+            "SELECT fh.libelle_h AS libelle FROM membre_fonction mf JOIN fonction_honorifique fh ON fh.cle = mf.fonction_cle "
+            "WHERE mf.membre_id = %s AND mf.actif = true ORDER BY mf.principale DESC, mf.ordre",
+            (membre_id,),
+        ) or []
+    ]
+    a_un_compte = bool(db.fetch_one("SELECT 1 FROM utilisateur WHERE membre_id = %s", (membre_id,), role=user.role))
+    return {
+        "membre_id": membre_id,
+        "nom": f"{m.get('prenoms') or ''} {m.get('nom') or ''}".strip(),
+        "statut": m.get("statut"),
+        "porte_titre_berger": bool(m.get("est_berger")),
+        "nom_pastoral": m.get("nom_pastoral"),
+        "fonctions": fonctions,
+        "responsable_de_commissions": _count("SELECT count(*) AS n FROM commission WHERE responsable_id = %s"),
+        "appartenances": _count("SELECT count(*) AS n FROM appartenance WHERE membre_id = %s"),
+        "espaces_collaboration": _count("SELECT count(*) AS n FROM collab_espace_membre WHERE utilisateur_id IN (SELECT id FROM utilisateur WHERE membre_id = %s)"),
+        "participations": _count("SELECT count(*) AS n FROM participation WHERE membre_id = %s"),
+        "documents": _count("SELECT count(*) AS n FROM document WHERE membre_id = %s"),
+        "a_un_compte": a_un_compte,
+        # Reversible alternatives to an irreversible erasure.
+        "alternatives": ["archiver", "desactiver", "suspendre"],
+    }
+
+
+class StatutMembreIn(BaseModel):
+    statut: str
+
+
+@router.patch("/{membre_id}/statut")
+def changer_statut(
+    membre_id: str, payload: StatutMembreIn,
+    user: Annotated[UserMe, Depends(require_permission("membres.administrer"))],
+) -> dict[str, object]:
+    """Reversible lifecycle alternative to erasure: archive / deactivate / suspend /
+    reactivate a member. Moves the member to the matching directory compartment without
+    destroying any data, and is fully audited."""
+    cible = (payload.statut or "").strip()
+    if cible not in ("actif", "inactif", "suspendu", "archive"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statut invalide")
+    row = db.execute("UPDATE membre SET statut = %s WHERE id = %s RETURNING id", (cible, membre_id), role=user.role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    audit.log(user.id, user.role, "changement_statut_membre", "membre", membre_id, {"statut": cible})
+    return {"ok": True, "statut": cible}
+
+
 @router.delete("/{membre_id}", status_code=status.HTTP_204_NO_CONTENT)
 def supprimer_membre(membre_id: str, user: Annotated[UserMe, Depends(require_permission("membres.administrer"))]) -> None:
-    """RGPD right to erasure: purge files then all member records."""
+    """RGPD right to erasure: purge files then every member record, atomically.
+
+    All blocking child references (NO ACTION FKs) are removed first, and references that
+    belong to a surviving entity (a commission's responsable) are nulled, so the final
+    DELETE never fails on a real member (e.g. one holding an engagement or a QR token).
+    ON DELETE CASCADE / SET NULL references are handled by the database."""
     exists = db.fetch_one("SELECT id FROM membre WHERE id = %s", (membre_id,), role=user.role)
     if not exists:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
-    # 1) purge stored files in both private buckets.
+    # 1) purge stored files in both private buckets (outside the DB transaction).
     storage.delete_prefix(settings.storage_bucket_photos, f"{membre_id}/")
     storage.delete_prefix(settings.storage_bucket_documents, f"{membre_id}/")
-    # 2) delete child records (best-effort: a missing table is ignored).
-    db.execute(
-        "DELETE FROM demande_message WHERE demande_id IN (SELECT id FROM demande WHERE membre_id = %s)",
-        (membre_id,),
-        role=user.role,
-    )
-    db.execute("DELETE FROM demande WHERE membre_id = %s", (membre_id,), role=user.role)
-    for table in _CHILD_TABLES:
-        try:
-            db.execute(f"DELETE FROM {table} WHERE membre_id = %s", (membre_id,), role=user.role)
-        except Exception:  # noqa: BLE001 - a non-existent optional table must not block erasure
-            pass
-    # 3) delete the account and the member.
-    db.execute("DELETE FROM utilisateur WHERE membre_id = %s", (membre_id,), role=user.role)
-    db.execute("DELETE FROM membre WHERE id = %s", (membre_id,), role=user.role)
+    # 2) one transaction: null the surviving-entity refs, delete the blocking child rows,
+    #    then the account and the member. Atomic: a failure rolls the whole erasure back.
+    with db.connection(role=user.role) as conn, conn.cursor() as cur:
+        for table, col in _NULL_REFS:
+            cur.execute(f"UPDATE {table} SET {col} = NULL WHERE {col} = %s", (membre_id,))
+        cur.execute(
+            "DELETE FROM demande_message WHERE demande_id IN (SELECT id FROM demande WHERE membre_id = %s)",
+            (membre_id,),
+        )
+        cur.execute("DELETE FROM demande WHERE membre_id = %s", (membre_id,))
+        for table in _CHILD_TABLES:
+            try:
+                cur.execute(f"SAVEPOINT s_{table}")
+                cur.execute(f"DELETE FROM {table} WHERE membre_id = %s", (membre_id,))
+                cur.execute(f"RELEASE SAVEPOINT s_{table}")
+            except Exception:  # noqa: BLE001 - a non-existent optional table must not block erasure
+                cur.execute(f"ROLLBACK TO SAVEPOINT s_{table}")
+        cur.execute("DELETE FROM utilisateur WHERE membre_id = %s", (membre_id,))
+        cur.execute("DELETE FROM membre WHERE id = %s", (membre_id,))
     audit.log(user.id, user.role, "suppression_rgpd_membre", "membre", membre_id, {})

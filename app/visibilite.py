@@ -32,6 +32,22 @@ CIBLE_PREDICATE = (
     " OR (e.cible_type = 'responsables' AND m.fonction_cle IS NOT NULL)"
     " OR (e.cible_type = 'liste' AND m.email IS NOT NULL"
     "     AND lower(m.email) = ANY(SELECT lower(x) FROM unnest(coalesce(e.cible_emails, ARRAY[]::text[])) AS x))"
+    # Generic referential-driven branch: any destination whose rule template is
+    # 'fonction' with an explicit fonction_cles list (e.g. 'patriarches', or any
+    # destination an administrator creates later) targets the members holding at
+    # least one of those catalogue functions, active and confirmed. The legacy
+    # branches above keep resolving the seeded codes exactly as before; this ONE
+    # branch makes every future destination work across the agenda, the id guard,
+    # the J-1 reminders, cancellations, the attendance survey and statistics
+    # without any further code change.
+    " OR EXISTS ("
+    "     SELECT 1 FROM cible_activite ca"
+    "     JOIN membre_fonction mf ON mf.membre_id = m.id"
+    "         AND mf.actif = true AND mf.confirmee = true"
+    "     WHERE ca.code = e.cible_type AND ca.type_regle = 'fonction'"
+    "       AND lower(mf.fonction_cle) IN ("
+    "           SELECT lower(jsonb_array_elements_text(ca.parametres->'fonction_cles')))"
+    " )"
     ")"
     " AND (e.cible_genre IS NULL OR m.genre = e.cible_genre)"
     " AND (e.cible_age_min IS NULL OR (m.date_naissance IS NOT NULL"

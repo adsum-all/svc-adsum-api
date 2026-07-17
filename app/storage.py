@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json as _json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .config import settings
@@ -26,9 +27,11 @@ class FileTooLargeError(StorageError):
     oversized file would loop forever) instead of a generic 'retry later'."""
 
 
-def _request(
+def _send(
     method: str, path: str, body: dict[str, object] | None = None, headers: dict[str, str] | None = None
-) -> dict[str, object]:
+) -> object:
+    """Perform the Supabase Storage HTTP call and return the parsed JSON as-is
+    (an object or an array, depending on the endpoint)."""
     if not settings.supabase_url or not settings.supabase_service_key:
         raise StorageError("storage is not configured")
     url = f"{settings.supabase_url.rstrip('/')}/storage/v1{path}"
@@ -43,9 +46,22 @@ def _request(
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (trusted Supabase URL)
             raw = resp.read()
-            return _json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:  # pragma: no cover - network error path
         raise StorageError(f"storage {method} {path} failed: {exc.code}") from exc
+    # A 200 with a non-JSON body (an intermediate proxy/CDN error page, a truncated
+    # body) must degrade like any other storage failure, not surface a raw
+    # ValueError to the callers that assemble a whole board.
+    try:
+        return _json.loads(raw) if raw else None
+    except ValueError as exc:
+        raise StorageError(f"storage {method} {path} returned invalid JSON") from exc
+
+
+def _request(
+    method: str, path: str, body: dict[str, object] | None = None, headers: dict[str, str] | None = None
+) -> dict[str, object]:
+    res = _send(method, path, body, headers)
+    return res if isinstance(res, dict) else {}
 
 
 def signed_upload_url(bucket: str, path: str, upsert: bool = False) -> dict[str, str]:
@@ -65,13 +81,46 @@ def signed_upload_url(bucket: str, path: str, upsert: bool = False) -> dict[str,
     }
 
 
-def signed_download_url(bucket: str, path: str, expires_in: int = 3600) -> str:
-    """Return a short-lived signed URL to GET a private object."""
+def signed_download_url(bucket: str, path: str, expires_in: int = 3600, download: str | None = None) -> str:
+    """Return a short-lived signed URL to GET a private object.
+
+    When ``download`` is set, the URL forces ``Content-Disposition: attachment``
+    with that filename (Supabase ``download`` query parameter), so a file whose
+    content type could otherwise render/execute in the browser is downloaded
+    instead. Leave it None for objects meant to render inline (e.g. member photos).
+    """
     res = _request("POST", f"/object/sign/{bucket}/{path}", {"expiresIn": expires_in})
     signed = str(res.get("signedURL") or res.get("signedUrl") or "")
     if not signed:
         raise StorageError("no signed url returned")
-    return f"{settings.supabase_url.rstrip('/')}/storage/v1{signed}"
+    url = f"{settings.supabase_url.rstrip('/')}/storage/v1{signed}"
+    if download:
+        sep = "&" if "?" in url else "?"
+        url += f"{sep}download={urllib.parse.quote(download)}"
+    return url
+
+
+def signed_download_urls(bucket: str, paths: list[str], expires_in: int = 3600) -> dict[str, str]:
+    """Bulk variant of ``signed_download_url``: sign many object paths in a single
+    request (Supabase ``POST /object/sign/{bucket}`` with a ``paths`` array). Returns
+    a map of path to a full signed GET URL, without the ``download`` parameter (the
+    caller appends it per object). Paths the backend could not sign are absent from
+    the map. This replaces one network round trip per attachment on a board read."""
+    if not paths:
+        return {}
+    res = _send("POST", f"/object/sign/{bucket}", {"expiresIn": expires_in, "paths": paths})
+    if not isinstance(res, list):
+        return {}
+    base = f"{settings.supabase_url.rstrip('/')}/storage/v1"
+    out: dict[str, str] = {}
+    for item in res:
+        if not isinstance(item, dict) or item.get("error"):
+            continue
+        path = str(item.get("path") or "")
+        signed = str(item.get("signedURL") or item.get("signedUrl") or "")
+        if path and signed:
+            out[path] = f"{base}{signed}"
+    return out
 
 
 def upload_bytes(bucket: str, path: str, data: bytes, content_type: str = "application/octet-stream") -> None:

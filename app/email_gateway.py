@@ -98,6 +98,20 @@ def generate_code(email: str, purpose: str, window: int | None = None) -> str:
     return str(number).zfill(CODE_DIGITS)
 
 
+def clean_code(code: str | None) -> str:
+    """Keep only the digits of a submitted code.
+
+    A pasted code frequently carries whitespace: the verification e-mail renders
+    the code as one styled box per digit, so a copy often yields "1 2 3 4 5 6" (or
+    with newlines). A plain ``strip()`` only trims the ends, leaving inner spaces
+    that made a perfectly valid code look wrong ("code incorrect"). The code is
+    always six digits, so reducing the input to its digits is safe and removes any
+    space, tab, non-breaking space or stray separator introduced by copy-paste.
+    Restricted to ASCII digits (``str.isdigit`` also accepts Unicode digits such as
+    superscripts or other scripts, which have no place in a code)."""
+    return "".join(ch for ch in (code or "") if "0" <= ch <= "9")
+
+
 def verify_code(email: str, purpose: str, code: str) -> bool:
     """True when ``code`` matches the current or previous window.
 
@@ -105,13 +119,16 @@ def verify_code(email: str, purpose: str, code: str) -> bool:
     that perform a state change (first login, password reset, e-signature) must
     use :func:`verify_and_consume` so the code becomes single-use.
     """
-    cleaned = (code or "").strip()
+    cleaned = clean_code(code)
     return any(hmac.compare_digest(cleaned, generate_code(email, purpose, w)) for w in _windows())
 
 
 def _code_fingerprint(email: str, purpose: str, code: str) -> str:
-    """Keyed hash stored in the consumption ledger (never the code in clear)."""
-    msg = f"{email.lower().strip()}|{purpose}|{(code or '').strip()}".encode()
+    """Keyed hash stored in the consumption ledger (never the code in clear).
+
+    Uses the same digit-only normalisation as :func:`verify_code` so a code and its
+    whitespace-carrying paste share one fingerprint (single-use stays consistent)."""
+    msg = f"{email.lower().strip()}|{purpose}|{clean_code(code)}".encode()
     return hmac.new(settings.jwt_secret.encode(), msg, hashlib.sha256).hexdigest()
 
 

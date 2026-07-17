@@ -98,6 +98,18 @@ class CommentaireOut(BaseModel):
     cree_le: datetime | None = None
 
 
+class CarteCalendrier(BaseModel):
+    id: str
+    titre: str
+    date_prevue: datetime
+    lieu: str | None = None
+    type_activite: str | None = None
+    tableau_id: str
+    tableau_nom: str
+    publie: bool
+    evenement_id: str | None = None
+
+
 def _carte_from_row(r: dict[str, object]) -> CarteOut:
     return CarteOut(
         id=str(r["id"]),
@@ -112,6 +124,56 @@ def _carte_from_row(r: dict[str, object]) -> CarteOut:
         publie=bool(r["publie"]),
         evenement_id=str(r["evenement_id"]) if r["evenement_id"] else None,
     )
+
+
+@router.get("/calendrier", response_model=list[CarteCalendrier])
+def calendrier(
+    user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
+    debut: datetime | None = None,
+    fin: datetime | None = None,
+) -> list[CarteCalendrier]:
+    """Planned activities across the committee boards.
+
+    Every card that carries a planned date (``date_prevue``) is an activity a
+    committee member is programming. Returning them here lets the collaboration
+    app show a calendar and schedule activities without going through the admin
+    back office. Access follows the same committee RLS as the boards.
+    """
+    clauses = ["c.date_prevue IS NOT NULL", "NOT c.archive", "NOT t.archive"]
+    params: list[object] = []
+    if debut is not None:
+        clauses.append("c.date_prevue >= %s")
+        params.append(debut)
+    if fin is not None:
+        clauses.append("c.date_prevue <= %s")
+        params.append(fin)
+    where = " AND ".join(clauses)
+    rows = db.fetch_all(
+        f"""
+        SELECT c.id, c.titre, c.date_prevue, c.lieu, c.type_activite,
+               c.tableau_id, t.nom AS tableau_nom, c.publie, c.evenement_id
+        FROM collab_carte c
+        JOIN collab_tableau t ON t.id = c.tableau_id
+        WHERE {where}
+        ORDER BY c.date_prevue ASC
+        """,
+        tuple(params),
+        role=user.role,
+    )
+    return [
+        CarteCalendrier(
+            id=str(r["id"]),
+            titre=str(r["titre"]),
+            date_prevue=r["date_prevue"],  # type: ignore[arg-type]
+            lieu=r["lieu"],  # type: ignore[arg-type]
+            type_activite=r["type_activite"],  # type: ignore[arg-type]
+            tableau_id=str(r["tableau_id"]),
+            tableau_nom=str(r["tableau_nom"]),
+            publie=bool(r["publie"]),
+            evenement_id=str(r["evenement_id"]) if r["evenement_id"] else None,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/tableaux", response_model=list[TableauOut])
@@ -328,10 +390,12 @@ def publier_carte(
     if carte["publie"]:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="card already published")
     debut = carte["date_prevue"] or datetime.now(tz=UTC)
+    # session_ouverte is left to its schema default (closed): an activity is opened
+    # for attendance only when its session actually starts, never at publish time.
     evenement = db.execute(
         """
-        INSERT INTO evenement (titre, type, volet, debut, lieu, session_ouverte, ouvert_le, cree_par)
-        VALUES (%s, %s, 'A', %s, %s, true, now(), %s)
+        INSERT INTO evenement (titre, type, volet, debut, lieu, cree_par)
+        VALUES (%s, %s, 'A', %s, %s, %s)
         RETURNING id
         """,
         (carte["titre"], carte["type_activite"], debut, carte["lieu"], user.id),

@@ -53,28 +53,20 @@ def _notify(
     type_: str,
     titre: str,
     corps: str,
-    email: str | None = None,
 ) -> None:
-    """Create a real in-app notification and, when an e-mail is known, send it too."""
-    db.execute(
-        """
-        INSERT INTO notification (membre_id, type, titre, corps, lu, cree_le)
-        VALUES (%s, %s, %s, %s, false, now())
-        """,
-        (membre_id, type_, titre, corps),
-        role=role,
-    )
-    target = email
-    if target is None:
-        row = db.fetch_one("SELECT email FROM utilisateur WHERE membre_id = %s", (membre_id,), role=role)
-        target = str(row["email"]) if row and row.get("email") else None
-    if target:
-        try:
-            from .email_gateway import send_notification
+    """Deliver a member notification through the SAME dispatch as every other notification,
+    so the member's channel preferences are honored: the in-app entry is always recorded,
+    but the e-mail (and Telegram) go out ONLY if the member has that channel enabled. This
+    replaces the previous direct e-mail send that ignored the member's On/Off switches (a
+    member who turned e-mail off kept receiving these e-mails)."""
+    from . import channels
+    from .notifications import canaux_autorises
 
-            send_notification(target, titre, corps)
-        except Exception:
-            pass
+    active = db.fetch_one("SELECT sensibilite FROM type_notification WHERE cle = %s", (type_,), role=role)
+    sensibilite = (active or {}).get("sensibilite") or "operationnel"
+    autorises = canaux_autorises(membre_id, role, type_, sensibilite)
+    msg = channels.Message(titre=titre, corps_text=corps, type_notif=type_)
+    channels.dispatch(membre_id, role, msg, critique=(sensibilite == "critique"), canaux_autorises=autorises)
 
 
 def require_membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
@@ -152,13 +144,16 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
         """
         SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode,
                e.session_ouverte, e.lien_session, e.liens, e.type_diffusion, e.visibilite,
-               e.cible_type, e.cible_id,
+               e.cible_type, e.cible_id, e.type_evenement_id, te.couleur AS couleur,
+               te.nom AS type_evenement_nom,
+               e.description, e.intervenant_principal, e.intervenants,
                CASE e.cible_type
                  WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
                  WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
-                 ELSE NULL
+                 WHEN 'general' THEN NULL
+                 ELSE (SELECT ca.libelle FROM cible_activite ca WHERE ca.code = e.cible_type)
                END AS cible_libelle,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
                          FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags,
@@ -175,6 +170,7 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
         FROM evenement e
         JOIN membre m ON m.id = %s
         LEFT JOIN intendance mi ON mi.id = m.intendance_id
+        LEFT JOIN type_evenement te ON te.id = e.type_evenement_id
         WHERE e.debut >= now() - interval '30 days'
           AND """ + visibilite.CIBLE_PREDICATE + """
         ORDER BY e.debut ASC
@@ -191,6 +187,12 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                 id=str(r["id"]),
                 titre=r["titre"],
                 type=r["type"],
+                type_evenement_id=str(r["type_evenement_id"]) if r.get("type_evenement_id") else None,
+                couleur=r.get("couleur"),
+                type_evenement_nom=r.get("type_evenement_nom"),
+                description=r.get("description") if isinstance(r.get("description"), str) else None,
+                intervenant_principal=r.get("intervenant_principal") if isinstance(r.get("intervenant_principal"), str) else None,
+                intervenants=[str(x) for x in (r.get("intervenants") or [])],
                 volet=r["volet"],
                 debut=r["debut"],
                 fin=r["fin"],

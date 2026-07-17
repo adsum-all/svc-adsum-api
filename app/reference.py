@@ -57,3 +57,24 @@ def coordinations(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[s
 @router.get("/groupes")
 def groupes(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, str]]:
     return _list("SELECT id, nom FROM sous_commission WHERE publie ORDER BY nom ASC", user.role)
+
+
+@router.get("/types-evenements")
+def types_evenements(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, str | None]]:
+    # Published event types with their unique colour, for the planning dropdowns
+    # (back office and collaboration) and for colouring the member calendar.
+    rows = db.fetch_all(
+        "SELECT id, code, nom, couleur, description FROM type_evenement WHERE publie ORDER BY ordre, nom ASC",
+        (),
+        role=user.role,
+    )
+    return [
+        {
+            "id": str(r["id"]),
+            "code": r["code"],
+            "nom": r["nom"],
+            "couleur": r["couleur"],
+            "description": r.get("description"),
+        }
+        for r in rows
+    ]

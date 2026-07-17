@@ -280,13 +280,34 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
     from .consentement import _signature_couvre_bloquants
 
     membre = db.fetch_one(
-        "SELECT id, matricule, prenoms, nom, email, telephone, pays, ville, "
-        "statut_inscription, verifie, photo_url FROM membre WHERE id = %s",
+        "SELECT m.id, m.matricule, m.code_membre, m.prenoms, m.nom, m.nom_affiche, m.email, "
+        "m.telephone, m.indicatif_telephone, m.date_naissance, m.genre, m.pays, m.ville, m.region, "
+        "m.adresse, m.profession, m.date_entree, m.statut, m.statut_inscription, m.verifie, m.type_membre, "
+        "m.photo_url, m.cree_le, m.groupe, ne.libelle AS niveau_libelle, "
+        "c.nom AS commission, co.nom AS coordination, i.nom AS intendance, t.nom AS tribu "
+        "FROM membre m "
+        "LEFT JOIN niveau_engagement ne ON ne.cle = m.type_membre "
+        "LEFT JOIN commission c ON c.id = m.commission_id "
+        "LEFT JOIN coordination co ON co.id = m.coordination_id "
+        "LEFT JOIN intendance i ON i.id = m.intendance_id "
+        "LEFT JOIN tribu t ON t.id = m.tribu_id "
+        "WHERE m.id = %s",
         (membre_id,),
         role=None,
     )
     if not membre:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+
+    fonctions = [
+        {"libelle": f.get("libelle_h"), "perimetre": f.get("perimetre"), "confirmee": bool(f.get("confirmee"))}
+        for f in db.fetch_all(
+            "SELECT fh.libelle_h, mf.perimetre, mf.confirmee FROM membre_fonction mf "
+            "JOIN fonction_honorifique fh ON fh.cle = mf.fonction_cle "
+            "WHERE mf.membre_id = %s AND mf.actif = true ORDER BY mf.principale DESC, mf.ordre",
+            (membre_id,),
+            role=None,
+        ) or []
+    ]
 
     photo_signed = None
     if membre.get("photo_url"):
@@ -358,14 +379,32 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
         "membre": {
             "id": str(membre["id"]),
             "matricule": membre.get("matricule"),
+            "code_membre": membre.get("code_membre"),
             "prenoms": membre.get("prenoms"),
             "nom": membre.get("nom"),
+            "nom_affiche": membre.get("nom_affiche"),
             "email": membre.get("email"),
             "telephone": membre.get("telephone"),
+            "indicatif_telephone": membre.get("indicatif_telephone"),
+            "date_naissance": membre["date_naissance"].isoformat() if membre.get("date_naissance") else None,
+            "genre": membre.get("genre"),
             "pays": membre.get("pays"),
             "ville": membre.get("ville"),
+            "region": membre.get("region"),
+            "adresse": membre.get("adresse"),
+            "profession": membre.get("profession"),
+            "date_entree": membre["date_entree"].isoformat() if membre.get("date_entree") else None,
+            "commission": membre.get("commission"),
+            "sous_commission": membre.get("groupe"),
+            "coordination": membre.get("coordination"),
+            "intendance": membre.get("intendance"),
+            "tribu": membre.get("tribu"),
+            "niveau": membre.get("niveau_libelle"),
+            "fonctions": fonctions,
+            "statut": membre.get("statut"),
             "statut_inscription": membre.get("statut_inscription"),
             "verifie": bool(membre.get("verifie")),
+            "cree_le": membre["cree_le"].isoformat() if membre.get("cree_le") else None,
         },
         "photo_url": photo_signed,
         "documents": documents,

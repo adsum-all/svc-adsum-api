@@ -9,15 +9,16 @@ each query, not by RLS alone.
 # ruff: noqa: E501
 from __future__ import annotations
 
-import json
+import uuid
 from typing import Annotated
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from . import audit, db, identifiants, identite
+from . import activites, audit, db, evenement_pieces, identifiants, identite
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
+from .membre_filters import exclusion_technique
 from .permissions_rbac import require_permission
 from .schemas import (
     CommissionOut,
@@ -103,6 +104,52 @@ def create_membre(
     return _read_membre(membre_id, user.role)
 
 
+# Directory compartments: each maps to an explicit predicate on the validation status
+# (statut_inscription) and the operational status (statut). A non-validated dossier
+# (submitted, in review, correction requested, refused, incomplete) NEVER appears in the
+# "actifs" compartment. Keys are the only accepted values (no raw SQL from the client).
+_COMPARTIMENTS: dict[str, str] = {
+    "actifs": "m.statut = 'actif' AND m.statut_inscription = 'approuve' AND m.verifie = true",
+    "en_attente": "m.statut_inscription IN ('soumis', 'en_revue')",
+    "corrections": "m.statut_inscription = 'modification_demandee'",
+    "refuses": "m.statut_inscription = 'refuse'",
+    "incomplets": "m.statut_inscription = 'incomplet'",
+    "inactifs": "m.statut = 'inactif'",
+    "suspendus": "m.statut = 'suspendu'",
+    "archives": "m.statut = 'archive'",
+    "tous": "",
+}
+# A technical/applicative user is NEVER a member and must never appear in the member
+# directory. Technical accounts have no member row, so they are naturally absent; this
+# predicate is a defensive guarantee that no member row tied to a technical identity ever
+# leaks into the directory, its compartments or its counts. A row is excluded when it is
+# linked to a technical account by membre_id OR merely shares its e-mail (a stray member
+# row carrying a technical account's address, such as the founder's, must never surface).
+_PAS_TECHNIQUE = exclusion_technique("m")
+# Whitelisted sort orders. Default is alphabetical by family name then first names,
+# case-insensitive, with the matricule as a deterministic final tiebreaker.
+_TRIS: dict[str, str] = {
+    "nom": "lower(m.nom) ASC NULLS LAST, lower(m.prenoms) ASC NULLS LAST, m.matricule ASC",
+    "nom_desc": "lower(m.nom) DESC NULLS LAST, lower(m.prenoms) DESC NULLS LAST, m.matricule ASC",
+    "inscription": "m.cree_le DESC NULLS LAST, m.matricule ASC",
+    "matricule": "m.matricule ASC",
+}
+
+
+@router.get("/membres/compartiments")
+def compartiments_membres(
+    user: Annotated[UserMe, Depends(require_permission("membres.gerer"))],
+) -> dict[str, int]:
+    """Exact count of members in each directory compartment, so the tabs show a live,
+    correct badge and a non-validated dossier is never mixed with the active members."""
+    out: dict[str, int] = {}
+    for key, pred in _COMPARTIMENTS.items():
+        where = f"WHERE {_PAS_TECHNIQUE}" + (f" AND {pred}" if pred else "")
+        row = db.fetch_one(f"SELECT count(*) AS n FROM membre m {where}", (), role=user.role)
+        out[key] = int((row or {}).get("n") or 0)
+    return out
+
+
 @router.get("/membres", response_model=list[MembreProfile])
 def list_membres(
     user: Annotated[UserMe, Depends(require_permission("membres.gerer"))],
@@ -112,11 +159,19 @@ def list_membres(
     intendance_id: str | None = Query(default=None),
     coordination_id: str | None = Query(default=None),
     tribu_id: str | None = Query(default=None),
+    statut: str | None = Query(default=None),
+    tri: str = Query(default="nom"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> list[MembreProfile]:
     params: list[object] = []
-    conditions: list[str] = []
+    # A technical/applicative user never appears in the member directory.
+    conditions: list[str] = [_PAS_TECHNIQUE]
+    # Compartment predicate (validation/operational status). Unknown key -> no filter,
+    # so an old client without the param still gets the full directory.
+    compartiment_pred = _COMPARTIMENTS.get(statut or "", "") if statut else ""
+    if compartiment_pred:
+        conditions.append(compartiment_pred)
     if q:
         # Escape LIKE metacharacters so a literal % or _ typed in the search is not
         # treated as a wildcard (default backslash escape). The OR-group is
@@ -141,13 +196,14 @@ def list_membres(
             conditions.append(f"{column} = %s")
             params.append(value)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    order_by = _TRIS.get(tri, _TRIS["nom"])
     params.extend([limit, offset])
     rows = db.fetch_all(
         f"""
         SELECT {MEMBRE_PROFILE_SELECT}
         {MEMBRE_PROFILE_FROM}
         {where}
-        ORDER BY m.matricule ASC
+        ORDER BY {order_by}
         LIMIT %s OFFSET %s
         """,
         tuple(params),
@@ -349,19 +405,20 @@ def list_evenements(user: Annotated[UserMe, Depends(require_permission("evenemen
                e.lien_session, e.liens, e.type_diffusion, e.visibilite, e.cible_type, e.cible_id,
                e.annule, e.annule_motif, e.fuseau_horaire, e.serie_id, e.fenetre_reponse_heures,
                e.cible_genre, e.cible_age_min, e.cible_age_max, e.cible_emails,
+               e.description, e.intervenant_principal, e.intervenants,
+               e.type_evenement_id, te.couleur AS couleur, te.nom AS type_evenement_nom,
                CASE e.cible_type
                  WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
                  WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
-                 WHEN 'bergers' THEN 'Les Bergers'
-                 WHEN 'responsables' THEN 'Les responsables'
-                 WHEN 'liste' THEN 'Liste de diffusion'
-                 ELSE NULL
+                 WHEN 'general' THEN NULL
+                 ELSE (SELECT ca.libelle FROM cible_activite ca WHERE ca.code = e.cible_type)
                END AS cible_libelle,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
                          FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags
         FROM evenement e
+        LEFT JOIN type_evenement te ON te.id = e.type_evenement_id
         ORDER BY e.debut DESC
         LIMIT 200
         """,
@@ -376,6 +433,9 @@ def _evenement_out(r: dict[str, object]) -> EvenementOut:
         id=str(r["id"]),
         titre=r["titre"],
         type=r["type"],
+        type_evenement_id=str(r["type_evenement_id"]) if r.get("type_evenement_id") else None,
+        couleur=r.get("couleur") if isinstance(r.get("couleur"), str) else None,
+        type_evenement_nom=r.get("type_evenement_nom") if isinstance(r.get("type_evenement_nom"), str) else None,
         volet=r["volet"],
         debut=r["debut"],
         fin=r["fin"],
@@ -399,6 +459,9 @@ def _evenement_out(r: dict[str, object]) -> EvenementOut:
         fuseau_horaire=r.get("fuseau_horaire") or "Africa/Abidjan",
         serie_id=str(r["serie_id"]) if r.get("serie_id") else None,
         fenetre_reponse_heures=r.get("fenetre_reponse_heures"),
+        description=r.get("description") if isinstance(r.get("description"), str) else None,
+        intervenant_principal=r.get("intervenant_principal") if isinstance(r.get("intervenant_principal"), str) else None,
+        intervenants=[str(x) for x in (r.get("intervenants") or [])],
     )
 
 
@@ -407,97 +470,15 @@ def create_evenement(
     payload: CreateEvenement,
     user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
 ) -> EvenementOut:
-    liens = [x.strip() for x in payload.liens if x and x.strip()]
-    primary = payload.lien_session or (liens[0] if liens else None)
-    if primary and primary not in liens:
-        liens = [primary, *liens]
-    cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails = _cible_store(payload, user.role)
-    created = db.execute(
-        """
-        INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, type_diffusion, visibilite,
-                               cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-                               fenetre_reponse_heures, fuseau_horaire, cree_par)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::text[], %s, %s, %s)
-        RETURNING id, titre, type, volet, debut, fin, lieu, mode, session_ouverte,
-                  lien_session, liens, type_diffusion, visibilite, cible_type, cible_id
-        """,
-        (
-            payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
-            payload.mode, primary, json.dumps(liens), payload.type_diffusion, payload.visibilite,
-            payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-            payload.fenetre_reponse_heures, payload.fuseau_horaire, user.id,
-        ),
-        role=user.role,
-    )
-    if not created:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="insert failed")
-    audit.log(
-        user.id, user.role, "creation_evenement", "evenement", str(created["id"]),
-        {"titre": created["titre"], "cible_type": payload.cible_type},
-    )
-    # Recurring activity: the created row is the first occurrence and becomes the
-    # series master; every extra occurrence is one more real activity row sharing
-    # its serie_id, so participation / questionnaire / attendance survey keep
-    # working per date. The rule is recorded on the master for display only.
-    if payload.occurrences:
-        master_id = str(created["id"])
-        db.execute(
-            "UPDATE evenement SET serie_id = %s, recurrence = %s::jsonb WHERE id = %s",
-            (master_id, json.dumps(payload.recurrence) if payload.recurrence else None, master_id),
-            role=user.role,
-        )
-        for occ in payload.occurrences:
-            db.execute(
-                "INSERT INTO evenement (titre, type, volet, debut, fin, lieu, mode, lien_session, liens, "
-                "type_diffusion, visibilite, cible_type, cible_id, fenetre_reponse_heures, fuseau_horaire, "
-                "serie_id, cree_par) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (
-                    payload.titre, payload.type, payload.volet, occ.debut, occ.fin, payload.lieu,
-                    occ.mode or payload.mode,
-                    primary, json.dumps(liens), payload.type_diffusion, payload.visibilite, payload.cible_type,
-                    cible_id, payload.fenetre_reponse_heures, payload.fuseau_horaire, master_id, user.id,
-                ),
-                role=user.role,
-            )
-        audit.log(
-            user.id, user.role, "creation_serie_evenement", "evenement", master_id,
-            {"titre": payload.titre, "occurrences": len(payload.occurrences) + 1},
-        )
-    return _evenement_out(created)
+    # The full create logic (targeting, diffusion, response window, recurrence) is
+    # the shared activity engine, so the back office and collaboration create the
+    # exact same activity from the exact same fields.
+    master_id = activites.creer_evenement_complet(payload, user.id, user.role)
+    return _lire_evenement(master_id, user.role)
 
 
 class AnnulerEvenementIn(BaseModel):
     motif: str | None = None
-
-
-_CIBLE_UNITES = {"coordination": "coordination", "commission": "commission", "intendance": "intendance", "tribu": "tribu"}
-
-
-def _valider_cible(cible_type: str, cible_id: str | None, role: str | None) -> str | None:
-    """Validate an event's PRIMARY audience. An organisational-unit target must name
-    an existing unit; general / bergers / responsables / liste carry no unit id.
-    Returns the (possibly None) cible_id to store."""
-    if cible_type not in _CIBLE_UNITES:
-        return None
-    if not cible_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cible_id required for a targeted event")
-    if not db.fetch_one(f"SELECT id FROM {_CIBLE_UNITES[cible_type]} WHERE id = %s", (cible_id,), role=role):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown target unit")
-    return cible_id
-
-
-def _cible_store(payload: CreateEvenement, role: str | None) -> tuple[str | None, str | None, int | None, int | None, list[str]]:
-    """Validate and normalise the full targeting to store: the unit id (or None),
-    the gender/age refinements, and the de-duplicated e-mail list (only for a
-    'liste' target). Refinements are kept as-is and combine (AND) with any type."""
-    cible_id = _valider_cible(payload.cible_type, payload.cible_id, role)
-    emails: list[str] = []
-    if payload.cible_type == "liste":
-        emails = list(dict.fromkeys(e.strip().lower() for e in payload.cible_emails if e and e.strip()))[:500]
-        if not emails:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="au moins une adresse e-mail est requise pour un ciblage par liste")
-    return cible_id, payload.cible_genre, payload.cible_age_min, payload.cible_age_max, emails
 
 
 def _lire_evenement(evenement_id: str, role: str | None) -> EvenementOut:
@@ -508,19 +489,21 @@ def _lire_evenement(evenement_id: str, role: str | None) -> EvenementOut:
                e.lien_session, e.liens, e.type_diffusion, e.visibilite, e.cible_type, e.cible_id,
                e.annule, e.annule_motif, e.fuseau_horaire, e.serie_id, e.fenetre_reponse_heures,
                e.cible_genre, e.cible_age_min, e.cible_age_max, e.cible_emails,
+               e.description, e.intervenant_principal, e.intervenants,
+               e.type_evenement_id, te.couleur AS couleur, te.nom AS type_evenement_nom,
                CASE e.cible_type
                  WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
                  WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
-                 WHEN 'bergers' THEN 'Les Bergers'
-                 WHEN 'responsables' THEN 'Les responsables'
-                 WHEN 'liste' THEN 'Liste de diffusion'
-                 ELSE NULL
+                 WHEN 'general' THEN NULL
+                 ELSE (SELECT ca.libelle FROM cible_activite ca WHERE ca.code = e.cible_type)
                END AS cible_libelle,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
                          FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags
-        FROM evenement e WHERE e.id = %s
+        FROM evenement e
+        LEFT JOIN type_evenement te ON te.id = e.type_evenement_id
+        WHERE e.id = %s
         """,
         (evenement_id,),
         role=role,
@@ -532,17 +515,8 @@ def _lire_evenement(evenement_id: str, role: str | None) -> EvenementOut:
 
 def _serie_ids(evenement_id: str, portee: str, role: str | None) -> list[str]:
     """Activity ids to act on: just this one, or every activity of its series.
-
-    A series member carries serie_id = the master's id. When the activity has no
-    serie (a one-off) 'toute_la_serie' harmlessly falls back to the single id."""
-    if portee != "toute_la_serie":
-        return [evenement_id]
-    row = db.fetch_one("SELECT serie_id FROM evenement WHERE id = %s", (evenement_id,), role=role)
-    serie = (row or {}).get("serie_id")
-    if not serie:
-        return [evenement_id]
-    rows = db.fetch_all("SELECT id FROM evenement WHERE serie_id = %s", (serie,), role=role)
-    return [str(r["id"]) for r in rows] or [evenement_id]
+    Shared with the collaboration app through the activity engine."""
+    return activites.serie_ids(evenement_id, portee, role)
 
 
 @router.put("/evenements/{evenement_id}", response_model=EvenementOut)
@@ -557,51 +531,9 @@ def update_evenement(
     With portee='toute_la_serie' the non-date details (title, type, place, mode,
     links, diffusion, visibility, targeting, zone) are applied to every activity
     of the series, while each occurrence keeps its own date."""
-    if not db.fetch_one("SELECT id FROM evenement WHERE id = %s", (evenement_id,), role=user.role):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
-    liens = [x.strip() for x in payload.liens if x and x.strip()]
-    primary = payload.lien_session or (liens[0] if liens else None)
-    if primary and primary not in liens:
-        liens = [primary, *liens]
-    cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails = _cible_store(payload, user.role)
-    # The clicked occurrence is updated in full (including its own date).
-    db.execute(
-        """
-        UPDATE evenement SET titre=%s, type=%s, volet=%s, debut=%s, fin=%s, lieu=%s, mode=%s,
-               lien_session=%s, liens=%s::jsonb, type_diffusion=%s, visibilite=%s, cible_type=%s,
-               cible_id=%s, cible_genre=%s, cible_age_min=%s, cible_age_max=%s, cible_emails=%s::text[],
-               fenetre_reponse_heures=%s, fuseau_horaire=%s
-        WHERE id=%s
-        """,
-        (
-            payload.titre, payload.type, payload.volet, payload.debut, payload.fin, payload.lieu,
-            payload.mode, primary, json.dumps(liens), payload.type_diffusion, payload.visibilite,
-            payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-            payload.fenetre_reponse_heures, payload.fuseau_horaire, evenement_id,
-        ),
-        role=user.role,
-    )
-    if portee == "toute_la_serie":
-        # The other occurrences keep their own date/end but share the details.
-        autres = [i for i in _serie_ids(evenement_id, portee, user.role) if i != evenement_id]
-        for other in autres:
-            db.execute(
-                """
-                UPDATE evenement SET titre=%s, type=%s, volet=%s, lieu=%s, mode=%s,
-                       lien_session=%s, liens=%s::jsonb, type_diffusion=%s, visibilite=%s,
-                       cible_type=%s, cible_id=%s, cible_genre=%s, cible_age_min=%s, cible_age_max=%s,
-                       cible_emails=%s::text[], fenetre_reponse_heures=%s, fuseau_horaire=%s
-                WHERE id=%s
-                """,
-                (
-                    payload.titre, payload.type, payload.volet, payload.lieu, payload.mode,
-                    primary, json.dumps(liens), payload.type_diffusion, payload.visibilite,
-                    payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-                    payload.fenetre_reponse_heures, payload.fuseau_horaire, other,
-                ),
-                role=user.role,
-            )
-    audit.log(user.id, user.role, "modification_evenement", "evenement", evenement_id, {"titre": payload.titre, "portee": portee})
+    # Same shared engine as create: identical fields, validation and series handling
+    # for the back office and collaboration.
+    activites.mettre_a_jour_evenement_complet(evenement_id, payload, portee, user.id, user.role)
     return _lire_evenement(evenement_id, user.role)
 
 
@@ -644,6 +576,36 @@ def annuler_evenement(
             notifies += 1
     audit.log(user.id, user.role, "annulation_evenement", "evenement", evenement_id, {"motif": payload.motif, "notifies": notifies, "portee": portee, "activites": len(ids)})
     return _lire_evenement(evenement_id, user.role)
+
+
+@router.get("/evenements/{evenement_id}/pieces", response_model=list[evenement_pieces.PieceEvenementOut])
+def lister_pieces_evenement(
+    evenement_id: uuid.UUID,
+    user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))],
+) -> list[evenement_pieces.PieceEvenementOut]:
+    """Attachments of an activity, shared with the collaboration app (same helper)."""
+    return evenement_pieces.lister_pieces(str(evenement_id), user.role)
+
+
+@router.post("/evenements/{evenement_id}/pieces", response_model=evenement_pieces.PieceEvenementOut, status_code=status.HTTP_201_CREATED)
+def ajouter_piece_evenement(
+    evenement_id: uuid.UUID,
+    payload: evenement_pieces.PieceEvenementIn,
+    user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
+) -> evenement_pieces.PieceEvenementOut:
+    piece = evenement_pieces.ajouter_piece(str(evenement_id), payload, user.id, user.role)
+    audit.log(user.id, user.role, "ajout_piece_evenement", "evenement", str(evenement_id), {"nom": payload.nom})
+    return piece
+
+
+@router.delete("/evenements/pieces/{piece_id}", status_code=status.HTTP_204_NO_CONTENT)
+def supprimer_piece_evenement(
+    piece_id: uuid.UUID,
+    user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
+) -> None:
+    info = evenement_pieces.supprimer_piece(str(piece_id), user.role)
+    if info:
+        audit.log(user.id, user.role, "suppression_piece_evenement", "evenement", info["evenement_id"], {"nom": info["nom"]})
 
 
 @router.post("/evenements/{evenement_id}/reactiver", response_model=EvenementOut)

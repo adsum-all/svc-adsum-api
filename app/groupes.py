@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from . import audit, db
 from .fields import ShortStr
-from .permissions_rbac import require_permission
+from .permissions_rbac import require_permission, require_permission_ecriture
 from .schemas import UserMe
 from .security import hash_password
 
@@ -151,6 +151,18 @@ def _sync_account_role(membre_id: str, actor: UserMe) -> tuple[str, str | None]:
     return eff, temp
 
 
+def resync_membres_du_groupe(groupe_id: str, actor: UserMe) -> None:
+    """Recompute the cached account role of every member of a group. Called when the
+    group's active state flips, so entitlements never outlive the group state."""
+    membres = db.fetch_all(
+        "SELECT DISTINCT membre_id FROM membre_groupe WHERE groupe_id = %s",
+        (groupe_id,),
+        role=actor.role,
+    )
+    for m in membres:
+        _sync_account_role(str(m["membre_id"]), actor)
+
+
 class GroupeOut(BaseModel):
     id: str
     cle: str
@@ -162,6 +174,9 @@ class GroupeOut(BaseModel):
     membres_count: int = 0
     systeme: bool = False
     actif: bool = True
+    # Optional application this group serves (application.code), so the governance UI
+    # can organise groups per application instead of one mixed list.
+    application_code: str | None = None
 
 
 class GroupeIn(BaseModel):
@@ -174,6 +189,7 @@ class GroupeIn(BaseModel):
     mode: str = "role"
     role_accorde: str | None = None
     permissions: list[str] = []
+    application_code: str | None = None
 
 
 class UpdateGroupeIn(BaseModel):
@@ -182,6 +198,19 @@ class UpdateGroupeIn(BaseModel):
     actif: bool | None = None
     # For a 'permissions' group, replace the whole granted permission set.
     permissions: list[str] | None = None
+    application_code: str | None = None
+
+
+def _valider_application_code(code: str | None, role: str) -> str | None:
+    """A group's application tag must name a real catalogue application (or be None)."""
+    if code is None:
+        return None
+    code = code.strip().lower()
+    if not code:
+        return None
+    if not db.fetch_one("SELECT code FROM application WHERE code = %s", (code,), role=role):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="application inconnue")
+    return code
 
 
 class MembreGroupeIn(BaseModel):
@@ -255,6 +284,7 @@ def _groupe_out(r: dict[str, object], role: str) -> GroupeOut:
         permissions=_permissions_du_groupe(gid, role) if mode == "permissions" else [],
         membres_count=int(r.get("membres_count") or 0),
         systeme=bool(r["systeme"]), actif=bool(r["actif"]),
+        application_code=r.get("application_code"),
     )
 
 
@@ -272,6 +302,7 @@ def list_groupes(
     where = "" if inclure_inactifs else "WHERE g.actif = true"
     rows = db.fetch_all(
         "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
+        "g.application_code, "
         "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id) AS membres_count "
         f"FROM groupe_acces g {where} ORDER BY g.systeme DESC, g.libelle ASC",
         (),
@@ -292,7 +323,7 @@ def _remplacer_permissions_groupe(groupe_id: str, perms: list[str], role: str) -
 
 
 @router.post("/groupes", response_model=GroupeOut, status_code=status.HTTP_201_CREATED)
-def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> GroupeOut:
+def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.systeme"))]) -> GroupeOut:
     """Create a custom access group.
 
     Two modes. A 'role' group grants a known platform role (an admin cannot create
@@ -312,10 +343,11 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_per
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_accorde invalide")
         # An admin cannot mint a group that grants a role above their own rank.
         _assert_peut_gerer(user, role_accorde, "")
+    application_code = _valider_application_code(payload.application_code, user.role)
     created = db.execute(
-        "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme, mode) VALUES (%s, %s, %s, %s, false, %s) "
+        "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme, mode, application_code) VALUES (%s, %s, %s, %s, false, %s, %s) "
         "ON CONFLICT (cle) DO NOTHING RETURNING id",
-        (payload.cle.strip().lower(), payload.libelle, payload.description, role_accorde, mode),
+        (payload.cle.strip().lower(), payload.libelle, payload.description, role_accorde, mode, application_code),
         role=user.role,
     )
     if not created:
@@ -323,12 +355,12 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_per
     gid = str(created["id"])
     if mode == "permissions":
         _remplacer_permissions_groupe(gid, payload.permissions, user.role)
-    audit.log(user.id, user.role, "creation_groupe_acces", "groupe_acces", gid, {"cle": payload.cle, "mode": mode, "role_accorde": role_accorde, "permissions": payload.permissions if mode == "permissions" else None})
-    return GroupeOut(id=gid, cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=role_accorde, mode=mode, permissions=sorted(set(payload.permissions)) if mode == "permissions" else [], membres_count=0, systeme=False, actif=True)
+    audit.log(user.id, user.role, "creation_groupe_acces", "groupe_acces", gid, {"cle": payload.cle, "mode": mode, "role_accorde": role_accorde, "application_code": application_code, "permissions": payload.permissions if mode == "permissions" else None})
+    return GroupeOut(id=gid, cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=role_accorde, mode=mode, permissions=sorted(set(payload.permissions)) if mode == "permissions" else [], membres_count=0, systeme=False, actif=True, application_code=application_code)
 
 
 @router.patch("/groupes/{groupe_id}", response_model=GroupeOut)
-def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> GroupeOut:
+def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.systeme"))]) -> GroupeOut:
     """Edit a custom group: label, description, active state, and for a permissions
     group its granted set. System groups are read-only (their behaviour is relied
     upon platform-wide); attempting to edit one is refused."""
@@ -344,9 +376,20 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
         fields["description"] = payload.description
     if payload.actif is not None:
         fields["actif"] = payload.actif
+    # exclude_unset so sending null explicitly DETACHES the group from its application,
+    # while omitting the field leaves the tag untouched.
+    if "application_code" in payload.model_fields_set:
+        fields["application_code"] = _valider_application_code(payload.application_code, user.role)
     if fields:
         cols = ", ".join(f"{k} = %s" for k in fields)
         db.execute(f"UPDATE groupe_acces SET {cols} WHERE id = %s", (*fields.values(), groupe_id), role=user.role)
+    # Deactivating (or reactivating) a group changes what its members are entitled to,
+    # and the enforcement path starts from the CACHED utilisateur.role. Resync every
+    # member of the group so a deactivated Administration group really withdraws the
+    # admin permissions instead of leaving a stale elevated cache behind (and the
+    # review surfaces then tell the truth).
+    if payload.actif is not None and payload.actif != bool(g["actif"]):
+        resync_membres_du_groupe(groupe_id, user)
     if payload.permissions is not None:
         if str(g["mode"]) != "permissions":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="seul un groupe de permissions porte des permissions")
@@ -357,6 +400,7 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
     audit.log(user.id, user.role, "modification_groupe_acces", "groupe_acces", groupe_id, {"champs": list(fields), "permissions": payload.permissions})
     row = db.fetch_one(
         "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
+        "g.application_code, "
         "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id) AS membres_count "
         "FROM groupe_acces g WHERE g.id = %s",
         (groupe_id,),
@@ -366,7 +410,7 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
 
 
 @router.delete("/groupes/{groupe_id}", status_code=status.HTTP_200_OK)
-def delete_groupe(groupe_id: str, user: Annotated[UserMe, Depends(require_permission("acces.systeme"))]) -> dict[str, object]:
+def delete_groupe(groupe_id: str, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.systeme"))]) -> dict[str, object]:
     """Delete a custom group. A system group is never deleted; a group that still
     has members is refused (409) so nobody silently loses access: remove the
     members first. Deletion is audited."""
@@ -389,6 +433,7 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permi
     """The scoped group memberships of a member, with who granted each and when, and the effective global role."""
     rows = db.fetch_all(
         "SELECT mg.id AS appartenance_id, g.id AS groupe_id, g.cle, g.libelle, g.role_accorde, "
+        "g.actif AS groupe_actif, g.mode, "
         "mg.portee_type, mg.portee_id, mg.ajoute_le, "
         "COALESCE(pc.nom, pin.nom, pk.nom, pt.nom) AS portee_libelle, "
         "COALESCE(NULLIF(trim(coalesce(am.prenoms, '') || ' ' || coalesce(am.nom, '')), ''), ua.email) AS ajoute_par_nom "
@@ -414,6 +459,10 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permi
                 "cle": r["cle"],
                 "libelle": r["libelle"],
                 "role_accorde": r["role_accorde"],
+                # Surface the group's own state so a review never shows a deactivated
+                # group as if it still granted its role.
+                "groupe_actif": bool(r.get("groupe_actif")),
+                "mode": str(r.get("mode") or "role"),
                 "portee_type": r["portee_type"],
                 "portee_id": str(r["portee_id"]) if r.get("portee_id") else None,
                 "portee_libelle": r.get("portee_libelle"),
@@ -426,7 +475,7 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permi
 
 
 @router.post("/membres/{membre_id}/groupes")
-def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
+def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.administrer"))]) -> dict[str, object]:
     """Add a member to an access group, on a global or scoped perimeter.
 
     A global membership elevates the account's back-office role; a scoped one
@@ -465,7 +514,7 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
 
 
 @router.delete("/membres/{membre_id}/groupes/{appartenance_id}", status_code=status.HTTP_200_OK)
-def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
+def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[UserMe, Depends(require_permission_ecriture("acces.administrer"))]) -> dict[str, object]:
     """Remove ONE membership (a group on a given perimeter) and re-sync the role.
 
     Targets a single ``membre_groupe`` row so multi-membership is respected. The

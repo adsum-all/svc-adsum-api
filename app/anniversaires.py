@@ -75,6 +75,8 @@ def set_modele(payload: ModeleIn, user: Annotated[UserMe, Depends(require_permis
 # --- Daily cron: send birthday wishes ---------------------------------------
 
 def _run_anniversaires(role: str | None) -> dict[str, object]:
+    from .notifications import canaux_autorises
+
     modele = db.fetch_one("SELECT titre, corps, image_url, actif FROM modele_message WHERE cle = 'anniversaire'", (), role=role)
     if not modele or not modele["actif"]:
         return {"ok": True, "envoyes": 0, "raison": "modele_inactif"}
@@ -90,6 +92,14 @@ def _run_anniversaires(role: str | None) -> dict[str, object]:
           AND NOT EXISTS (
             SELECT 1 FROM notification_anniversaire na
             WHERE na.membre_id = m.id AND na.annee = EXTRACT(YEAR FROM now())::int
+          )
+          -- Cross-path idempotence: the daily cron marks its birthday sends in
+          -- notification_log; skip those members so an admin manual trigger on the
+          -- same day never produces a second wish.
+          AND NOT EXISTS (
+            SELECT 1 FROM notification_log nl
+            WHERE nl.membre_id = m.id AND nl.type_cle = 'anniversaire'
+              AND nl.ref_id = EXTRACT(YEAR FROM now())::int::text
           )
         """,
         (),
@@ -114,7 +124,12 @@ def _run_anniversaires(role: str | None) -> dict[str, object]:
         corps = str(modele["corps"]).replace("{prenom}", prenom)
         html = render_anniversaire_email(titre, corps, modele["image_url"])
         msg = channels.Message(titre=titre, corps_text=corps, corps_html=html, image_url=modele["image_url"], type_notif="anniversaire")
-        used = channels.dispatch(str(r["id"]), role, msg, whatsapp_params=[prenom])
+        # Honour the member's "anniversaires" channel matrix, so a member who muted the
+        # birthday e-mail really stops receiving it here too (this manual/admin path used
+        # to bypass the matrix and only obey the master switch, unlike the daily cron
+        # which already goes through notifier()). In-app is always delivered.
+        autorises = canaux_autorises(str(r["id"]), role, "anniversaire", "operationnel")
+        used = channels.dispatch(str(r["id"]), role, msg, whatsapp_params=[prenom], canaux_autorises=autorises)
         db.execute(
             "UPDATE notification_anniversaire SET canaux = %s WHERE membre_id = %s AND annee = %s",
             (",".join(used), str(r["id"]), int(r["annee"])),
@@ -164,26 +179,103 @@ def telegram_lien(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str
     return {"deep_link": f"https://t.me/{username}?start={token}"}
 
 
+def _send_telegram_code(chat_id: str, code: str) -> bool:
+    """Send the one-time linking confirmation code TO the candidate chat, so only whoever
+    controls that chat can complete the link (proof of possession)."""
+    msg = channels.Message(
+        titre="ADSUM - liaison Telegram",
+        corps_text=(
+            f"Votre code de liaison est : {code}\n\n"
+            "Saisissez-le dans l'application pour confirmer que ce compte Telegram est bien le votre. "
+            "Ce code expire dans 10 minutes. Si vous n'etes pas a l'origine de cette demande, ignorez ce message."
+        ),
+        corps_html="",
+        type_notif="telegram_liaison",
+    )
+    return channels.send_telegram(str(chat_id), msg, contexte="telegram:liaison")
+
+
 @router.post("/membres/me/telegram/verifier")
 def telegram_verifier(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
-    """After the member pressed Start, capture their chat id via getUpdates."""
+    """Step 1 of the secure link: after the member pressed Start, capture the candidate chat
+    via getUpdates and send a one-time confirmation code TO that chat. The member must then
+    re-enter the code (``/telegram/confirmer``) to prove they control the chat. Possession of
+    the deep-link token is NOT enough to bind the chat: a leaked/observed link cannot hijack
+    a member's notifications, because the confirming code only reaches the chat itself."""
     membre_id, role = ctx
     if not channels.telegram_token():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram not configured")
     row = db.fetch_one("SELECT telegram_link_token FROM membre WHERE id = %s", (membre_id,), role=role)
     token = row["telegram_link_token"] if row else None
     if not token:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no pending link; request a link first")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="aucune liaison en cours; demandez d'abord un lien")
     chat_id = _find_chat_id_for_token(str(token))
     if not chat_id:
-        return {"linked": False, "message": "Ouvrez le lien et appuyez sur Démarrer, puis réessayez."}
-    db.execute("UPDATE membre SET telegram_chat_id = %s, telegram_link_token = NULL WHERE id = %s", (chat_id, membre_id), role=role)
+        return {"pending_confirmation": False, "message": "Ouvrez le lien et appuyez sur Démarrer, puis réessayez."}
+    code = f"{secrets.randbelow(1000000):06d}"
+    if not _send_telegram_code(chat_id, code):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="envoi du code Telegram non abouti; reessayez")
+    # Store the pending candidate and code; do NOT bind telegram_chat_id yet.
     db.execute(
-        "INSERT INTO preference_notification (membre_id, telegram) VALUES (%s, true) "
-        "ON CONFLICT (membre_id) DO UPDATE SET telegram = true",
-        (membre_id,),
+        "UPDATE membre SET telegram_pending_chat_id = %s, telegram_confirm_code = %s, "
+        "telegram_confirm_expire = now() + interval '10 minutes', telegram_confirm_essais = 0 WHERE id = %s",
+        (chat_id, code, membre_id),
         role=role,
     )
+    return {"pending_confirmation": True, "message": "Un code vient d'etre envoye sur votre Telegram. Saisissez-le pour confirmer la liaison."}
+
+
+class TelegramConfirmIn(BaseModel):
+    code: str
+
+
+@router.post("/membres/me/telegram/confirmer")
+def telegram_confirmer(payload: TelegramConfirmIn, user: Annotated[UserMe, Depends(current_user)]) -> dict[str, object]:
+    """Step 2 of the secure link: the member enters the code the bot sent to the chat. On a
+    correct code we bind the chat EXCLUSIVELY to this member: any other member holding the
+    same chat is detached (its Telegram channel is turned off) so a chat can never feed two
+    identities. The bind is one transaction; the audit entry is written best-effort AFTER it
+    so auditing can never make the linking itself fail."""
+    if not user.membre_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is not linked to a member")
+    membre_id, role = user.membre_id, user.role
+    code = (payload.code or "").strip()
+    with db.connection(role=role) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT telegram_pending_chat_id, telegram_confirm_code, telegram_confirm_essais, "
+            "(telegram_confirm_expire > now()) AS valide FROM membre WHERE id = %s FOR UPDATE",
+            (membre_id,),
+        )
+        row = cur.fetchone() or {}
+        pending = row.get("telegram_pending_chat_id")
+        if not pending or not row.get("valide"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="aucune liaison en attente ou code expire; redemandez un lien")
+        if int(row.get("telegram_confirm_essais") or 0) >= 5:
+            cur.execute("UPDATE membre SET telegram_pending_chat_id = NULL, telegram_confirm_code = NULL, telegram_confirm_expire = NULL WHERE id = %s", (membre_id,))
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="trop de tentatives; redemandez un lien")
+        if not code or code != str(row.get("telegram_confirm_code")):
+            cur.execute("UPDATE membre SET telegram_confirm_essais = telegram_confirm_essais + 1 WHERE id = %s", (membre_id,))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="code incorrect")
+        chat_id = str(pending)
+        # Exclusivity: detach this chat from any OTHER member before binding it here.
+        cur.execute("SELECT id FROM membre WHERE telegram_chat_id = %s AND id <> %s", (chat_id, membre_id))
+        autres = [str(r["id"]) for r in cur.fetchall()]
+        if autres:
+            cur.execute("UPDATE membre SET telegram_chat_id = NULL WHERE telegram_chat_id = %s AND id <> %s", (chat_id, membre_id))
+            cur.execute("UPDATE preference_notification SET telegram = false WHERE membre_id = ANY(%s)", (autres,))
+        cur.execute(
+            "UPDATE membre SET telegram_chat_id = %s, telegram_pending_chat_id = NULL, telegram_confirm_code = NULL, "
+            "telegram_confirm_expire = NULL, telegram_confirm_essais = 0, telegram_link_token = NULL WHERE id = %s",
+            (chat_id, membre_id),
+        )
+        cur.execute(
+            "INSERT INTO preference_notification (membre_id, telegram) VALUES (%s, true) "
+            "ON CONFLICT (membre_id) DO UPDATE SET telegram = true",
+            (membre_id,),
+        )
+    # Audit the security event with the ACTOR's utilisateur id (acteur_id -> utilisateur FK);
+    # best-effort so it can never roll back the successful bind.
+    audit.log(user.id, role, "liaison_telegram_confirmee", "membre", membre_id, {"detache_de_membres": autres} if autres else {})
     return {"linked": True}
 
 

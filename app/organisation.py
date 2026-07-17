@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 
 from . import audit, db
 from .fonctions_membre import label_genre
@@ -314,7 +316,7 @@ def create_sous_commission(
 @router.get("/tribus", response_model=list[TribuOut])
 def list_tribus(user: Annotated[UserMe, Depends(require_permission("tribus.consulter"))]) -> list[TribuOut]:
     rows = db.fetch_all(
-        "SELECT t.id, t.nom, t.patriarche, patr.membre_id AS patriarche_membre_id, "
+        "SELECT t.id, t.nom, t.description, t.publie, t.patriarche, patr.membre_id AS patriarche_membre_id, "
         "TRIM(COALESCE(patr.prenoms, '') || ' ' || COALESCE(patr.nom, '')) AS patriarche_nom "
         "FROM tribu t LEFT JOIN LATERAL ("
         "  SELECT pm2.id AS membre_id, pm2.prenoms, pm2.nom FROM membre pm2 "
@@ -327,12 +329,46 @@ def list_tribus(user: Annotated[UserMe, Depends(require_permission("tribus.consu
     )
     return [
         TribuOut(
-            id=str(r["id"]), nom=r["nom"], patriarche=r["patriarche"],
+            id=str(r["id"]), nom=r["nom"], description=r.get("description"), publie=bool(r.get("publie")),
+            patriarche=r["patriarche"],
             patriarche_membre_id=str(r["patriarche_membre_id"]) if r.get("patriarche_membre_id") else None,
             patriarche_nom=((r.get("patriarche_nom") or "").strip() or None),
         )
         for r in rows
     ]
+
+
+class TribuIn(BaseModel):
+    nom: str = Field(min_length=1, max_length=120)
+    description: str | None = None
+
+
+@router.post("/tribus", response_model=TribuOut, status_code=status.HTTP_201_CREATED)
+def create_tribu(
+    payload: TribuIn, user: Annotated[UserMe, Depends(require_permission("tribus.administrer"))]
+) -> TribuOut:
+    """Create a tribe (dynamic referential: the list is never hardcoded).
+
+    The tribe name is the unique code: a case-insensitive duplicate is rejected with
+    a clear 409 instead of surfacing a raw unique-constraint violation as a 500."""
+    nom = payload.nom.strip()
+    if db.fetch_one("SELECT 1 FROM tribu WHERE lower(nom) = lower(%s)", (nom,), role=user.role):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="une tribu porte deja ce nom")
+    try:
+        created = db.execute(
+            "INSERT INTO tribu (nom, description) VALUES (%s, %s) RETURNING id, nom, description, publie",
+            (nom, (payload.description or "").strip() or None),
+            role=user.role,
+        )
+    except psycopg.errors.UniqueViolation as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="une tribu porte deja ce nom") from exc
+    if not created:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="tribe not created")
+    audit.log(user.id, user.role, "creation_tribu", "tribu", str(created["id"]), {"nom": payload.nom})
+    return TribuOut(
+        id=str(created["id"]), nom=created["nom"], description=created.get("description"),
+        publie=bool(created.get("publie")), patriarche=None, patriarche_membre_id=None, patriarche_nom=None,
+    )
 
 
 @router.put("/tribus/{tribu_id}/patriarche")
