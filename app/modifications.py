@@ -40,6 +40,7 @@ _EDITABLE_FIELDS = {
     "adresse_complement", "commission_id", "intendance_id", "coordination_id", "tribu_id", "groupe",
     "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage",
     "baptise", "confirme", "premiere_communion", "type_membre",
+    "date_entree", "promotion",
 }
 
 # Defense-in-depth whitelist: only these member columns can be committed from a

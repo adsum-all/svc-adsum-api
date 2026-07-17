@@ -446,6 +446,14 @@ class ProfilUpdate(BaseModel):
     premiere_communion: bool | None = None
     type_membre: str | None = Field(default=None, max_length=120, pattern="^[a-z][a-z0-9_]{1,39}$")
     fonction_cle: ShortStr | None = None
+    # External member code in the wider organisation (distinct from the ADSUM
+    # matricule): optional, uppercased, unique (partial index 0080), refused when
+    # it collides with an existing matricule (the login resolver accepts both).
+    code_membre: str | None = Field(default=None, max_length=32, pattern=r"^[A-Za-z0-9\- ]*$")
+    # Community journey facts the member declares themselves (also editable by
+    # the administration in the back office).
+    date_entree: ShortStr | None = None
+    promotion: LineStr | None = None
 
     @field_validator("*", mode="before")
     @classmethod
@@ -479,10 +487,41 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
     fields = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if k in _EDITABLE_FIELDS}
-    if not fields:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
     en_correction = row["statut_inscription"] == "modification_demandee"
     incomplet = row["statut_inscription"] in ("incomplet", "modification_demandee")
+    # The member code is normalised (upper, empty -> NULL) and must never equal an
+    # existing ADSUM matricule: the login resolver accepts both, so a collision
+    # would make that identifier ambiguous. Same guard as the modification cycle.
+    if "code_membre" in fields:
+        code = str(fields["code_membre"] or "").strip().upper()
+        fields["code_membre"] = code or None
+        if code and db.fetch_one("SELECT 1 FROM membre WHERE upper(matricule) = upper(%s) LIMIT 1", (code,), role=role):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ce code membre correspond à un matricule ADSUM existant. Choisissez un autre code.",
+            )
+    # During registration, a chosen function is a PROPOSAL: it is recorded as an
+    # unconfirmed catalogue function (never the confirmed mirror), so the wizard
+    # select is no longer silently dropped and the administration keeps the sole
+    # authority to confirm it (fonction_confirmee stays false until then).
+    fonction_souhaitee = payload.fonction_cle if incomplet else None
+    if fonction_souhaitee:
+        connue = db.fetch_one(
+            "SELECT cle FROM fonction_honorifique WHERE cle = %s AND actif = true",
+            (str(fonction_souhaitee).strip().lower(),), role=role,
+        )
+        if connue:
+            db.execute(
+                "INSERT INTO membre_fonction (membre_id, fonction_cle, confirmee, actif, principale, ordre) "
+                "SELECT %s, %s, false, true, NOT EXISTS (SELECT 1 FROM membre_fonction WHERE membre_id = %s AND principale), 0 "
+                "WHERE NOT EXISTS (SELECT 1 FROM membre_fonction WHERE membre_id = %s AND lower(fonction_cle) = %s)",
+                (membre_id, str(connue["cle"]), membre_id, membre_id, str(connue["cle"]).lower()),
+                role=role,
+            )
+    if not fields and not fonction_souhaitee:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
+    if not fields:
+        return {"ok": True, "updated": ["fonction_cle"]}
     if incomplet:
         # On a correction cycle, keep an old/new trail before overwriting so the
         # admin can see exactly what changed (data itself is preserved, only the
