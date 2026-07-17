@@ -104,19 +104,96 @@ def catalogue_permissions(
     return matrice
 
 
+_RISK_ORDER = {"faible": 0, "moyen": 1, "eleve": 2, "critique": 3}
+_ROLE_LIBELLES = {
+    "membre": "Membre",
+    "controleur": "Contrôle",
+    "gestionnaire": "Gestion des membres",
+    "direction": "Direction",
+    "admin": "Administration",
+    "super_admin": "Super-administration",
+}
+
+
+def _capabilities_de(permissions_cles: list[str]) -> list[dict[str, str]]:
+    """Reviewable capability entries derived from the ENFORCED catalogue
+    (permissions_data.CATALOGUE + PERMISSION_DETAILS), never a parallel copy."""
+    from . import permissions_data
+
+    details = permissions_data.PERMISSION_DETAILS
+    out = []
+    for cle in sorted(permissions_cles):
+        meta = permissions_data.CATALOGUE.get(cle)
+        if not meta:
+            continue
+        out.append({
+            "cle": cle,
+            "libelle": meta["libelle"],
+            "description": details.get(cle, {}).get("description", ""),
+            "risque": meta["risque"],
+            "portee": meta["portee"],
+        })
+    return out
+
+
+def _risque_max(capabilities: list[dict[str, str]]) -> str:
+    if not capabilities:
+        return "faible"
+    return max((c["risque"] for c in capabilities), key=lambda r: _RISK_ORDER.get(r, 0))
+
+
+def _entree_acces(r: dict[str, object], role_appel: str) -> tuple[dict[str, object], list[str]]:
+    """One reviewable access entry (plus its warnings) for a single membership row,
+    with capabilities derived from the enforced catalogue."""
+    from . import permissions_data
+
+    role_accorde = str(r["role_accorde"])
+    portee_type = str(r["portee_type"])
+    mode = str(r.get("mode") or "role")
+    if mode == "permissions":
+        perms = [
+            str(p["permission"]) for p in db.fetch_all(
+                "SELECT permission FROM groupe_permission WHERE groupe_id = %s",
+                (str(r["groupe_id"]),), role=role_appel,
+            )
+        ]
+        caps = _capabilities_de(perms)
+        libelle = f"Groupe de permissions : {r['groupe_libelle']}"
+    else:
+        caps = _capabilities_de(sorted(permissions_data.permissions_du_role(role_accorde)))
+        libelle = _ROLE_LIBELLES.get(role_accorde, role_accorde)
+    entree = {
+        "role": role_accorde,
+        "role_libelle": libelle,
+        "risque": _risque_max(caps),
+        "portee_type": portee_type,
+        "portee_libelle": r.get("portee_libelle"),
+        "portee_texte": "toute la base" if portee_type == "global" else (r.get("portee_libelle") or portee_type),
+        "capabilities": caps,
+    }
+    alertes: list[str] = []
+    if portee_type == "global" and role_accorde in ("admin", "super_admin"):
+        alertes.append(f"Accès {libelle} GLOBAL : pouvoir très large sur toute la base. À réserver au strict nécessaire.")
+    if role_accorde == "super_admin":
+        alertes.append("Rôle super-administration : tous les pouvoirs système. Séparation des tâches recommandée.")
+    return entree, alertes
+
+
 @router.get("/membres/{membre_id}/acces-effectif")
 def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, object]:
     """A reviewable explanation of a member's effective access, with warnings.
 
-    Lists the global role, every scoped membership with its perimeter, the atomic
-    capabilities each grants, and safety warnings (broad global power, sensitive
-    capabilities), so an admin can review who can see and do what, and where.
+    Every capability shown here is derived from the SAME mapping the server
+    enforces (permissions_data.ROLE_PERMISSIONS / groupe_permission), so the
+    review can never promise an action the server would refuse, nor hide one it
+    would allow. Permission-mode groups list their own granted permissions.
     """
-    from . import permissions
+    from . import permissions_data
 
     eff = _effective_role(membre_id, user.role)
     rows = db.fetch_all(
-        "SELECT g.role_accorde, mg.portee_type, mg.portee_id, "
+        "SELECT g.id AS groupe_id, g.role_accorde, g.mode, g.libelle AS groupe_libelle, "
+        "mg.portee_type, mg.portee_id, "
         "COALESCE(pc.nom, pin.nom, pk.nom, pt.nom) AS portee_libelle "
         "FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
         "LEFT JOIN coordination pc ON mg.portee_type = 'coordination' AND pc.id = mg.portee_id "
@@ -129,29 +206,22 @@ def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_permi
     )
     acces = []
     warnings: list[str] = []
+    a_portee_globale = False
     for r in rows:
-        role_accorde = str(r["role_accorde"])
-        portee_type = str(r["portee_type"])
-        explication = permissions.expliquer_role(role_accorde)
-        acces.append({
-            "role": role_accorde,
-            "role_libelle": explication["libelle"],
-            "risque": explication["risque"],
-            "portee_type": portee_type,
-            "portee_libelle": r.get("portee_libelle"),
-            "portee_texte": "toute la base" if portee_type == "global" else (r.get("portee_libelle") or portee_type),
-            "capabilities": explication["capabilities"],
-        })
-        if portee_type == "global" and role_accorde in ("admin", "super_admin"):
-            warnings.append(f"Accès {explication['libelle']} GLOBAL : pouvoir très large sur toute la base. À réserver au strict nécessaire.")
-        if role_accorde == "super_admin":
-            warnings.append("Rôle super-administration : tous les pouvoirs système. Séparation des tâches recommandée.")
-    if eff == "membre" and acces:
+        entree, alertes = _entree_acces(r, user.role)
+        acces.append(entree)
+        warnings.extend(alertes)
+        if entree["portee_type"] == "global":
+            a_portee_globale = True
+    # "Only scoped" is only true when NO membership is global: a global
+    # permission-mode group keeps role 'membre' yet grants global permissions.
+    if eff == "membre" and acces and not a_portee_globale:
         warnings.append("Accès uniquement scopés : aucune visibilité globale (comportement attendu, hermétique).")
+    caps_eff = _capabilities_de(sorted(permissions_data.permissions_du_role(eff)))
     return {
         "membre_id": membre_id,
         "role_global_effectif": eff,
-        "risque_global": permissions.role_risque(eff),
+        "risque_global": _risque_max(caps_eff),
         "acces": acces,
         "avertissements": warnings,
     }

@@ -35,6 +35,10 @@ class ApplicationOut(BaseModel):
     # True for applications every member sees by default (the member space), where
     # visibility is automatic and cannot be granted or revoked per member.
     est_defaut: bool = False
+    # For the member view: whether the member can actually CONNECT (default app, or
+    # visibility PLUS at least one access group tied to the application). Visibility
+    # alone shows the card but the gate refuses the connection.
+    ouvrable: bool = True
 
 
 @router.get("/membres/me/applications", response_model=list[ApplicationOut])
@@ -47,15 +51,26 @@ def mes_applications(user: Annotated[UserMe, Depends(current_user)]) -> list[App
     # Every member sees the default application(s) (the member app) without any grant,
     # PLUS any application explicitly granted to them and still active.
     rows = db.fetch_all(
-        "SELECT a.code, a.nom, a.description, a.url, a.actif "
+        "SELECT a.code, a.nom, a.description, a.url, a.actif, a.est_defaut, "
+        # ouvrable mirrors mon_acces_application: a default app is always open; any
+        # other needs at least one access group tied to it. The card can then say
+        # honestly "waiting for rights" instead of "active access" the gate refuses.
+        "(a.est_defaut OR EXISTS (SELECT 1 FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        " WHERE mg.membre_id = %s AND mg.application_code = a.code AND g.actif = true)) AS ouvrable "
         "FROM application a WHERE a.actif = true AND ("
         "  a.est_defaut = true "
         "  OR EXISTS (SELECT 1 FROM membre_application_acces m WHERE m.application_code = a.code AND m.membre_id = %s AND m.actif = true)"
         ") ORDER BY a.ordre, a.nom",
-        (user.membre_id,),
+        (user.membre_id, user.membre_id),
         role=user.role,
     )
-    return [ApplicationOut(code=r["code"], nom=r["nom"], description=r.get("description"), url=r.get("url"), actif=True, acces_actif=True) for r in rows]
+    return [
+        ApplicationOut(
+            code=r["code"], nom=r["nom"], description=r.get("description"), url=r.get("url"),
+            actif=True, acces_actif=True, est_defaut=bool(r.get("est_defaut")), ouvrable=bool(r.get("ouvrable")),
+        )
+        for r in rows
+    ]
 
 
 @router.get("/membres/me/applications/{code}/acces")
@@ -80,7 +95,10 @@ def mon_acces_application(code: str, user: Annotated[UserMe, Depends(current_use
     row = db.fetch_one(
         "SELECT 1 FROM membre_application_acces m "
         "WHERE m.membre_id = %s AND m.application_code = %s AND m.actif = true "
-        "AND EXISTS (SELECT 1 FROM membre_groupe mg WHERE mg.membre_id = m.membre_id AND mg.application_code = m.application_code)",
+        # The linked group must itself be ACTIVE: a deactivated group no longer
+        # opens the door (it would grant a connection that carries no permission).
+        "AND EXISTS (SELECT 1 FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "WHERE mg.membre_id = m.membre_id AND mg.application_code = m.application_code AND g.actif = true)",
         (user.membre_id, code),
         role=user.role,
     )
@@ -110,7 +128,10 @@ def acces_membre(
     rows = db.fetch_all(
         "SELECT a.code, a.nom, a.description, a.url, a.actif, a.est_defaut, "
         "COALESCE((SELECT m.actif FROM membre_application_acces m WHERE m.membre_id = %s AND m.application_code = a.code), false) AS acces_actif "
-        "FROM application a WHERE a.actif = true ORDER BY a.ordre, a.nom",
+        # Inactive applications are included too: a grant that survives on a
+        # deactivated application stays reviewable here instead of disappearing
+        # from every surface (the member side still never lists inactive apps).
+        "FROM application a ORDER BY a.actif DESC, a.ordre, a.nom",
         (membre_id,),
         role=user.role,
     )
@@ -191,6 +212,12 @@ def definir_acces(
                 cur, user.id, user.role, "revocation_acces_application", "membre", membre_id,
                 {"application": code, "actif": False, "groupes_retires": groupes_retires},
             )
+        # AFTER the transaction commits: the cascade may have removed GLOBAL
+        # memberships, so resync the cached account role from the now-committed state
+        # (inside the transaction the separate connection would still see the old rows).
+        from .groupes import _sync_account_role
+
+        _sync_account_role(membre_id, user)
         return {"ok": True, "membre_id": membre_id, "application": code, "actif": False, "groupes_retires": groupes_retires}
     audit.log(user.id, user.role, action, "membre", membre_id, {"application": code, "actif": payload.actif})
     return {"ok": True, "membre_id": membre_id, "application": code, "actif": payload.actif}
@@ -293,6 +320,11 @@ class GroupeAssigneOut(BaseModel):
     groupe_id: str
     cle: str
     libelle: str
+    # The granted platform role (or 'membre' for a permission-mode group), shown so
+    # the operator sees that these rights apply GLOBALLY, not only to this app.
+    role_accorde: str = "membre"
+    # A deactivated group grants nothing and no longer opens the application.
+    groupe_actif: bool = True
 
 
 @router.get("/admin/membres/{membre_id}/applications/{code}/groupes", response_model=list[GroupeAssigneOut])
@@ -302,12 +334,20 @@ def groupes_membre_application(
     """The access groups assigned to this member FOR this application (the rights tied to
     this application, removed automatically when the application access is revoked)."""
     rows = db.fetch_all(
-        "SELECT mg.id AS membre_groupe_id, g.id AS groupe_id, g.cle, g.libelle "
+        "SELECT mg.id AS membre_groupe_id, g.id AS groupe_id, g.cle, g.libelle, g.role_accorde, g.actif AS groupe_actif "
         "FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
         "WHERE mg.membre_id = %s AND mg.application_code = %s ORDER BY g.libelle",
         (membre_id, code), role=user.role,
     )
-    return [GroupeAssigneOut(membre_groupe_id=str(r["membre_groupe_id"]), groupe_id=str(r["groupe_id"]), cle=r["cle"], libelle=r["libelle"]) for r in rows]
+    return [
+        GroupeAssigneOut(
+            membre_groupe_id=str(r["membre_groupe_id"]), groupe_id=str(r["groupe_id"]),
+            cle=r["cle"], libelle=r["libelle"],
+            role_accorde=str(r.get("role_accorde") or "membre"),
+            groupe_actif=bool(r.get("groupe_actif")),
+        )
+        for r in rows
+    ]
 
 
 @router.put("/admin/membres/{membre_id}/applications/{code}/groupes/{groupe_id}")
@@ -352,5 +392,13 @@ def definir_groupe_application(
                 (membre_id, groupe_id, code),
             )
             action = "retrait_groupe_application"
-    audit.log(user.id, user.role, action, "membre", membre_id, {"application": code, "groupe": groupe_id, "actif": payload.actif})
-    return {"ok": True, "membre_id": membre_id, "application": code, "groupe": groupe_id, "actif": payload.actif}
+    # The membership just granted/removed is GLOBAL (portee_type='global'), so it feeds
+    # both _effective_role and the permission enforcement. Resync the cached account
+    # role: without this, a member granted Administration through an application tab
+    # kept role='membre' (absent from the platform roster, staff 2FA not applied)
+    # while actually holding every admin permission.
+    from .groupes import _sync_account_role
+
+    eff, _ = _sync_account_role(membre_id, user)
+    audit.log(user.id, user.role, action, "membre", membre_id, {"application": code, "groupe": groupe_id, "actif": payload.actif, "effective_role": eff})
+    return {"ok": True, "membre_id": membre_id, "application": code, "groupe": groupe_id, "actif": payload.actif, "effective_role": eff}

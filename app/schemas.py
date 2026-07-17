@@ -515,6 +515,10 @@ class UtilisateurOut(BaseModel):
     membre_id: str | None = None
     membre_nom: str | None = None
     dernier_login: datetime | None = None
+    # Number of ACTIVE global group memberships. The platform roster derives from
+    # this too, so a member holding only a permission-mode group (cached role stays
+    # 'membre') is still listed as having platform access.
+    groupes_globaux: int = 0
 
 
 class CreateUtilisateur(BaseModel):

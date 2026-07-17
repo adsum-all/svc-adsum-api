@@ -151,6 +151,18 @@ def _sync_account_role(membre_id: str, actor: UserMe) -> tuple[str, str | None]:
     return eff, temp
 
 
+def resync_membres_du_groupe(groupe_id: str, actor: UserMe) -> None:
+    """Recompute the cached account role of every member of a group. Called when the
+    group's active state flips, so entitlements never outlive the group state."""
+    membres = db.fetch_all(
+        "SELECT DISTINCT membre_id FROM membre_groupe WHERE groupe_id = %s",
+        (groupe_id,),
+        role=actor.role,
+    )
+    for m in membres:
+        _sync_account_role(str(m["membre_id"]), actor)
+
+
 class GroupeOut(BaseModel):
     id: str
     cle: str
@@ -371,6 +383,13 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
     if fields:
         cols = ", ".join(f"{k} = %s" for k in fields)
         db.execute(f"UPDATE groupe_acces SET {cols} WHERE id = %s", (*fields.values(), groupe_id), role=user.role)
+    # Deactivating (or reactivating) a group changes what its members are entitled to,
+    # and the enforcement path starts from the CACHED utilisateur.role. Resync every
+    # member of the group so a deactivated Administration group really withdraws the
+    # admin permissions instead of leaving a stale elevated cache behind (and the
+    # review surfaces then tell the truth).
+    if payload.actif is not None and payload.actif != bool(g["actif"]):
+        resync_membres_du_groupe(groupe_id, user)
     if payload.permissions is not None:
         if str(g["mode"]) != "permissions":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="seul un groupe de permissions porte des permissions")
@@ -414,6 +433,7 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permi
     """The scoped group memberships of a member, with who granted each and when, and the effective global role."""
     rows = db.fetch_all(
         "SELECT mg.id AS appartenance_id, g.id AS groupe_id, g.cle, g.libelle, g.role_accorde, "
+        "g.actif AS groupe_actif, g.mode, "
         "mg.portee_type, mg.portee_id, mg.ajoute_le, "
         "COALESCE(pc.nom, pin.nom, pk.nom, pt.nom) AS portee_libelle, "
         "COALESCE(NULLIF(trim(coalesce(am.prenoms, '') || ' ' || coalesce(am.nom, '')), ''), ua.email) AS ajoute_par_nom "
@@ -439,6 +459,10 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permi
                 "cle": r["cle"],
                 "libelle": r["libelle"],
                 "role_accorde": r["role_accorde"],
+                # Surface the group's own state so a review never shows a deactivated
+                # group as if it still granted its role.
+                "groupe_actif": bool(r.get("groupe_actif")),
+                "mode": str(r.get("mode") or "role"),
                 "portee_type": r["portee_type"],
                 "portee_id": str(r["portee_id"]) if r.get("portee_id") else None,
                 "portee_libelle": r.get("portee_libelle"),

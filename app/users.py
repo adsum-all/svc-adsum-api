@@ -28,7 +28,11 @@ router = APIRouter(prefix="/api/v1/admin/utilisateurs", tags=["utilisateurs"])
 
 _SELECT = (
     "SELECT u.id, u.email, u.role, u.actif, u.double_facteur, u.membre_id, u.dernier_login, "
-    "trim(coalesce(m.prenoms, '') || ' ' || coalesce(m.nom, '')) AS membre_nom "
+    "trim(coalesce(m.prenoms, '') || ' ' || coalesce(m.nom, '')) AS membre_nom, "
+    # Active GLOBAL memberships: the roster of platform access derives from the real
+    # groups too, so a permission-mode group holder (cached role 'membre') is listed.
+    "(SELECT count(*) FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+    " WHERE mg.membre_id = u.membre_id AND g.actif = true AND mg.portee_type = 'global') AS groupes_globaux "
     "FROM utilisateur u LEFT JOIN membre m ON m.id = u.membre_id"
 )
 
@@ -44,6 +48,7 @@ def _to_out(row: dict[str, object]) -> UtilisateurOut:
         membre_id=str(row["membre_id"]) if row.get("membre_id") else None,
         membre_nom=name if isinstance(name, str) and name else None,
         dernier_login=row.get("dernier_login"),  # type: ignore[arg-type]
+        groupes_globaux=int(row.get("groupes_globaux") or 0),
     )
 
 
