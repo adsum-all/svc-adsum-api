@@ -6,6 +6,8 @@ serverless function buffer, independently of any infrastructure limit.
 """
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Awaitable, Callable
 
 from starlette.datastructures import Headers
@@ -13,6 +15,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+logger = logging.getLogger("adsum.api")
 
 _HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -29,6 +33,67 @@ _HEADERS = {
 # so this ceiling is well above any real request while it caps a hostile
 # multi-gigabyte body before it is ever buffered or parsed.
 _MAX_BODY_BYTES = 5 * 1024 * 1024
+
+
+class CorsSafeErrorBoundaryMiddleware:
+    """Turn any unhandled exception into a clean JSON 500 that still travels back
+    through the CORS middleware.
+
+    Without this boundary an unhandled exception escapes to Starlette's built-in
+    ServerErrorMiddleware, which sits OUTSIDE the CORS middleware: its 500 ships
+    with no ``Access-Control-Allow-Origin`` header. A browser then reports the
+    call as an opaque network failure ("Failed to fetch"), and the front shows a
+    generic "Erreur reseau" that hides the real server error and makes a working
+    feature look broken. Placed as the innermost application middleware, this
+    boundary catches the exception first and returns a real Response, so the CORS
+    middleware (outermost) adds its header on the way out and the client receives
+    a genuine, actionable 500 instead of a masked one. The true error is logged
+    server side; the stack trace is never leaked to the client.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception:  # noqa: BLE001 - last-resort boundary; must never leak a trace to the client
+            logger.exception(
+                "unhandled exception on %s %s",
+                scope.get("method", "?"),
+                scope.get("path", "?"),
+            )
+            if response_started:
+                # The response has already begun streaming; we cannot rewrite its
+                # status or headers, so let the server layer finish handling it.
+                raise
+            body = json.dumps(
+                {"detail": "Service momentanément indisponible. Réessayez dans un instant."},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 500,
+                    "headers": [
+                        (b"content-type", b"application/json; charset=utf-8"),
+                        (b"content-length", str(len(body)).encode()),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

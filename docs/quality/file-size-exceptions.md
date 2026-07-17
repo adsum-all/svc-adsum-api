@@ -33,6 +33,10 @@ deployment-unblock constraint.
   governance from the events endpoints.
 - app/membres.py (556 lines): member-facing endpoints (profile, card, agenda,
   participation). To be split by extracting the agenda/events endpoints.
+- app/groupes.py (513 lines): access-group domain (role sync, escalation guards,
+  membership perimeters, application tagging). The read-only views already live
+  in groupes_lecture.py; next split: extract the account-role synchronisation
+  helpers (_sync_account_role and guards) into a submodule.
 - app/fichiers.py (510 lines): identity-document storage domain (upload, encrypted
   content read, admin access with audit). To be split by extracting the
   encryption and storage helpers into a submodule.

@@ -197,23 +197,33 @@ def _tableau_out(row: dict[str, object], role: str) -> TableauOut:
     )
 
 
+# favori is PERSONAL: computed per signed-in account from collab_tableau_favori
+# (migration 0145), never the legacy shared column, so one member's star never
+# changes what the others see. The account id is always the FIRST query parameter.
 _TABLEAU_COLS = (
-    "id, espace_id, nom, description, visibilite, favori, archive, modele, compteur_cartes, cree_le"
+    "id, espace_id, nom, description, visibilite, "
+    "EXISTS(SELECT 1 FROM collab_tableau_favori f WHERE f.tableau_id = collab_tableau.id "
+    "AND f.utilisateur_id = %s) AS favori, "
+    "archive, modele, compteur_cartes, cree_le"
 )
 
 
-def _fetch_tableau(tableau_id: str, role: str) -> TableauOut:
-    row = db.fetch_one(f"SELECT {_TABLEAU_COLS} FROM collab_tableau WHERE id = %s", (tableau_id,), role=role)
+def _fetch_tableau(tableau_id: str, user: UserMe) -> TableauOut:
+    row = db.fetch_one(
+        f"SELECT {_TABLEAU_COLS} FROM collab_tableau WHERE id = %s",
+        (user.id, tableau_id),
+        role=user.role,
+    )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="board not found")
-    return _tableau_out(row, role)
+    return _tableau_out(row, user.role)
 
 
 def _visible_boards(espace_id: str, user: UserMe, archived: bool) -> list[TableauOut]:
     rows = db.fetch_all(
         f"SELECT {_TABLEAU_COLS} FROM collab_tableau "
         "WHERE espace_id = %s AND archive = %s AND supprime_le IS NULL ORDER BY cree_le DESC",
-        (espace_id, archived),
+        (user.id, espace_id, archived),
         role=user.role,
     )
     out: list[TableauOut] = []
@@ -257,7 +267,7 @@ def get_tableau(
 ) -> TableauOut:
     espace_id = _espace_of_tableau(tableau_id, user.role)
     require_espace_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
-    return _fetch_tableau(tableau_id, user.role)
+    return _fetch_tableau(tableau_id, user)
 
 
 # --- Board participants (Trello-style sharing of a private board) ------------
@@ -403,7 +413,7 @@ def _create_board(
             (tid, col["nom"], depart + i, col.get("couleur"), col.get("wip")),
             role=user.role,
         )
-    return _fetch_tableau(tid, user.role)
+    return _fetch_tableau(tid, user)
 
 
 def _colonne_instructions_auto(role: str) -> bool:
@@ -464,8 +474,25 @@ def update_tableau(
     espace_id = _espace_of_tableau(tableau_id, user.role)
     require_espace_role(espace_id, user, MEMBRES_ACTIFS)
     fields = payload.model_dump(exclude_unset=True)
+    # favori is a PERSONAL flag: it lands in collab_tableau_favori for THIS account
+    # only (migration 0145), never in the shared board row, so starring a board
+    # no longer changes what every other member of the space sees.
+    favori = fields.pop("favori", None)
+    if favori is True:
+        db.execute(
+            "INSERT INTO collab_tableau_favori (tableau_id, utilisateur_id) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING",
+            (tableau_id, user.id),
+            role=user.role,
+        )
+    elif favori is False:
+        db.execute(
+            "DELETE FROM collab_tableau_favori WHERE tableau_id = %s AND utilisateur_id = %s",
+            (tableau_id, user.id),
+            role=user.role,
+        )
     if not fields:
-        return _fetch_tableau(tableau_id, user.role)
+        return _fetch_tableau(tableau_id, user)
     sets = ", ".join(f"{key} = %s" for key in fields)
     updated = db.execute(
         f"UPDATE collab_tableau SET {sets} WHERE id = %s RETURNING id",
@@ -474,7 +501,7 @@ def update_tableau(
     )
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="board not found")
-    return _fetch_tableau(tableau_id, user.role)
+    return _fetch_tableau(tableau_id, user)
 
 
 @router.post("/tableaux-espace/{tableau_id}/archive", status_code=status.HTTP_204_NO_CONTENT)

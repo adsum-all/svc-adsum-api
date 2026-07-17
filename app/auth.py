@@ -535,6 +535,43 @@ def me(user: Annotated[UserMe, Depends(current_user)]) -> UserMe:
     return user
 
 
+class PreferencesCompte(BaseModel):
+    """Personal, non-sensitive display preferences of the signed-in account.
+
+    Strictly typed keys only: an arbitrary blob is never accepted, so the column can
+    never be abused to store sensitive or unbounded data."""
+
+    vue_evenements: str | None = Field(default=None, pattern="^(calendrier|liste)$")
+
+
+@router.get("/me/preferences", response_model=PreferencesCompte)
+def mes_preferences(user: Annotated[UserMe, Depends(current_user)]) -> PreferencesCompte:
+    """The account's own display preferences (server-side, so they follow the account
+    across browsers and devices instead of living in one browser's storage)."""
+    row = db.fetch_one("SELECT preferences FROM utilisateur WHERE id = %s", (user.id,), role=user.role)
+    prefs = (row or {}).get("preferences") or {}
+    vue = prefs.get("vue_evenements") if isinstance(prefs, dict) else None
+    return PreferencesCompte(vue_evenements=vue if vue in ("calendrier", "liste") else None)
+
+
+@router.put("/me/preferences", response_model=PreferencesCompte)
+def set_mes_preferences(
+    payload: PreferencesCompte, user: Annotated[UserMe, Depends(current_user)]
+) -> PreferencesCompte:
+    """Merge the provided known keys into the account's preferences (jsonb merge, so
+    unrelated keys survive). Only the caller's own account is ever touched."""
+    import json as _json
+
+    fournis = payload.model_dump(exclude_unset=True, exclude_none=True)
+    if fournis:
+        db.execute(
+            "UPDATE utilisateur SET preferences = coalesce(preferences, '{}'::jsonb) || %s::jsonb WHERE id = %s",
+            (_json.dumps(fournis), user.id),
+            role=user.role,
+        )
+    return mes_preferences(user)
+
+
 class MfaStatut(BaseModel):
     mfa_actif: bool
     est_staff: bool
@@ -683,9 +720,14 @@ def reset_password(payload: ResetRequest, request: Request) -> None:
     # Also clear the temporary-password flags (a reset produces a definitive
     # password), and revoke every existing session so a stolen token cannot survive
     # the recovery. The password value is never logged.
+    # Resolve the account case-insensitively, exactly like login (db.get_user_by_email
+    # uses lower(email) against the unique lower(email) index). E-mails are stored in
+    # their original case, so a case-sensitive match here would silently update zero
+    # rows for any account whose stored e-mail has an uppercase letter, returning 204
+    # while the password never changed and the sessions were never revoked.
     updated = db.execute(
         "UPDATE utilisateur SET hash_mdp = %s, mdp_temporaire = false, mdp_expire_le = NULL, "
-        "doit_changer_mdp = false WHERE email = %s RETURNING id",
+        "doit_changer_mdp = false WHERE lower(email) = lower(%s) RETURNING id",
         (hash_password(payload.nouveau), str(payload.email)),
     )
     if updated:

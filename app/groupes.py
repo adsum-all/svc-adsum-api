@@ -162,6 +162,9 @@ class GroupeOut(BaseModel):
     membres_count: int = 0
     systeme: bool = False
     actif: bool = True
+    # Optional application this group serves (application.code), so the governance UI
+    # can organise groups per application instead of one mixed list.
+    application_code: str | None = None
 
 
 class GroupeIn(BaseModel):
@@ -174,6 +177,7 @@ class GroupeIn(BaseModel):
     mode: str = "role"
     role_accorde: str | None = None
     permissions: list[str] = []
+    application_code: str | None = None
 
 
 class UpdateGroupeIn(BaseModel):
@@ -182,6 +186,19 @@ class UpdateGroupeIn(BaseModel):
     actif: bool | None = None
     # For a 'permissions' group, replace the whole granted permission set.
     permissions: list[str] | None = None
+    application_code: str | None = None
+
+
+def _valider_application_code(code: str | None, role: str) -> str | None:
+    """A group's application tag must name a real catalogue application (or be None)."""
+    if code is None:
+        return None
+    code = code.strip().lower()
+    if not code:
+        return None
+    if not db.fetch_one("SELECT code FROM application WHERE code = %s", (code,), role=role):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="application inconnue")
+    return code
 
 
 class MembreGroupeIn(BaseModel):
@@ -255,6 +272,7 @@ def _groupe_out(r: dict[str, object], role: str) -> GroupeOut:
         permissions=_permissions_du_groupe(gid, role) if mode == "permissions" else [],
         membres_count=int(r.get("membres_count") or 0),
         systeme=bool(r["systeme"]), actif=bool(r["actif"]),
+        application_code=r.get("application_code"),
     )
 
 
@@ -272,6 +290,7 @@ def list_groupes(
     where = "" if inclure_inactifs else "WHERE g.actif = true"
     rows = db.fetch_all(
         "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
+        "g.application_code, "
         "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id) AS membres_count "
         f"FROM groupe_acces g {where} ORDER BY g.systeme DESC, g.libelle ASC",
         (),
@@ -312,10 +331,11 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_per
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_accorde invalide")
         # An admin cannot mint a group that grants a role above their own rank.
         _assert_peut_gerer(user, role_accorde, "")
+    application_code = _valider_application_code(payload.application_code, user.role)
     created = db.execute(
-        "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme, mode) VALUES (%s, %s, %s, %s, false, %s) "
+        "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme, mode, application_code) VALUES (%s, %s, %s, %s, false, %s, %s) "
         "ON CONFLICT (cle) DO NOTHING RETURNING id",
-        (payload.cle.strip().lower(), payload.libelle, payload.description, role_accorde, mode),
+        (payload.cle.strip().lower(), payload.libelle, payload.description, role_accorde, mode, application_code),
         role=user.role,
     )
     if not created:
@@ -323,8 +343,8 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_per
     gid = str(created["id"])
     if mode == "permissions":
         _remplacer_permissions_groupe(gid, payload.permissions, user.role)
-    audit.log(user.id, user.role, "creation_groupe_acces", "groupe_acces", gid, {"cle": payload.cle, "mode": mode, "role_accorde": role_accorde, "permissions": payload.permissions if mode == "permissions" else None})
-    return GroupeOut(id=gid, cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=role_accorde, mode=mode, permissions=sorted(set(payload.permissions)) if mode == "permissions" else [], membres_count=0, systeme=False, actif=True)
+    audit.log(user.id, user.role, "creation_groupe_acces", "groupe_acces", gid, {"cle": payload.cle, "mode": mode, "role_accorde": role_accorde, "application_code": application_code, "permissions": payload.permissions if mode == "permissions" else None})
+    return GroupeOut(id=gid, cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=role_accorde, mode=mode, permissions=sorted(set(payload.permissions)) if mode == "permissions" else [], membres_count=0, systeme=False, actif=True, application_code=application_code)
 
 
 @router.patch("/groupes/{groupe_id}", response_model=GroupeOut)
@@ -344,6 +364,10 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
         fields["description"] = payload.description
     if payload.actif is not None:
         fields["actif"] = payload.actif
+    # exclude_unset so sending null explicitly DETACHES the group from its application,
+    # while omitting the field leaves the tag untouched.
+    if "application_code" in payload.model_fields_set:
+        fields["application_code"] = _valider_application_code(payload.application_code, user.role)
     if fields:
         cols = ", ".join(f"{k} = %s" for k in fields)
         db.execute(f"UPDATE groupe_acces SET {cols} WHERE id = %s", (*fields.values(), groupe_id), role=user.role)
@@ -357,6 +381,7 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
     audit.log(user.id, user.role, "modification_groupe_acces", "groupe_acces", groupe_id, {"champs": list(fields), "permissions": payload.permissions})
     row = db.fetch_one(
         "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
+        "g.application_code, "
         "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id) AS membres_count "
         "FROM groupe_acces g WHERE g.id = %s",
         (groupe_id,),

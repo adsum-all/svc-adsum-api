@@ -75,6 +75,8 @@ def set_modele(payload: ModeleIn, user: Annotated[UserMe, Depends(require_permis
 # --- Daily cron: send birthday wishes ---------------------------------------
 
 def _run_anniversaires(role: str | None) -> dict[str, object]:
+    from .notifications import canaux_autorises
+
     modele = db.fetch_one("SELECT titre, corps, image_url, actif FROM modele_message WHERE cle = 'anniversaire'", (), role=role)
     if not modele or not modele["actif"]:
         return {"ok": True, "envoyes": 0, "raison": "modele_inactif"}
@@ -90,6 +92,14 @@ def _run_anniversaires(role: str | None) -> dict[str, object]:
           AND NOT EXISTS (
             SELECT 1 FROM notification_anniversaire na
             WHERE na.membre_id = m.id AND na.annee = EXTRACT(YEAR FROM now())::int
+          )
+          -- Cross-path idempotence: the daily cron marks its birthday sends in
+          -- notification_log; skip those members so an admin manual trigger on the
+          -- same day never produces a second wish.
+          AND NOT EXISTS (
+            SELECT 1 FROM notification_log nl
+            WHERE nl.membre_id = m.id AND nl.type_cle = 'anniversaire'
+              AND nl.ref_id = EXTRACT(YEAR FROM now())::int::text
           )
         """,
         (),
@@ -114,7 +124,12 @@ def _run_anniversaires(role: str | None) -> dict[str, object]:
         corps = str(modele["corps"]).replace("{prenom}", prenom)
         html = render_anniversaire_email(titre, corps, modele["image_url"])
         msg = channels.Message(titre=titre, corps_text=corps, corps_html=html, image_url=modele["image_url"], type_notif="anniversaire")
-        used = channels.dispatch(str(r["id"]), role, msg, whatsapp_params=[prenom])
+        # Honour the member's "anniversaires" channel matrix, so a member who muted the
+        # birthday e-mail really stops receiving it here too (this manual/admin path used
+        # to bypass the matrix and only obey the master switch, unlike the daily cron
+        # which already goes through notifier()). In-app is always delivered.
+        autorises = canaux_autorises(str(r["id"]), role, "anniversaire", "operationnel")
+        used = channels.dispatch(str(r["id"]), role, msg, whatsapp_params=[prenom], canaux_autorises=autorises)
         db.execute(
             "UPDATE notification_anniversaire SET canaux = %s WHERE membre_id = %s AND annee = %s",
             (",".join(used), str(r["id"]), int(r["annee"])),

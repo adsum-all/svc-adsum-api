@@ -52,7 +52,11 @@ from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
 from .mfa import router as mfa_router
-from .middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
+from .middleware import (
+    BodySizeLimitMiddleware,
+    CorsSafeErrorBoundaryMiddleware,
+    SecurityHeadersMiddleware,
+)
 from .modifications import router as modifications_router
 from .niveaux import router as niveaux_router
 from .notifications import router as notifications_router
@@ -76,6 +80,15 @@ app = FastAPI(
     description="ADSUM business API: authentication and member endpoints on the real PostgreSQL.",
 )
 
+# Middleware order matters: add_middleware prepends, so the LAST call is the
+# outermost wrapper. CORS must stay outermost so its header is added on the way
+# out of every response. The error boundary is added FIRST so it is the innermost
+# application middleware: it catches an endpoint or database exception before it
+# can escape to the CORS-less server layer, and its 500 response then travels back
+# out through CORS and receives the Access-Control-Allow-Origin header. Without
+# this ordering an unhandled 500 reaches the browser with no CORS header and is
+# misreported as a generic network error, masking the true cause.
+app.add_middleware(CorsSafeErrorBoundaryMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(

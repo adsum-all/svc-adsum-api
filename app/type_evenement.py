@@ -53,23 +53,73 @@ def _used_colours(role: str) -> set[str]:
     }
 
 
-def _generated_colour(used: set[str]) -> str:
-    """Golden-angle hue walk so generated colours stay far apart, skipping any already used."""
-    for i in range(len(used) + 1, len(used) + 361):
+def _hex_to_lab(hex_colour: str) -> tuple[float, float, float]:
+    """Perceptual CIELAB coordinates of an #RRGGBB colour (sRGB -> linear -> XYZ -> Lab).
+
+    Working in Lab lets us measure how visually different two colours are, instead of
+    comparing raw hex strings, so a suggested colour is really far from every used one."""
+    h = hex_colour.lstrip("#")
+    rgb = [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+    r, g, b = lin
+    x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047
+    y = r * 0.2126 + g * 0.7152 + b * 0.0722
+    z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def _delta_e(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    """CIE76 perceptual distance between two Lab colours (a larger value = more distinct)."""
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5
+
+
+def _candidate_pool() -> list[str]:
+    """The fixed palette plus a golden-angle spread of generated hues at a readable
+    lightness and chroma, so there is always a large set to pick the most distinct from."""
+    pool = list(_PALETTE)
+    for i in range(72):
         hue = (i * 137.508) % 360 / 360.0
         r, g, b = colorsys.hls_to_rgb(hue, 0.45, 0.6)
-        hex_colour = f"#{round(r * 255):02X}{round(g * 255):02X}{round(b * 255):02X}"
-        if hex_colour not in used:
-            return hex_colour
-    return "#334155"
+        pool.append(f"#{round(r * 255):02X}{round(g * 255):02X}{round(b * 255):02X}")
+    return pool
 
 
-def _next_free_colour(role: str) -> str:
+def _next_free_colour(role: str, avoid: set[str] | None = None) -> str:
+    """Suggest the colour that is the MOST perceptually distinct from every colour already
+    used by a type, staying in a readable lightness band (never too dark or too pale). The
+    optional ``avoid`` set (e.g. the colour currently shown) is excluded so asking again
+    yields a different distinct colour. Falls back to the first palette colour if the pool
+    is exhausted."""
     used = _used_colours(role)
-    for candidate in _PALETTE:
-        if candidate.upper() not in used:
-            return candidate
-    return _generated_colour(used)
+    avoid_upper = {c.upper() for c in (avoid or set())}
+    used_labs = [_hex_to_lab(c) for c in used if _HEX_RE.match(c)]
+    best: str | None = None
+    best_score = -1.0
+    for cand in _candidate_pool():
+        cu = cand.upper()
+        if cu in used or cu in avoid_upper:
+            continue
+        lab = _hex_to_lab(cu)
+        # Readability band: skip colours too dark or too light for a legible calendar chip.
+        if lab[0] < 32 or lab[0] > 72:
+            continue
+        score = min((_delta_e(lab, u) for u in used_labs), default=1000.0)
+        if score > best_score:
+            best_score = score
+            best = cu
+    if best:
+        return best
+    # Pool exhausted (every readable candidate already taken or avoided): return the first
+    # palette colour not in the avoid set, else the first palette colour.
+    for cand in _PALETTE:
+        if cand.upper() not in avoid_upper:
+            return cand
+    return _PALETTE[0]
 
 
 def _row_out(r: dict[str, object]) -> dict[str, object]:
@@ -117,9 +167,15 @@ def lister(user: Annotated[UserMe, Depends(require_permission("evenements.consul
 
 
 @router.get("/couleur-suggeree")
-def couleur_suggeree(user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))]) -> dict[str, str]:
-    """Suggest the next unused colour so a new type never collides with an existing one."""
-    return {"couleur": _next_free_colour(user.role)}
+def couleur_suggeree(
+    user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))],
+    eviter: str | None = None,
+) -> dict[str, str]:
+    """Suggest the colour most perceptually distinct from every colour already used by a
+    type. ``eviter`` (the colour currently shown) is excluded so a repeated request yields a
+    different distinct colour, powering the "generate another distinct colour" action."""
+    avoid = {eviter.strip().upper()} if eviter and _HEX_RE.match(eviter.strip().upper()) else None
+    return {"couleur": _next_free_colour(user.role, avoid=avoid)}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

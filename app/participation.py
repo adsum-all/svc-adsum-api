@@ -160,7 +160,7 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     # uses (per-event duration, else the admin parameter, else 5 hours). No one
     # can declare for a future event, nor once the window is over.
     ev = db.fetch_one(
-        f"SELECT e.debut, (e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
+        f"SELECT e.debut, e.fuseau_horaire, (e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
         f"(e.debut IS NOT NULL AND now() > {FENETRE_FIN_SQL}) AS cloture "
         "FROM evenement e WHERE e.id = %s",
         (evenement_id,),
@@ -184,9 +184,12 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
     if not existing and not ev["demarree"]:
         quand = temps.formater_instant(ev["debut"], ev.get("fuseau_horaire")) if ev["debut"] else ""
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"le formulaire sera disponible au début de l'activité ({quand})")
-    # The form closes after the activity: a member who did not declare in time can
-    # no longer create a record (an admin correction remains possible server-side).
-    if not existing and ev["cloture"]:
+    # The form closes after the activity: once closed, neither a new record nor the
+    # validation/update of an existing draft is accepted (a member who did not declare
+    # in time missed the window, like the external emargement guard). A scanned member
+    # is exempt: their on-site presence is already proven. An admin correction remains
+    # possible server-side.
+    if ev["cloture"] and not (existing and existing["source"] == "scan"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le formulaire de présence de cette activité est clôturé.")
 
     scanned = bool(existing) and existing["source"] == "scan"

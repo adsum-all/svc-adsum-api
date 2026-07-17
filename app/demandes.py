@@ -213,14 +213,22 @@ def _notify_ticket(demande_id: str, role: str | None, titre: str, corps: str) ->
     + Telegram through the standard dispatcher). Best-effort, never raises."""
     try:
         from . import channels
+        from .notifications import canaux_autorises
 
         owner = db.fetch_one("SELECT membre_id, numero, reference FROM demande WHERE id = %s", (demande_id,), role=None)
         if not owner:
             return
         num = _numero(owner)
+        membre_id = str(owner["membre_id"])
+        # Ticket events belong to the "dossier" notification group ("Mon dossier et mes
+        # demandes"). Honour the member's per-group channel matrix, so muting e-mail for
+        # that group really stops the ticket e-mails, instead of only obeying the master
+        # switch. demande_reponse maps to the dossier group; in-app is always delivered.
+        autorises = canaux_autorises(membre_id, role, "demande_reponse", "operationnel")
         channels.dispatch(
-            str(owner["membre_id"]), role,
-            channels.Message(titre=f"{titre} ({num})" if num else titre, corps_text=corps, type_notif="demande"),
+            membre_id, role,
+            channels.Message(titre=f"{titre} ({num})" if num else titre, corps_text=corps, type_notif="demande_reponse"),
+            canaux_autorises=autorises,
         )
     except Exception:  # noqa: BLE001 - notification must never break the workflow
         pass
@@ -663,10 +671,17 @@ def admin_update(demande_id: str, payload: DemandePatch, user: Annotated[UserMe,
         )
         if closing:
             # A closed correction re-locks the member's fields: what was unlocked for
-            # a now resolved/refused request must no longer be self-editable.
+            # a now resolved/refused request must no longer be self-editable. Guard:
+            # only when the member has NO OTHER request still waiting on them, so
+            # closing one cycle never breaks another legitimate open cycle (the
+            # unlock state lives at member level).
             db.execute(
-                "UPDATE membre SET champs_deverrouilles = NULL WHERE id = (SELECT membre_id FROM demande WHERE id = %s)",
-                (demande_id,),
+                "UPDATE membre SET champs_deverrouilles = NULL "
+                "WHERE id = (SELECT membre_id FROM demande WHERE id = %s) "
+                "AND NOT EXISTS (SELECT 1 FROM demande d2 "
+                "WHERE d2.membre_id = membre.id AND d2.id <> %s "
+                "AND d2.statut IN ('attente_membre', 'pieces_demandees'))",
+                (demande_id, demande_id),
                 role=user.role,
             )
         libelle = STATUTS_LISIBLES.get(payload.statut, payload.statut)

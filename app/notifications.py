@@ -457,11 +457,15 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     annee = now.year
     result = {"anniversaires": 0, "rappels_j1": 0, "agenda": 0, "recap": 0, "digest_pairs": 0, "participation_close": 0}
 
-    # 1) Birthdays today.
+    # 1) Birthdays today. Cross-path idempotence: the manual admin trigger marks its
+    # sends in notification_anniversaire; skip those members so running both paths the
+    # same day never produces a second wish (each path keeps its own dedup ledger).
     for r in db.fetch_all(
         "SELECT id, prenoms FROM membre WHERE date_naissance IS NOT NULL AND statut = 'actif' "
         "AND extract(month from date_naissance) = extract(month from now()) "
-        "AND extract(day from date_naissance) = extract(day from now())",
+        "AND extract(day from date_naissance) = extract(day from now()) "
+        "AND NOT EXISTS (SELECT 1 FROM notification_anniversaire na "
+        "WHERE na.membre_id = membre.id AND na.annee = extract(year from now())::int)",
         (),
         role=role,
     ):
@@ -578,7 +582,15 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
             (str(d["id"]),),
             role=role,
         )
-        db.execute("UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s", (str(d["membre_id"]),), role=role)
+        # Re-lock only when the member has no OTHER request still waiting on them,
+        # so auto-closing one late cycle never breaks a second legitimate open cycle.
+        db.execute(
+            "UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s "
+            "AND NOT EXISTS (SELECT 1 FROM demande d2 WHERE d2.membre_id = membre.id "
+            "AND d2.id <> %s AND d2.statut IN ('attente_membre', 'pieces_demandees'))",
+            (str(d["membre_id"]), str(d["id"])),
+            role=role,
+        )
         _system_message(str(d["id"]), role,
                         "Demande clôturée automatiquement : aucun retour du membre avant la date limite. "
                         "Les éléments débloqués ont été reverrouillés.")

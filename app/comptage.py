@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel
 
 from . import audit, db, ratelimit
 from .permissions_rbac import require_permission
@@ -68,6 +69,66 @@ def _resume(evenement_id: str, role: str | None) -> ComptageResume:
             for r in rows
         ],
     )
+
+
+class EvenementEligible(BaseModel):
+    id: str
+    titre: str
+    debut: str | None = None
+    lieu: str | None = None
+    annule: bool = False
+
+
+class EvenementsEligiblesOut(BaseModel):
+    items: list[EvenementEligible]
+    total: int
+
+
+# Declared before the /{evenement_id} route so the literal path is not captured as an id.
+@router.get("/evenements-eligibles", response_model=EvenementsEligiblesOut)
+def evenements_eligibles(
+    user: Annotated[UserMe, Depends(require_permission("comptage.superviser"))],
+    q: str | None = Query(default=None),
+    periode: str = Query(default="pertinents", pattern="^(pertinents|a_venir|passes|tous)$"),
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> EvenementsEligiblesOut:
+    """Server-side, filtered and paginated list of the events eligible for volet B counting
+    (volet 'B' and not cancelled), so the selector never downloads the whole event history
+    to the browser and stays fast at any scale. Filter by free text (title or place) and by
+    period ('pertinents' = the last 90 days and everything upcoming, by default)."""
+    where = ["e.volet = 'B'", "e.annule = false"]
+    params: list[object] = []
+    if q and q.strip():
+        where.append("(e.titre ILIKE %s OR coalesce(e.lieu, '') ILIKE %s)")
+        like = f"%{q.strip()}%"
+        params.extend([like, like])
+    if periode == "a_venir":
+        where.append("e.debut >= now()")
+    elif periode == "passes":
+        where.append("e.debut < now()")
+    elif periode == "pertinents":
+        where.append("(e.debut IS NULL OR e.debut >= now() - interval '90 days')")
+    clause = " AND ".join(where)
+    total_row = db.fetch_one(f"SELECT count(*) AS n FROM evenement e WHERE {clause}", tuple(params), role=user.role)
+    total = int((total_row or {}).get("n", 0))
+    rows = db.fetch_all(
+        f"SELECT e.id, e.titre, e.debut, e.lieu, e.annule FROM evenement e WHERE {clause} "
+        "ORDER BY e.debut DESC NULLS LAST LIMIT %s OFFSET %s",
+        (*params, limit, offset),
+        role=user.role,
+    )
+    items = [
+        EvenementEligible(
+            id=str(r["id"]),
+            titre=str(r["titre"]),
+            debut=r["debut"].isoformat() if r.get("debut") else None,
+            lieu=r.get("lieu"),
+            annule=bool(r.get("annule")),
+        )
+        for r in rows
+    ]
+    return EvenementsEligiblesOut(items=items, total=total)
 
 
 @router.get("/{evenement_id}", response_model=ComptageResume)

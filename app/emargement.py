@@ -121,7 +121,7 @@ def _phone_matches(in_indicatif: str, in_numero: str, stored_indicatif: str | No
 
 def _event_or_404(evenement_id: str) -> dict[str, object]:
     row = db.fetch_one(
-        f"SELECT e.id, e.titre, e.lieu, e.debut, e.fin, e.emargement_externe, "
+        f"SELECT e.id, e.titre, e.lieu, e.debut, e.fin, e.fuseau_horaire, e.emargement_externe, "
         f"coalesce(e.type_diffusion, 'aucun') AS type_diffusion, "
         f"(e.debut IS NOT NULL AND now() >= e.debut) AS demarree, "
         f"(e.debut IS NOT NULL AND now() > {FENETRE_FIN_SQL}) AS cloture, "
