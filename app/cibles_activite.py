@@ -27,12 +27,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from . import audit, db
-from .permissions_rbac import require_permission
+from .permissions_rbac import require_permission, require_permission_ecriture
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["cibles-activite"])
 
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
+# Query-string unit id: validated by shape so a malformed value is a clean 400,
+# never a Postgres uuid cast error surfacing as a 500.
+_UUID_QUERY_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 # Whitelists: the only unit tables and member attributes a rule may reference.
 _UNITE_COLONNES = {
@@ -214,10 +217,13 @@ def admin_liste(user: Annotated[UserMe, Depends(require_permission("evenements.c
 
 
 @router.post("/admin/cibles-activite", response_model=CibleOut, status_code=status.HTTP_201_CREATED)
-def admin_creer(payload: CibleCreateIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> CibleOut:
+def admin_creer(payload: CibleCreateIn, user: Annotated[UserMe, Depends(require_permission_ecriture("parametres.gerer"))]) -> CibleOut:
     """Create a NEW destination from the safe 'fonction' template (e.g. Patriarches
     was seeded this way). The code is stable forever and never reused: creation is
-    refused if the code ever existed, even archived."""
+    refused if the code ever existed, even archived.
+
+    Writes require the permission AND an admin base role, so the endpoint authority
+    matches the RLS write policy of cible_activite (super_admin/admin only)."""
     code = payload.code.strip().lower()
     if not _CODE_RE.match(code):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="code invalide (minuscules, chiffres, underscore, commence par une lettre)")
@@ -238,7 +244,7 @@ def admin_creer(payload: CibleCreateIn, user: Annotated[UserMe, Depends(require_
 
 
 @router.patch("/admin/cibles-activite/{code}", response_model=CibleOut)
-def admin_modifier(code: str, payload: CibleUpdateIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> CibleOut:
+def admin_modifier(code: str, payload: CibleUpdateIn, user: Annotated[UserMe, Depends(require_permission_ecriture("parametres.gerer"))]) -> CibleOut:
     """Rename, reorder, describe or change the lifecycle status of a destination.
     The stable code itself is immutable. For a 'fonction' destination the granted
     function set can be adjusted (validated against the catalogue)."""
@@ -273,7 +279,7 @@ def admin_modifier(code: str, payload: CibleUpdateIn, user: Annotated[UserMe, De
 
 
 @router.delete("/admin/cibles-activite/{code}", status_code=status.HTTP_200_OK)
-def admin_supprimer(code: str, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, object]:
+def admin_supprimer(code: str, user: Annotated[UserMe, Depends(require_permission_ecriture("parametres.gerer"))]) -> dict[str, object]:
     """Physical deletion is allowed ONLY for a destination never used by any event;
     otherwise archive it (409), so history and statistics can never break."""
     _fetch(code, user.role)
@@ -295,6 +301,8 @@ def admin_apercu(
     destination reaches (0 for the ad-hoc e-mail list, whose audience lives on the
     event). Lets the operator detect an empty or unexpectedly large audience
     before publishing."""
+    if cible_id is not None and not _UUID_QUERY_RE.match(cible_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cible_id invalide (UUID attendu)")
     cible = _fetch(code, user.role)
     predicat, params = predicat_membres(cible, cible_id)
     row = db.fetch_one(f"SELECT count(DISTINCT m.id) AS n FROM membre m WHERE {predicat}", params, role=user.role)
