@@ -412,10 +412,8 @@ def list_evenements(user: Annotated[UserMe, Depends(require_permission("evenemen
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
                  WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
-                 WHEN 'bergers' THEN 'Les Bergers'
-                 WHEN 'responsables' THEN 'Les responsables'
-                 WHEN 'liste' THEN 'Liste de diffusion'
-                 ELSE NULL
+                 WHEN 'general' THEN NULL
+                 ELSE (SELECT ca.libelle FROM cible_activite ca WHERE ca.code = e.cible_type)
                END AS cible_libelle,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
                          FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags
@@ -498,10 +496,8 @@ def _lire_evenement(evenement_id: str, role: str | None) -> EvenementOut:
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
                  WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
-                 WHEN 'bergers' THEN 'Les Bergers'
-                 WHEN 'responsables' THEN 'Les responsables'
-                 WHEN 'liste' THEN 'Liste de diffusion'
-                 ELSE NULL
+                 WHEN 'general' THEN NULL
+                 ELSE (SELECT ca.libelle FROM cible_activite ca WHERE ca.code = e.cible_type)
                END AS cible_libelle,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
                          FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags

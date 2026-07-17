@@ -12,6 +12,7 @@ from .anniversaires_annuaire import router as anniversaires_annuaire_router
 from .applications import router as applications_router
 from .audit import router as audit_router
 from .auth import router as auth_router
+from .cibles_activite import router as cibles_activite_router
 from .collaboration_canal import router as collaboration_canal_router
 from .collaboration_canal_config import router as collaboration_canal_config_router
 from .collaboration_canal_notes import router as collaboration_canal_notes_router
@@ -117,6 +118,7 @@ app.include_router(terminaux_router)
 app.include_router(audit_router)
 app.include_router(comptage_router)
 app.include_router(comptage_public_router)
+app.include_router(cibles_activite_router)
 # Legacy collaboration router (app/collaboration.py) is intentionally NOT mounted:
 # its /tableaux and /cartes endpoints operated on collab_tableau/collab_carte
 # WITHOUT per-space membership checks (require_espace_role), bypassing the space

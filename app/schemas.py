@@ -718,9 +718,13 @@ class CreateEvenement(BaseModel):
     type_diffusion: str = Field(default="aucun", pattern="^(embed|externe|aucun)$")
     visibilite: str = Field(default="membres", pattern="^(public|membres|prive)$")
     # Targeting has a primary audience and optional refinements that combine (AND).
-    # Primary: 'general' (everyone), an organisational unit (needs cible_id), the
-    # 'bergers', the 'responsables', or a 'liste' of e-mails (needs cible_emails).
-    cible_type: str = Field(default="general", pattern="^(general|coordination|commission|intendance|tribu|bergers|responsables|liste)$")  # noqa: E501
+    # The primary audience is a STABLE CODE from the administrable referential
+    # ``cible_activite`` (seeded with general, the four organisational units,
+    # bergers, responsables, patriarches, liste; extensible without code change).
+    # Only the slug shape is enforced here; existence and 'actif' status are
+    # validated server-side against the referential, and the database FK plus the
+    # coherence trigger guarantee integrity in depth.
+    cible_type: str = Field(default="general", pattern="^[a-z][a-z0-9_]{1,39}$")
     cible_id: str | None = Field(default=None, pattern=_UUID_RE)
     # Refinements: restrict the primary audience by gender and/or age range.
     cible_genre: str | None = Field(default=None, pattern="^(homme|femme)$")

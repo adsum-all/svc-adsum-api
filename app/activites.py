@@ -110,13 +110,30 @@ def inserer_evenement(
 # differs by the permission that guards it.
 
 def valider_cible_complet(cible_type: str, cible_id: str | None, role: str | None) -> str | None:
-    """Validate the PRIMARY audience of the full form. A unit target must name an
-    existing unit; general / bergers / responsables / liste carry no unit id."""
-    if cible_type not in CIBLE_UNITES:
+    """Validate the PRIMARY audience of the full form against the administrable
+    referential (``cible_activite``).
+
+    The destination must exist and be ACTIVE: an inactive or archived destination
+    stays readable on historical events but can no longer be chosen on a new one.
+    A 'unite' destination must name an existing unit; every other rule template
+    carries no unit id. Because the referential is the single source, a destination
+    created by an administrator becomes usable here without any code change."""
+    from .cibles_activite import cible_valide_pour_creation
+
+    cible = cible_valide_pour_creation(cible_type, role)
+    if not cible:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="destination inconnue ou désactivée : choisissez une destination active du référentiel",
+        )
+    if str(cible["type_regle"]) != "unite":
         return None
     if not cible_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cible_id required for a targeted event")
-    if not db.fetch_one(f"SELECT id FROM {CIBLE_UNITES[cible_type]} WHERE id = %s", (cible_id,), role=role):
+    table = CIBLE_UNITES.get(cible_type)
+    if not table:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown target unit table")
+    if not db.fetch_one(f"SELECT id FROM {table} WHERE id = %s", (cible_id,), role=role):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown target unit")
     return cible_id
 

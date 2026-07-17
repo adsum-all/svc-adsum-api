@@ -98,7 +98,8 @@ def open_or_upcoming_events(
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
                  WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
-                 ELSE NULL
+                 WHEN 'general' THEN NULL
+                 ELSE (SELECT ca.libelle FROM cible_activite ca WHERE ca.code = e.cible_type)
                END AS cible_libelle
         FROM evenement e
         WHERE e.fin IS NULL OR e.fin >= now()
