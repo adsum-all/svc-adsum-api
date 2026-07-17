@@ -13,6 +13,7 @@ MEMBRE_PROFILE_SELECT = (
     "m.id, m.matricule, m.code_membre, m.email, m.nom, m.prenoms, m.telephone, m.indicatif_telephone, m.groupe, m.photo_url, "
     "m.photo_pending_url, m.photo_focus_x, m.photo_focus_y, "
     "m.nom_naissance, m.nom_marital, m.nom_affiche, m.est_berger, m.nom_pastoral, m.fonction_perimetre, "
+    "m.berger_declare, m.berger_nom_declare, "
     "m.statut, m.verifie, m.genre, m.date_naissance, m.naissance_annee_visible, m.pays, m.region, m.ville, "
     "m.adresse, m.adresse_complement, m.date_entree, "
     "m.cheminement_pastoral, m.statut_administratif, m.intendance_id, m.berger_referent_id, "
@@ -156,6 +157,8 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
         nom_marital=row.get("nom_marital"),
         nom_affiche=row.get("nom_affiche"),
         est_berger=bool(row.get("est_berger")),
+        berger_declare=bool(row.get("berger_declare")),
+        berger_nom_declare=row.get("berger_nom_declare"),
         nom_pastoral=row.get("nom_pastoral"),
         nom_pastoral_affiche=(
             identite.nom_pastoral_affichage(row.get("genre"), row.get("nom_pastoral"))

@@ -282,7 +282,8 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
     membre = db.fetch_one(
         "SELECT m.id, m.matricule, m.code_membre, m.prenoms, m.nom, m.nom_affiche, m.email, "
         "m.telephone, m.indicatif_telephone, m.date_naissance, m.genre, m.pays, m.ville, m.region, "
-        "m.adresse, m.profession, m.date_entree, m.statut, m.statut_inscription, m.verifie, m.type_membre, "
+        "m.adresse, m.profession, m.date_entree, m.promotion, m.berger_declare, m.berger_nom_declare, "
+        "m.statut, m.statut_inscription, m.verifie, m.type_membre, "
         "m.photo_url, m.cree_le, m.groupe, ne.libelle AS niveau_libelle, "
         "c.nom AS commission, co.nom AS coordination, i.nom AS intendance, t.nom AS tribu "
         "FROM membre m "
@@ -394,6 +395,11 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
             "adresse": membre.get("adresse"),
             "profession": membre.get("profession"),
             "date_entree": membre["date_entree"].isoformat() if membre.get("date_entree") else None,
+            "promotion": membre.get("promotion"),
+            # Self-declared shepherd status: shown to the reviewer so the
+            # administration can grant (or not) the real est_berger flag.
+            "berger_declare": bool(membre.get("berger_declare")),
+            "berger_nom_declare": membre.get("berger_nom_declare"),
             "commission": membre.get("commission"),
             "sous_commission": membre.get("groupe"),
             "coordination": membre.get("coordination"),
@@ -454,6 +460,10 @@ class ProfilUpdate(BaseModel):
     # the administration in the back office).
     date_entree: ShortStr | None = None
     promotion: LineStr | None = None
+    # Shepherd SELF-DECLARATION (to be confirmed): never grants est_berger by
+    # itself; the administration reviews the dossier and grants the real flag.
+    berger_declare: bool | None = None
+    berger_nom_declare: LineStr | None = None
 
     @field_validator("*", mode="before")
     @classmethod
@@ -500,6 +510,10 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Ce code membre correspond à un matricule ADSUM existant. Choisissez un autre code.",
             )
+    # A declared shepherd name only makes sense with the declaration itself:
+    # answering "no" clears any previously stored name so no orphan value stays.
+    if fields.get("berger_declare") is False:
+        fields["berger_nom_declare"] = None
     # During registration, a chosen function is a PROPOSAL: it is recorded as an
     # unconfirmed catalogue function (never the confirmed mirror), so the wizard
     # select is no longer silently dropped and the administration keeps the sole
