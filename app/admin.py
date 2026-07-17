@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from . import activites, audit, db, evenement_pieces, identifiants, identite
 from .mappers import MEMBRE_PROFILE_FROM, MEMBRE_PROFILE_SELECT, membre_row_to_profile
+from .membre_filters import exclusion_technique
 from .permissions_rbac import require_permission
 from .schemas import (
     CommissionOut,
@@ -103,6 +104,52 @@ def create_membre(
     return _read_membre(membre_id, user.role)
 
 
+# Directory compartments: each maps to an explicit predicate on the validation status
+# (statut_inscription) and the operational status (statut). A non-validated dossier
+# (submitted, in review, correction requested, refused, incomplete) NEVER appears in the
+# "actifs" compartment. Keys are the only accepted values (no raw SQL from the client).
+_COMPARTIMENTS: dict[str, str] = {
+    "actifs": "m.statut = 'actif' AND m.statut_inscription = 'approuve' AND m.verifie = true",
+    "en_attente": "m.statut_inscription IN ('soumis', 'en_revue')",
+    "corrections": "m.statut_inscription = 'modification_demandee'",
+    "refuses": "m.statut_inscription = 'refuse'",
+    "incomplets": "m.statut_inscription = 'incomplet'",
+    "inactifs": "m.statut = 'inactif'",
+    "suspendus": "m.statut = 'suspendu'",
+    "archives": "m.statut = 'archive'",
+    "tous": "",
+}
+# A technical/applicative user is NEVER a member and must never appear in the member
+# directory. Technical accounts have no member row, so they are naturally absent; this
+# predicate is a defensive guarantee that no member row tied to a technical identity ever
+# leaks into the directory, its compartments or its counts. A row is excluded when it is
+# linked to a technical account by membre_id OR merely shares its e-mail (a stray member
+# row carrying a technical account's address, such as the founder's, must never surface).
+_PAS_TECHNIQUE = exclusion_technique("m")
+# Whitelisted sort orders. Default is alphabetical by family name then first names,
+# case-insensitive, with the matricule as a deterministic final tiebreaker.
+_TRIS: dict[str, str] = {
+    "nom": "lower(m.nom) ASC NULLS LAST, lower(m.prenoms) ASC NULLS LAST, m.matricule ASC",
+    "nom_desc": "lower(m.nom) DESC NULLS LAST, lower(m.prenoms) DESC NULLS LAST, m.matricule ASC",
+    "inscription": "m.cree_le DESC NULLS LAST, m.matricule ASC",
+    "matricule": "m.matricule ASC",
+}
+
+
+@router.get("/membres/compartiments")
+def compartiments_membres(
+    user: Annotated[UserMe, Depends(require_permission("membres.gerer"))],
+) -> dict[str, int]:
+    """Exact count of members in each directory compartment, so the tabs show a live,
+    correct badge and a non-validated dossier is never mixed with the active members."""
+    out: dict[str, int] = {}
+    for key, pred in _COMPARTIMENTS.items():
+        where = f"WHERE {_PAS_TECHNIQUE}" + (f" AND {pred}" if pred else "")
+        row = db.fetch_one(f"SELECT count(*) AS n FROM membre m {where}", (), role=user.role)
+        out[key] = int((row or {}).get("n") or 0)
+    return out
+
+
 @router.get("/membres", response_model=list[MembreProfile])
 def list_membres(
     user: Annotated[UserMe, Depends(require_permission("membres.gerer"))],
@@ -112,11 +159,19 @@ def list_membres(
     intendance_id: str | None = Query(default=None),
     coordination_id: str | None = Query(default=None),
     tribu_id: str | None = Query(default=None),
+    statut: str | None = Query(default=None),
+    tri: str = Query(default="nom"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> list[MembreProfile]:
     params: list[object] = []
-    conditions: list[str] = []
+    # A technical/applicative user never appears in the member directory.
+    conditions: list[str] = [_PAS_TECHNIQUE]
+    # Compartment predicate (validation/operational status). Unknown key -> no filter,
+    # so an old client without the param still gets the full directory.
+    compartiment_pred = _COMPARTIMENTS.get(statut or "", "") if statut else ""
+    if compartiment_pred:
+        conditions.append(compartiment_pred)
     if q:
         # Escape LIKE metacharacters so a literal % or _ typed in the search is not
         # treated as a wildcard (default backslash escape). The OR-group is
@@ -141,13 +196,14 @@ def list_membres(
             conditions.append(f"{column} = %s")
             params.append(value)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    order_by = _TRIS.get(tri, _TRIS["nom"])
     params.extend([limit, offset])
     rows = db.fetch_all(
         f"""
         SELECT {MEMBRE_PROFILE_SELECT}
         {MEMBRE_PROFILE_FROM}
         {where}
-        ORDER BY m.matricule ASC
+        ORDER BY {order_by}
         LIMIT %s OFFSET %s
         """,
         tuple(params),
@@ -350,19 +406,19 @@ def list_evenements(user: Annotated[UserMe, Depends(require_permission("evenemen
                e.annule, e.annule_motif, e.fuseau_horaire, e.serie_id, e.fenetre_reponse_heures,
                e.cible_genre, e.cible_age_min, e.cible_age_max, e.cible_emails,
                e.description, e.intervenant_principal, e.intervenants,
+               e.type_evenement_id, te.couleur AS couleur, te.nom AS type_evenement_nom,
                CASE e.cible_type
                  WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
                  WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
-                 WHEN 'bergers' THEN 'Les Bergers'
-                 WHEN 'responsables' THEN 'Les responsables'
-                 WHEN 'liste' THEN 'Liste de diffusion'
-                 ELSE NULL
+                 WHEN 'general' THEN NULL
+                 ELSE (SELECT ca.libelle FROM cible_activite ca WHERE ca.code = e.cible_type)
                END AS cible_libelle,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
                          FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags
         FROM evenement e
+        LEFT JOIN type_evenement te ON te.id = e.type_evenement_id
         ORDER BY e.debut DESC
         LIMIT 200
         """,
@@ -377,6 +433,9 @@ def _evenement_out(r: dict[str, object]) -> EvenementOut:
         id=str(r["id"]),
         titre=r["titre"],
         type=r["type"],
+        type_evenement_id=str(r["type_evenement_id"]) if r.get("type_evenement_id") else None,
+        couleur=r.get("couleur") if isinstance(r.get("couleur"), str) else None,
+        type_evenement_nom=r.get("type_evenement_nom") if isinstance(r.get("type_evenement_nom"), str) else None,
         volet=r["volet"],
         debut=r["debut"],
         fin=r["fin"],
@@ -431,19 +490,20 @@ def _lire_evenement(evenement_id: str, role: str | None) -> EvenementOut:
                e.annule, e.annule_motif, e.fuseau_horaire, e.serie_id, e.fenetre_reponse_heures,
                e.cible_genre, e.cible_age_min, e.cible_age_max, e.cible_emails,
                e.description, e.intervenant_principal, e.intervenants,
+               e.type_evenement_id, te.couleur AS couleur, te.nom AS type_evenement_nom,
                CASE e.cible_type
                  WHEN 'coordination' THEN (SELECT nom FROM coordination WHERE id = e.cible_id)
                  WHEN 'commission' THEN (SELECT nom FROM commission WHERE id = e.cible_id)
                  WHEN 'intendance' THEN (SELECT nom FROM intendance WHERE id = e.cible_id)
                  WHEN 'tribu' THEN (SELECT nom FROM tribu WHERE id = e.cible_id)
-                 WHEN 'bergers' THEN 'Les Bergers'
-                 WHEN 'responsables' THEN 'Les responsables'
-                 WHEN 'liste' THEN 'Liste de diffusion'
-                 ELSE NULL
+                 WHEN 'general' THEN NULL
+                 ELSE (SELECT ca.libelle FROM cible_activite ca WHERE ca.code = e.cible_type)
                END AS cible_libelle,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id::text, 'cle', t.cle, 'libelle', t.libelle) ORDER BY t.libelle)
                          FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags
-        FROM evenement e WHERE e.id = %s
+        FROM evenement e
+        LEFT JOIN type_evenement te ON te.id = e.type_evenement_id
+        WHERE e.id = %s
         """,
         (evenement_id,),
         role=role,

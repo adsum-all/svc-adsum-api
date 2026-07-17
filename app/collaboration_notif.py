@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import db, notifications
+from . import db, identite, notifications
 
 
 def resoudre_membre_id(utilisateur_id: str, role: str | None) -> str | None:
@@ -22,10 +22,11 @@ def resoudre_membre_id(utilisateur_id: str, role: str | None) -> str | None:
 
 
 def _prenom(membre_id: str, role: str | None) -> str:
-    row = db.fetch_one("SELECT nom_affiche FROM membre WHERE id = %s", (membre_id,), role=role)
-    nom = (row["nom_affiche"] if row and row.get("nom_affiche") else "") or ""
-    parts = nom.split()
-    return parts[0] if parts else "cher membre"
+    # Read the actual given names (prenoms), not nom_affiche which is a family-name
+    # arbitration enum ('nom'/'naissance'/'marital'/NULL), and normalise the casing.
+    row = db.fetch_one("SELECT prenoms FROM membre WHERE id = %s", (membre_id,), role=role)
+    liste = identite.liste_prenoms(row.get("prenoms")) if row else []
+    return liste[0] if liste else "cher membre"
 
 
 def emettre(

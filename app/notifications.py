@@ -14,13 +14,13 @@ all deduplicated. A single daily cron keeps it within the free hosting tier.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 
-from . import audit, channels, db
+from . import audit, channels, db, identite, mappers, temps
 from .config import settings
 from .cron_auth import require_cron_auth
 from .email_templates import render_anniversaire_email, render_notification_email
@@ -75,6 +75,107 @@ _CATEGORY_PREF = {
     "collab_publication": "collaboration",
     "collab_demande": "collaboration",
 }
+
+
+# Member-facing notification GROUPS. Each group can be turned on/off independently
+# PER CHANNEL (e-mail and Telegram) by the member, via the matrice_canaux JSONB.
+# Types not listed here are ungrouped: either critical/mandatory (always delivered)
+# or essential account messages that follow the master channel switches only.
+_GROUPE = {
+    "activite_rappel_j1": "rappels",
+    "agenda_hebdo": "rappels",
+    "attestation_rappel": "rappels",
+    "participation_bientot_close": "rappels",
+    "activite_demarree": "demarrage",
+    "activite_rappel_start": "demarrage",
+    "activite_modifiee": "changements",
+    "activite_annulee": "changements",
+    "questionnaire_disponible": "changements",
+    "activite_test_diffusion": "changements",
+    "recap_hebdo": "recap",
+    "anniversaire": "anniversaires",
+    "anniversaire_pairs": "anniversaires",
+    "collab_mention": "collaboration",
+    "collab_assignation": "collaboration",
+    "collab_echeance": "collaboration",
+    "collab_publication": "collaboration",
+    "collab_demande": "collaboration",
+    "demande_reponse": "dossier",
+    "modification_decision": "dossier",
+    "document_demande": "dossier",
+    # Attendance survey (pointage) and admin announcements are now member-controllable per
+    # channel (the member gets on/off buttons), instead of bypassing the matrix. Their
+    # channel defaults stay ON (see _matrice_defaut) so no one silently loses them.
+    "sondage_activite": "pointage",
+    "annonce": "annonces",
+    # modification_complement (a complement REQUESTED from the member, action needed)
+    # stays ungrouped / always sent, so it is never muted on every push channel.
+}
+# Ordered list of groups (also the source of truth for the settings UI and defaults).
+GROUPES = ("dossier", "collaboration", "changements", "demarrage", "rappels", "recap", "anniversaires", "pointage", "annonces")
+# Default matrix: Telegram everywhere, e-mail on everywhere (no member loses an
+# e-mail by surprise); each member then refines. Kept in one place.
+def _matrice_defaut() -> dict[str, dict[str, bool]]:
+    return {g: {"email": True, "telegram": True} for g in GROUPES}
+
+
+# Backward-compatibility: when a member has no matrix yet (matrice_canaux IS NULL),
+# fall back to the legacy per-category boolean they may have set in the old UI, so an
+# explicit opt-out is preserved. Maps a new group to the old preference column.
+_GROUPE_LEGACY_COL = {
+    "rappels": "rappels",
+    "recap": "rappels",
+    "demarrage": "evenements",
+    "changements": "evenements",
+    "anniversaires": "anniversaire",
+    "collaboration": "collaboration",
+    "dossier": "demandes",
+}
+_MATRICE_COLS = (
+    "matrice_canaux", "email", "telegram", "whatsapp", "sms",
+    "evenements", "demandes", "rappels", "anniversaire", "anniv_pairs", "collaboration",
+)
+
+
+def canaux_autorises(membre_id: str, role: str | None, type_cle: str, sensibilite: str) -> set[str] | None:
+    """The channels a member allows for one notification type.
+
+    Returns None for a critical or ungrouped type (dispatch then applies only the
+    master channel switches / critical bypass). Otherwise returns the set of push
+    channels allowed for the type's group: e-mail and Telegram from the per-group
+    matrix (master switch AND group switch), WhatsApp/SMS from the master switch as
+    before. In-app is always delivered by dispatch regardless, so the member never
+    misses information even when a group is muted on every push channel."""
+    if sensibilite == "critique":
+        return None
+    groupe = _GROUPE.get(type_cle)
+    if groupe is None:
+        return None
+    try:
+        prefs = db.fetch_one(
+            f"SELECT {', '.join(_MATRICE_COLS)} FROM preference_notification WHERE membre_id = %s",
+            (membre_id,), role=role,
+        ) or {}
+    except Exception:  # noqa: BLE001 - preference lookup must never break a send
+        return None
+    matrice = prefs.get("matrice_canaux")
+    grp = matrice.get(groupe) if isinstance(matrice, dict) else None
+    # Legacy fallback uses the exact old per-TYPE category column (so a member's
+    # explicit opt-out, e.g. anniv_pairs, is preserved when they have no matrix yet).
+    legacy_col = _CATEGORY_PREF.get(type_cle)
+    legacy_on = bool(prefs.get(legacy_col, True)) if legacy_col else True
+    allowed: set[str] = set()
+    for canal in ("email", "telegram"):
+        master_on = bool(prefs.get(canal, True))
+        group_on = bool(grp.get(canal, True)) if isinstance(grp, dict) else legacy_on
+        if master_on and group_on:
+            allowed.add(canal)
+    for canal in ("whatsapp", "sms"):
+        master_on = bool(prefs.get(canal, False))
+        group_on = bool(grp.get(canal, True)) if isinstance(grp, dict) else legacy_on
+        if master_on and group_on:
+            allowed.add(canal)
+    return allowed
 
 
 def _whatsapp_template_for(type_cle: str) -> str | None:
@@ -180,14 +281,16 @@ def notifier(
             return []
         member = db.fetch_one("SELECT langue FROM membre WHERE id = %s", (membre_id,), role=role)
         lang = (member["langue"] if member and member.get("langue") else "fr") or "fr"
-        # Sensitivity matrix: critical and private messages are always delivered
-        # (they must reach the member); only operational/informational messages are
-        # gated by the member's per-category preference.
-        pref_col = _CATEGORY_PREF.get(type_cle)
-        if pref_col and sensibilite in ("operationnel", "informationnel"):
-            pref = db.fetch_one(f"SELECT {pref_col} FROM preference_notification WHERE membre_id = %s", (membre_id,), role=role)
-            if pref and not pref[pref_col]:
-                return []
+        # Personal address: greet the member by their honorific title / name. The member's
+        # identity is authoritative, so appellation keys override any name the caller passed;
+        # the caller keeps its own context keys (titre, date, lien, liste, motif...).
+        ctx = {**ctx, **_appellation(membre_id, role)}
+        # Per-group, per-channel matrix: for a gateable type, compute which push
+        # channels this member allows (e-mail / Telegram / WhatsApp / SMS). None means
+        # "not gated here" (critical or ungrouped): dispatch then applies only the
+        # master switches. In-app is always delivered, so muting every push channel
+        # never hides the information, it just stops the e-mail/Telegram push.
+        autorises = canaux_autorises(membre_id, role, type_cle, sensibilite)
         if dedup:
             # Reserve the log row BEFORE sending. If a concurrent run already
             # claimed it, RETURNING yields nothing and we skip: the unique
@@ -203,11 +306,11 @@ def notifier(
         titre, corps = _render(type_cle, lang, ctx, role)
         signature = _resolve_signature(type_cle)
         site = channels.integration_value("site_officiel")
-        # Plain-text footer for Telegram / in-app (the birthday template already signs off).
-        footer = ("\n\n" + (site if site else "")) if type_cle == "anniversaire" else ("\n\n" + signature + (f"\n{site}" if site else ""))
+        # Plain-text footer for Telegram / in-app: the admin-configured signature then site.
+        footer = "\n\n" + signature + (f"\n{site}" if site else "")
         corps_text = corps + (footer if footer.strip() else "")
         if type_cle == "anniversaire":
-            html = render_anniversaire_email(titre, corps, site=site or None)
+            html = render_anniversaire_email(titre, corps, site=site or None, signature=signature)
         else:
             html = render_notification_email(titre, corps, signature=signature, site=site or None)
         msg = channels.Message(
@@ -216,7 +319,9 @@ def notifier(
         )
         # Critical messages ignore the channel kill-switch and the member's channel
         # preferences: security must always be attempted on every reachable channel.
-        used = channels.dispatch(membre_id, role, msg, whatsapp_params=whatsapp_params, critique=critique)
+        used = channels.dispatch(
+            membre_id, role, msg, whatsapp_params=whatsapp_params, critique=critique, canaux_autorises=autorises
+        )
         if dedup:
             db.execute(
                 "UPDATE notification_log SET canaux = %s WHERE membre_id = %s AND type_cle = %s AND ref_id = %s",
@@ -229,22 +334,138 @@ def notifier(
 
 
 def _prenom(row: dict[str, object]) -> str:
-    return (str(row.get("prenoms") or "").split(" ")[0]) or "cher membre"
+    liste = identite.liste_prenoms(row.get("prenoms"))  # normalised casing ("jean" -> "Jean")
+    return liste[0] if liste else "cher membre"
+
+
+def _appellation(membre_id: str, role: str | None) -> dict[str, str]:
+    """How to address a member in a message: honorific title when they hold a confirmed
+    function (Pasteur Jean...), the pastoral appellation for a Berger/Bergere, else the
+    first name in correct casing. Returns keys merged into the template context so every
+    notification greets the member personally. Fully defensive: any failure falls back to a
+    neutral greeting so a notification is never dropped over personalization."""
+    try:
+        m = db.fetch_one(
+            "SELECT prenoms, nom, nom_naissance, nom_marital, nom_affiche, genre, est_berger, nom_pastoral "
+            "FROM membre WHERE id = %s",
+            (membre_id,), role=role,
+        ) or {}
+        liste = identite.liste_prenoms(m.get("prenoms"))
+        prenom = liste[0] if liste else "cher membre"
+        # Honorific label of the member's PRIMARY confirmed function (authoritative source).
+        fh = db.fetch_one(
+            "SELECT fh.libelle_h AS h, fh.libelle_f AS f, fh.libelle_n AS n "
+            "FROM membre_fonction mf JOIN fonction_honorifique fh ON fh.cle = mf.fonction_cle "
+            "WHERE mf.membre_id = %s AND mf.actif = true AND mf.confirmee = true "
+            "ORDER BY mf.principale DESC, mf.ordre ASC, mf.cree_le ASC LIMIT 1",
+            (membre_id,), role=role,
+        ) or {}
+        titre = mappers.titre_prefixe(m.get("genre"), True, fh.get("h"), fh.get("f"), fh.get("n")) if fh else None
+        pastoral = identite.nom_pastoral_affichage(m.get("genre"), m.get("nom_pastoral")) if m.get("est_berger") else None
+        if pastoral:
+            appellation = pastoral
+        elif titre:
+            appellation = f"{titre} {prenom}"
+        else:
+            appellation = prenom
+        choix = m.get("nom_affiche")
+        fam = m.get("nom_naissance") if choix == "naissance" and m.get("nom_naissance") else (
+            m.get("nom_marital") if choix == "marital" and m.get("nom_marital") else m.get("nom"))
+        nom_civil = identite.nom_affichage(fam, m.get("prenoms"))
+        # ``prenom`` carries the appellation so existing "Bonjour {prenom}" templates greet
+        # with the title without any template change; ``prenom_simple`` keeps the bare name.
+        return {"prenom": appellation, "prenom_simple": prenom, "appellation": appellation, "nom": nom_civil, "salutation": f"Bonjour {appellation}"}
+    except Exception:  # noqa: BLE001 - personalization must never break a notification
+        return {"prenom": "cher membre", "appellation": "cher membre", "salutation": "Bonjour"}
+
+
+# --- Weekly digest scheduling (per member, in the member's own timezone) -----
+
+# Local hour at which the weekly recap + agenda are delivered on the week's first day.
+_HEURE_HEBDO = 8
+
+
+def _semaine_jour_debut(role: str | None) -> int:
+    """First day of the week for this organisation (0=Monday ... 6=Sunday), admin-set.
+    Falls back to Monday so the platform is never tied to one organisation's calendar."""
+    try:
+        row = db.fetch_one("SELECT (valeur #>> '{}')::int AS j FROM parametre WHERE cle = 'semaine_jour_debut'", (), role=role)
+        j = int(row["j"]) if row and row.get("j") is not None else 0
+        return j if 0 <= j <= 6 else 0
+    except Exception:  # noqa: BLE001 - a bad parameter must never break the cron
+        return 0
+
+
+def _debut_semaine_locale(local: datetime, jour_debut: int) -> datetime:
+    """Midnight of the current local week's first day, for a member's local now."""
+    recul = (local.weekday() - jour_debut) % 7
+    return (local - timedelta(days=recul)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _fmt_evt(e: dict[str, object], fuseau: str | None, avec_heure: bool) -> str:
+    """One event line, its time shown in the RECIPIENT member's timezone."""
+    if not e.get("debut"):
+        return str(e.get("titre") or "")
+    loc = temps.local_datetime(e["debut"], fuseau)  # type: ignore[arg-type]
+    return f"{e['titre']} ({loc.strftime('%d/%m %Hh%M')})" if avec_heure else str(e.get("titre") or "")
+
+
+def _hebdo_par_membre(now: datetime, role: str | None, actifs: list[dict[str, object]], lien_app: str, result: dict[str, object]) -> None:
+    """Send the weekly recap (previous week) and agenda (current week) to each opted-in
+    member on the week's first day at 08:00 IN THAT MEMBER'S timezone. Exactly once per
+    calendar week (dedup by the member's local week key), so an hourly cron delivers close to
+    08:00 local while a daily cron still delivers once, on/after the local Monday 08:00. Week
+    bounds follow the admin-configured first day of the week (multi-organisation)."""
+    jour_debut = _semaine_jour_debut(role)
+    # Fetch community-wide events once, over a window wide enough to cover the previous and
+    # current week for every timezone, then slice per member locally (no per-member query).
+    evenements = db.fetch_all(
+        "SELECT titre, debut, fuseau_horaire FROM evenement WHERE cible_type = 'general' "
+        "AND debut BETWEEN now() - interval '9 days' AND now() + interval '9 days' ORDER BY debut ASC",
+        (),
+        role=role,
+    )
+    for m in actifs:
+        fuseau = m.get("fuseau_horaire")
+        local = temps.local_datetime(now, fuseau)  # type: ignore[arg-type]
+        debut_cette = _debut_semaine_locale(local, jour_debut)
+        cible = debut_cette.replace(hour=_HEURE_HEBDO)
+        if local < cible:
+            continue  # the member's local Monday 08:00 has not arrived yet this week
+        fin_cette = debut_cette + timedelta(days=7)
+        debut_prec = debut_cette - timedelta(days=7)
+        semaine_key = debut_cette.strftime("%Y-%m-%d")
+        cette = [e for e in evenements if e.get("debut") and debut_cette <= temps.local_datetime(e["debut"], fuseau) < fin_cette]  # type: ignore[arg-type]
+        precedente = [e for e in evenements if e.get("debut") and debut_prec <= temps.local_datetime(e["debut"], fuseau) < debut_cette]  # type: ignore[arg-type]
+        prenom = _prenom(m)
+        # Recap of the previous week (titles only). Opt-in via the "recap" group matrix.
+        if precedente:
+            liste = "; ".join(_fmt_evt(e, fuseau, False) for e in precedente)
+            if notifier(str(m["id"]), role, "recap_hebdo", {"prenom": prenom, "liste": liste}, ref_id=f"{semaine_key}-recap", dedup=True):
+                result["recap"] += 1
+        # Agenda of the current week (with local times). Opt-in via the "rappels" group.
+        if cette:
+            liste = "; ".join(_fmt_evt(e, fuseau, True) for e in cette)
+            if notifier(str(m["id"]), role, "agenda_hebdo", {"prenom": prenom, "liste": liste, "lien": lien_app}, ref_id=semaine_key, dedup=True):
+                result["agenda"] += 1
 
 
 # --- Daily scheduled job ----------------------------------------------------
 
 def _run_quotidien(role: str | None) -> dict[str, object]:
     now = datetime.now(tz=UTC)
-    weekday = now.weekday()  # Monday = 0, Sunday = 6
     annee = now.year
     result = {"anniversaires": 0, "rappels_j1": 0, "agenda": 0, "recap": 0, "digest_pairs": 0, "participation_close": 0}
 
-    # 1) Birthdays today.
+    # 1) Birthdays today. Cross-path idempotence: the manual admin trigger marks its
+    # sends in notification_anniversaire; skip those members so running both paths the
+    # same day never produces a second wish (each path keeps its own dedup ledger).
     for r in db.fetch_all(
         "SELECT id, prenoms FROM membre WHERE date_naissance IS NOT NULL AND statut = 'actif' "
         "AND extract(month from date_naissance) = extract(month from now()) "
-        "AND extract(day from date_naissance) = extract(day from now())",
+        "AND extract(day from date_naissance) = extract(day from now()) "
+        "AND NOT EXISTS (SELECT 1 FROM notification_anniversaire na "
+        "WHERE na.membre_id = membre.id AND na.annee = extract(year from now())::int)",
         (),
         role=role,
     ):
@@ -271,23 +492,21 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
 
     # 2) Day-before reminders: events starting in the next 24-36h.
     evs = db.fetch_all(
-        "SELECT id, titre, debut FROM evenement WHERE debut IS NOT NULL "
+        "SELECT id, titre, debut, fuseau_horaire FROM evenement WHERE debut IS NOT NULL "
         "AND debut BETWEEN now() + interval '12 hours' AND now() + interval '36 hours'",
         (),
         role=role,
     )
-    actifs = db.fetch_all("SELECT id, prenoms, langue FROM membre WHERE statut = 'actif'", (), role=role)
+    actifs = db.fetch_all("SELECT id, prenoms, langue, fuseau_horaire FROM membre WHERE statut = 'actif'", (), role=role)
     lien_app = channels.integration_value("site_officiel") or "https://adsum-web-membre.pages.dev"
     from .visibilite import CIBLE_PREDICATE
 
     for ev in evs:
-        date_str = ev["debut"].strftime("%d/%m/%Y") if ev["debut"] else ""
-        heure_str = ev["debut"].strftime("%Hh%M") if ev["debut"] else ""
         # Only the members TARGETED by this event receive the reminder: a restricted
         # event (commission/intendance/coordination/tribu) never leaks its title and
         # time to the whole base. General events still reach everyone.
         cibles = db.fetch_all(
-            "SELECT m.id, m.prenoms, m.langue FROM membre m "
+            "SELECT m.id, m.prenoms, m.langue, m.fuseau_horaire FROM membre m "
             "LEFT JOIN intendance mi ON mi.id = m.intendance_id "
             "JOIN evenement e ON e.id = %s "
             f"WHERE m.statut = 'actif' AND {CIBLE_PREDICATE}",
@@ -295,6 +514,11 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
             role=role,
         )
         for m in cibles:
+            # Format the date/time in the RECIPIENT's own zone (never raw UTC), so a
+            # member is never told the wrong day, consistent with the attendance survey.
+            local = temps.local_datetime(ev["debut"], m.get("fuseau_horaire")) if ev["debut"] else None
+            date_str = local.strftime("%d/%m/%Y") if local else ""
+            heure_str = local.strftime("%Hh%M") if local else ""
             ctx = {"prenom": _prenom(m), "titre": ev["titre"], "date": date_str, "heure": heure_str, "lien": lien_app}
             if notifier(str(m["id"]), role, "activite_rappel_j1", ctx, ref_id=str(ev["id"]), dedup=True):
                 result["rappels_j1"] += 1
@@ -320,37 +544,9 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
         if notifier(str(f["membre_id"]), role, "participation_bientot_close", ctx, ref_id=str(f["id"]), dedup=True):
             result["participation_close"] += 1
 
-    # 3) Monday: weekly agenda of the coming week.
-    if weekday == 0:
-        # Shared digest to every active member, so it lists only community-wide
-        # events; a targeted event never appears in a broadcast agenda.
-        semaine = db.fetch_all(
-            "SELECT titre, debut FROM evenement WHERE cible_type = 'general' "
-            "AND debut BETWEEN now() AND now() + interval '7 days' ORDER BY debut ASC",
-            (),
-            role=role,
-        )
-        if semaine:
-            liste = "; ".join(f"{e['titre']} ({e['debut'].strftime('%a %d/%m %Hh%M')})" for e in semaine if e["debut"])
-            ref = now.strftime("%G-W%V")
-            for m in actifs:
-                if notifier(str(m["id"]), role, "agenda_hebdo", {"prenom": _prenom(m), "liste": liste, "lien": lien_app}, ref_id=ref, dedup=True):
-                    result["agenda"] += 1
-
-    # 4) Sunday: recap of the past week.
-    if weekday == 6:
-        passe = db.fetch_all(
-            "SELECT titre FROM evenement WHERE cible_type = 'general' "
-            "AND debut BETWEEN now() - interval '7 days' AND now() ORDER BY debut ASC",
-            (),
-            role=role,
-        )
-        if passe:
-            liste = "; ".join(str(e["titre"]) for e in passe)
-            ref = now.strftime("%G-W%V") + "-recap"
-            for m in actifs:
-                if notifier(str(m["id"]), role, "recap_hebdo", {"prenom": _prenom(m), "liste": liste}, ref_id=ref, dedup=True):
-                    result["recap"] += 1
+    # 3+4) Weekly recap (previous week) + agenda (current week), delivered on the week's
+    # first day at 08:00 in EACH member's own timezone, exactly once per calendar week.
+    _hebdo_par_membre(now, role, actifs, lien_app, result)
 
     # 5) Manual-attestation follow-up: strategic reminders and expiry.
     result["attest_rappels"], result["attest_expirees"] = _scan_attestations(role)
@@ -358,6 +554,12 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     # 6) Housekeeping: delete Telegram messages past the retention window.
     purge = channels.purge_old_telegram(role)
     result["telegram_purges"] = purge.get("supprimes", 0)
+
+    # 6a-bis) Moderator channel: purge voice-note audio past the 30-day retention
+    # window (unless the message opted to keep its audio). Transcriptions are kept.
+    from .collaboration_canal import purge_audio_expire
+
+    result["canal_audio_purges"] = purge_audio_expire(role)
 
     # 6b) Unlock windows: a request left in 'attente_membre' beyond its response
     # deadline is closed automatically as 'sans suite', with a visible trace and
@@ -380,7 +582,15 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
             (str(d["id"]),),
             role=role,
         )
-        db.execute("UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s", (str(d["membre_id"]),), role=role)
+        # Re-lock only when the member has no OTHER request still waiting on them,
+        # so auto-closing one late cycle never breaks a second legitimate open cycle.
+        db.execute(
+            "UPDATE membre SET champs_deverrouilles = '{}' WHERE id = %s "
+            "AND NOT EXISTS (SELECT 1 FROM demande d2 WHERE d2.membre_id = membre.id "
+            "AND d2.id <> %s AND d2.statut IN ('attente_membre', 'pieces_demandees'))",
+            (str(d["membre_id"]), str(d["id"])),
+            role=role,
+        )
         _system_message(str(d["id"]), role,
                         "Demande clôturée automatiquement : aucun retour du membre avant la date limite. "
                         "Les éléments débloqués ont été reverrouillés.")
@@ -436,6 +646,28 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
             if notifier(str(d["membre_id"]), role, "collab_echeance", ctx, ref_id=f"{c['id']}:{jalon}", dedup=True):
                 result["collab_echeances"] += 1
 
+    # Attendance survey safety net: the frequent scan (/cron/sondages) is what
+    # normally fires the survey at debut+offset, but the Vercel Hobby plan only
+    # schedules one daily cron. Running the dispatcher here guarantees a daily
+    # automatic pass even without an external sub-hourly scheduler, so an activity
+    # whose trigger window overlaps this run is never missed. It stays idempotent
+    # (per-event marker) and bounded by the 2h grace window, so no stale survey is
+    # sent. A finer external scheduler remains the way to fire close to start time.
+    try:
+        from .sondage import dispatcher_sondages_dus
+
+        result["sondages"] = int(dispatcher_sondages_dus(role=role).get("traites", 0))
+    except Exception:  # noqa: BLE001 - the survey scan must never break the daily job
+        result["sondages"] = 0
+
+    # Purge trashed workspaces/boards past the configurable retention window.
+    try:
+        from .collaboration_corbeille import purger_suppressions
+
+        result["purges"] = purger_suppressions(role)
+    except Exception:  # noqa: BLE001 - the purge must never break the daily job
+        result["purges"] = {}
+
     return {"ok": True, **result}
 
 
@@ -481,6 +713,21 @@ def cron_quotidien(authorization: Annotated[str | None, Header()] = None) -> dic
     """Daily scheduled notifications, secured by the CRON_SECRET bearer."""
     require_cron_auth(authorization)
     return _run_quotidien(role=None)
+
+
+@router.get("/cron/hebdomadaire")
+def cron_hebdomadaire(authorization: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    """Weekly recap + agenda only, safe to call HOURLY so each member is served at 08:00 in
+    their own timezone. Fully idempotent (dedup per member per calendar week), so repeated
+    hourly calls never double-send. Point an hourly scheduler here for precise local delivery;
+    the daily job also runs it as a fallback (once per week) when no hourly trigger exists."""
+    require_cron_auth(authorization)
+    now = datetime.now(tz=UTC)
+    actifs = db.fetch_all("SELECT id, prenoms, langue, fuseau_horaire FROM membre WHERE statut = 'actif'", (), role=None)
+    lien_app = channels.integration_value("site_officiel") or "https://adsum-web-membre.pages.dev"
+    result = {"recap": 0, "agenda": 0}
+    _hebdo_par_membre(now, None, actifs, lien_app, result)
+    return result
 
 
 @router.post("/admin/notifications/declencher-quotidien")

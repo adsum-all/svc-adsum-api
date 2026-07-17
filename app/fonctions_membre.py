@@ -15,7 +15,7 @@ TITRES_INTERDITS = {"berger", "bergere", "bergère"}
 
 _SELECT = (
     "SELECT mf.id, mf.fonction_cle, mf.perimetre, mf.confirmee, mf.actif, mf.principale, mf.ordre, "
-    "fh.libelle_h AS h, fh.libelle_f AS f, fh.libelle_n AS n "
+    "fh.libelle_h AS h, fh.libelle_f AS f, fh.libelle_n AS n, fh.actif AS fh_actif "
     "FROM membre_fonction mf LEFT JOIN fonction_honorifique fh ON fh.cle = mf.fonction_cle "
     "WHERE mf.membre_id = %s"
 )
@@ -39,10 +39,15 @@ def _rows(membre_id: str, role: str | None) -> list[dict[str, object]]:
 
 
 def fonctions_publiques(membre_id: str, genre: object, role: str | None) -> list[dict[str, object]]:
-    """Active AND confirmed functions, gendered, ordered, for public display."""
+    """Active AND confirmed functions, gendered, ordered, for public display. A title
+    deactivated at the catalogue level (fonction_honorifique.actif = false) is hidden
+    even for its current holders; a function with no catalogue row (fh_actif is None)
+    still shows, for backward compatibility."""
     out: list[dict[str, object]] = []
     for r in _rows(membre_id, role):
         if not r.get("actif") or not r.get("confirmee"):
+            continue
+        if r.get("fh_actif") is False:
             continue
         libelle = label_genre(genre, r.get("h"), r.get("f"), r.get("n")) or str(r.get("fonction_cle"))
         out.append({"libelle": libelle, "perimetre": r.get("perimetre")})

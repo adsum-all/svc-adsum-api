@@ -5,19 +5,27 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .admin import router as admin_router
+from .ai_config import router as ai_config_router
 from .analytics import router as analytics_router
 from .anniversaires import router as anniversaires_router
 from .anniversaires_annuaire import router as anniversaires_annuaire_router
+from .applications import router as applications_router
 from .audit import router as audit_router
 from .auth import router as auth_router
-from .collaboration import router as collaboration_router
+from .cibles_activite import router as cibles_activite_router
+from .collaboration_canal import router as collaboration_canal_router
+from .collaboration_canal_config import router as collaboration_canal_config_router
+from .collaboration_canal_notes import router as collaboration_canal_notes_router
+from .collaboration_canal_workflow import router as collaboration_canal_workflow_router
 from .collaboration_cartes import router as collaboration_cartes_router
 from .collaboration_cartes_social import router as collaboration_cartes_social_router
 from .collaboration_checklists import router as collaboration_checklists_router
+from .collaboration_corbeille import router as collaboration_corbeille_router
 from .collaboration_espaces import router as collaboration_espaces_router
 from .collaboration_pieces import router as collaboration_pieces_router
 from .collaboration_presence import router as collaboration_presence_router
 from .collaboration_tableaux import router as collaboration_tableaux_router
+from .collaboration_telegram_ingest import router as collaboration_telegram_ingest_router
 from .collaboration_transverse import router as collaboration_transverse_router
 from .comptage import comptage_public_router
 from .comptage import router as comptage_router
@@ -45,7 +53,11 @@ from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
 from .mfa import router as mfa_router
-from .middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
+from .middleware import (
+    BodySizeLimitMiddleware,
+    CorsSafeErrorBoundaryMiddleware,
+    SecurityHeadersMiddleware,
+)
 from .modifications import router as modifications_router
 from .niveaux import router as niveaux_router
 from .notifications import router as notifications_router
@@ -58,7 +70,9 @@ from .rgpd import router as rgpd_router
 from .sondage import cron_router as sondage_cron_router
 from .sondage import router as sondage_router
 from .tags import router as tags_router
+from .technical_admin import router as technical_admin_router
 from .terminaux import router as terminaux_router
+from .type_evenement import router as type_evenement_router
 from .users import router as users_router
 
 app = FastAPI(
@@ -67,6 +81,15 @@ app = FastAPI(
     description="ADSUM business API: authentication and member endpoints on the real PostgreSQL.",
 )
 
+# Middleware order matters: add_middleware prepends, so the LAST call is the
+# outermost wrapper. CORS must stay outermost so its header is added on the way
+# out of every response. The error boundary is added FIRST so it is the innermost
+# application middleware: it catches an endpoint or database exception before it
+# can escape to the CORS-less server layer, and its 500 response then travels back
+# out through CORS and receives the Access-Control-Allow-Origin header. Without
+# this ordering an unhandled 500 reaches the browser with no CORS header and is
+# misreported as a generic network error, masking the true cause.
+app.add_middleware(CorsSafeErrorBoundaryMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
@@ -95,7 +118,19 @@ app.include_router(terminaux_router)
 app.include_router(audit_router)
 app.include_router(comptage_router)
 app.include_router(comptage_public_router)
-app.include_router(collaboration_router)
+app.include_router(cibles_activite_router)
+# Legacy collaboration router (app/collaboration.py) is intentionally NOT mounted:
+# its /tableaux and /cartes endpoints operated on collab_tableau/collab_carte
+# WITHOUT per-space membership checks (require_espace_role), bypassing the space
+# isolation enforced by the space-scoped router (collaboration_tableaux.py) and
+# leaking cards across spaces. The space-scoped router fully supersedes it.
+app.include_router(collaboration_canal_router)
+app.include_router(collaboration_canal_notes_router)
+app.include_router(collaboration_telegram_ingest_router)
+app.include_router(collaboration_canal_workflow_router)
+app.include_router(collaboration_canal_config_router)
+app.include_router(collaboration_corbeille_router)
+app.include_router(ai_config_router)
 app.include_router(collaboration_espaces_router)
 app.include_router(collaboration_tableaux_router)
 app.include_router(collaboration_cartes_router)
@@ -115,6 +150,8 @@ app.include_router(modifications_router)
 app.include_router(consentement_router)
 app.include_router(matrice_pays_router)
 app.include_router(reference_router)
+app.include_router(type_evenement_router)
+app.include_router(applications_router)
 app.include_router(rgpd_router)
 app.include_router(anniversaires_router)
 app.include_router(anniversaires_annuaire_router)
@@ -123,6 +160,7 @@ app.include_router(integrations_router)
 app.include_router(fonctions_router)
 app.include_router(niveaux_router)
 app.include_router(gestion_router)
+app.include_router(technical_admin_router)
 app.include_router(groupes_router)
 app.include_router(groupes_lecture_router)
 app.include_router(emargement_router)

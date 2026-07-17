@@ -86,9 +86,14 @@ def maj_session(evenement_id: str, payload: SessionPatch, user: Annotated[UserMe
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     audit.log(user.id, user.role, "maj_session_evenement", "evenement", evenement_id, {"ouverte": payload.session_ouverte})
-    # When the live session is opened, notify members that the activity has started.
+    # When the live session is opened, notify members that the activity has started
+    # AND send the attendance survey once (event-driven: reaches the audience right
+    # when the activity is launched, and never again thanks to the per-event marker).
     if payload.session_ouverte:
         _notifier_session_ouverte(evenement_id, str(row["lien_session"] or ""), user.role)
+        from .sondage import envoyer_sondage_ouverture
+
+        envoyer_sondage_ouverture(evenement_id, user.role)
     return {"id": str(row["id"]), "session_ouverte": bool(row["session_ouverte"]), "lien_session": row["lien_session"]}
 
 
@@ -339,6 +344,28 @@ class PreferencesIn(BaseModel):
     cal_tribu: bool = False  # own-tribe birthdays behind a filter
     cal_coordination: bool = False  # own-coordination birthdays behind a filter
     cal_intendance: bool = False  # own-intendance birthdays behind a filter
+    # Per-group, per-channel matrix: {group: {"email": bool, "telegram": bool, ...}}.
+    # None or a partial matrix is MERGED over what is already stored (never wipes it).
+    # Bounded (max_length) as defence in depth so a huge payload is rejected early.
+    matrice_canaux: dict[str, dict[str, bool]] | None = Field(default=None, max_length=64)
+
+
+_MATRICE_CANAUX = ("email", "telegram", "whatsapp", "sms")
+
+
+def _sanitize_matrice(raw: object, groupes: tuple[str, ...]) -> dict[str, dict[str, bool]] | None:
+    """Keep only known groups and known channels with boolean values, so a client can
+    never store an arbitrary shape in the JSONB column."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, dict[str, bool]] = {}
+    for groupe, chans in raw.items():
+        if groupe not in groupes or not isinstance(chans, dict):
+            continue
+        clean = {c: bool(chans[c]) for c in _MATRICE_CANAUX if c in chans}
+        if clean:
+            out[groupe] = clean
+    return out or None
 
 
 _PREF_COLS = (
@@ -352,32 +379,89 @@ _PREF_OFF_DEFAULT = (
 )
 
 
+def _matrice_complete(stored: object, legacy: dict[str, object] | None = None) -> dict[str, dict[str, bool]]:
+    """The full per-group matrix returned to the client: every group is always present.
+
+    For a group the member has not set in ``stored``, the two channels are seeded from
+    their legacy per-category opt-out (an old category turned off shows as both channels
+    off), so what is displayed matches what is actually delivered. The stored per-group
+    choices then override that seed. New groups always appear (default both on)."""
+    from .notifications import _GROUPE_LEGACY_COL, _matrice_defaut
+
+    base = _matrice_defaut()
+    if legacy:
+        for groupe, defaut in base.items():
+            col = _GROUPE_LEGACY_COL.get(groupe)
+            if col and col in legacy and not legacy[col]:
+                base[groupe] = dict.fromkeys(defaut, False)
+    if isinstance(stored, dict):
+        for groupe, chans in stored.items():
+            if groupe in base and isinstance(chans, dict):
+                base[groupe] = {**base[groupe], **{c: bool(v) for c, v in chans.items() if c in _MATRICE_CANAUX}}
+    return base
+
+
+def _merge_matrice(stored: object, incoming: dict[str, dict[str, bool]] | None) -> dict[str, dict[str, bool]] | None:
+    """Merge the incoming (already sanitised) matrix over what is stored, per group and
+    per channel, so an absent or partial matrix NEVER wipes a member's saved choices."""
+    out: dict[str, dict[str, bool]] = {}
+    if isinstance(stored, dict):
+        for groupe, chans in stored.items():
+            if isinstance(chans, dict):
+                out[groupe] = {c: bool(v) for c, v in chans.items() if c in _MATRICE_CANAUX}
+    if isinstance(incoming, dict):
+        for groupe, chans in incoming.items():
+            out[groupe] = {**out.get(groupe, {}), **chans}
+    return out or None
+
+
 @router.get("/membres/me/preferences-notification")
-def get_preferences(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, bool]:
+def get_preferences(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
     membre_id, role = ctx
-    row = db.fetch_one(f"SELECT {', '.join(_PREF_COLS)} FROM preference_notification WHERE membre_id = %s", (membre_id,), role=role)
+    row = db.fetch_one(
+        f"SELECT {', '.join(_PREF_COLS)}, matrice_canaux FROM preference_notification WHERE membre_id = %s",
+        (membre_id,), role=role,
+    )
+    lie = db.fetch_one("SELECT (telegram_chat_id IS NOT NULL) AS lie FROM membre WHERE id = %s", (membre_id,), role=role)
+    telegram_lie = bool(lie and lie.get("lie"))
     if not row:
-        defaults = {c: True for c in _PREF_COLS}
+        defaults: dict[str, object] = {c: True for c in _PREF_COLS}
         defaults.update({c: False for c in _PREF_OFF_DEFAULT})
+        defaults["matrice_canaux"] = _matrice_complete(None)
+        defaults["telegram_lie"] = telegram_lie
         return defaults
-    return {c: bool(row[c]) for c in _PREF_COLS}
+    result: dict[str, object] = {c: bool(row[c]) for c in _PREF_COLS}
+    result["matrice_canaux"] = _matrice_complete(row.get("matrice_canaux"), row)
+    result["telegram_lie"] = telegram_lie
+    return result
 
 
 @router.put("/membres/me/preferences-notification")
-def set_preferences(payload: PreferencesIn, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, bool]:
+def set_preferences(payload: PreferencesIn, ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict[str, object]:
+    from .notifications import GROUPES
+
     membre_id, role = ctx
     values = {c: getattr(payload, c) for c in _PREF_COLS}
+    incoming = _sanitize_matrice(payload.matrice_canaux, GROUPES)
+    # Merge over the stored matrix so a partial or absent matrix never wipes a saved
+    # channel choice (a client that omits matrice_canaux keeps the member's existing one).
+    existing = db.fetch_one("SELECT matrice_canaux FROM preference_notification WHERE membre_id = %s", (membre_id,), role=role)
+    matrice = _merge_matrice(existing.get("matrice_canaux") if existing else None, incoming)
     assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in _PREF_COLS)
     db.execute(
         f"""
-        INSERT INTO preference_notification (membre_id, {', '.join(_PREF_COLS)}, maj_le)
-        VALUES (%s, {', '.join(['%s'] * len(_PREF_COLS))}, now())
-        ON CONFLICT (membre_id) DO UPDATE SET {assignments}, maj_le = now()
+        INSERT INTO preference_notification (membre_id, {', '.join(_PREF_COLS)}, matrice_canaux, maj_le)
+        VALUES (%s, {', '.join(['%s'] * len(_PREF_COLS))}, %s::jsonb, now())
+        ON CONFLICT (membre_id) DO UPDATE SET {assignments}, matrice_canaux = EXCLUDED.matrice_canaux, maj_le = now()
         """,
-        (membre_id, *[values[c] for c in _PREF_COLS]),
+        (membre_id, *[values[c] for c in _PREF_COLS], json.dumps(matrice) if matrice is not None else None),
         role=role,
     )
-    return values
+    result: dict[str, object] = dict(values)
+    result["matrice_canaux"] = _matrice_complete(matrice, values)
+    lie = db.fetch_one("SELECT (telegram_chat_id IS NOT NULL) AS lie FROM membre WHERE id = %s", (membre_id,), role=role)
+    result["telegram_lie"] = bool(lie and lie.get("lie"))
+    return result
 
 
 # --- Admin: questionnaire window duration -----------------------------------
@@ -406,3 +490,32 @@ def set_fenetre(payload: FenetreIn, user: Annotated[UserMe, Depends(require_perm
     )
     audit.log(user.id, user.role, "config_questionnaire_fenetre", "parametre", "questionnaire_fenetre_heures", {"heures": payload.heures})
     return {"heures": payload.heures}
+
+
+# --- Admin: first day of the week (weekly recap/agenda bounds) ---------------
+
+class SemaineDebutIn(BaseModel):
+    jour: int  # 0 = Monday ... 6 = Sunday
+
+
+@router.get("/admin/parametres/semaine-jour-debut")
+def get_semaine_debut(user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> dict[str, int]:
+    row = db.fetch_one("SELECT (valeur #>> '{}')::int AS j FROM parametre WHERE cle = 'semaine_jour_debut'", (), role=user.role)
+    return {"jour": int(row["j"]) if row and row.get("j") is not None else 0}
+
+
+@router.put("/admin/parametres/semaine-jour-debut")
+def set_semaine_debut(payload: SemaineDebutIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, int]:
+    if not 0 <= payload.jour <= 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="jour must be between 0 (Monday) and 6 (Sunday)")
+    db.execute(
+        """
+        INSERT INTO parametre (cle, valeur, categorie, description, maj_par, maj_le)
+        VALUES ('semaine_jour_debut', %s::jsonb, 'notifications', 'First day of the week for weekly recap/agenda (0=Monday)', %s, now())
+        ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur, maj_par = EXCLUDED.maj_par, maj_le = now()
+        """,
+        (str(payload.jour), user.id),
+        role=user.role,
+    )
+    audit.log(user.id, user.role, "config_semaine_jour_debut", "parametre", "semaine_jour_debut", {"jour": payload.jour})
+    return {"jour": payload.jour}

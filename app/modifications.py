@@ -121,6 +121,20 @@ def soumettre_cycle(
     forbidden = [k for k in fields if k not in unlocked]
     if forbidden:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"locked_fields": forbidden})
+    # A member code must never collide with an existing ADSUM matricule: the login
+    # resolver accepts e-mail, matricule AND member code, so a code equal to another
+    # member's matricule would make that identifier ambiguous. The deterministic
+    # resolver already keeps the matricule owner safe; we also refuse the collision
+    # at the source so a member never ends up with an unusable member code. Checked
+    # at system level (uniqueness validation across members, never exposing data).
+    code = str(fields.get("code_membre") or "").strip()
+    if code:
+        clash = db.fetch_one("SELECT 1 FROM membre WHERE upper(matricule) = upper(%s) LIMIT 1", (code,))
+        if clash:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ce code membre correspond à un matricule ADSUM existant. Choisissez un autre code.",
+            )
     if not fields and not photo_incluse:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Aucune modification à soumettre.")
     # ATOMIC LOCK: flip the cycle. A single statement, its own transaction: only

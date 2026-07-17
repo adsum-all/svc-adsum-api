@@ -48,6 +48,35 @@ def log(
         pass
 
 
+def log_cursor(
+    cur: Any,
+    acteur_id: str | None,
+    acteur_role: str | None,
+    action: str,
+    objet_type: str | None = None,
+    objet_id: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Record an audit entry on an EXISTING cursor, so the audit row is part of the caller's
+    transaction (atomic with the mutation). Use this where losing the audit trail would be a
+    compliance risk, e.g. a cascade that removes rights: the entry is the only record of what
+    was withdrawn. Unlike :func:`log`, a failure here rolls the whole transaction back, which
+    is the intended all-or-nothing guarantee (the mutation must not commit without its trace).
+    The RLS role is already set on the connection by the caller (db.connection(role=...))."""
+    cur.execute(
+        "INSERT INTO audit (acteur_id, acteur_role, action, objet_type, objet_id, details) "
+        "VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
+        (
+            acteur_id,
+            acteur_role,
+            action,
+            objet_type,
+            objet_id,
+            json.dumps(details) if details is not None else None,
+        ),
+    )
+
+
 @router.get("", response_model=list[AuditEntry])
 def list_audit(user: Annotated[UserMe, Depends(require_permission("audit.administrer"))]) -> list[AuditEntry]:
     rows = db.fetch_all(

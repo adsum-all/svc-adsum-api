@@ -28,7 +28,11 @@ router = APIRouter(prefix="/api/v1/admin/utilisateurs", tags=["utilisateurs"])
 
 _SELECT = (
     "SELECT u.id, u.email, u.role, u.actif, u.double_facteur, u.membre_id, u.dernier_login, "
-    "trim(coalesce(m.prenoms, '') || ' ' || coalesce(m.nom, '')) AS membre_nom "
+    "trim(coalesce(m.prenoms, '') || ' ' || coalesce(m.nom, '')) AS membre_nom, "
+    # Active GLOBAL memberships: the roster of platform access derives from the real
+    # groups too, so a permission-mode group holder (cached role 'membre') is listed.
+    "(SELECT count(*) FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+    " WHERE mg.membre_id = u.membre_id AND g.actif = true AND mg.portee_type = 'global') AS groupes_globaux "
     "FROM utilisateur u LEFT JOIN membre m ON m.id = u.membre_id"
 )
 
@@ -44,6 +48,7 @@ def _to_out(row: dict[str, object]) -> UtilisateurOut:
         membre_id=str(row["membre_id"]) if row.get("membre_id") else None,
         membre_nom=name if isinstance(name, str) and name else None,
         dernier_login=row.get("dernier_login"),  # type: ignore[arg-type]
+        groupes_globaux=int(row.get("groupes_globaux") or 0),
     )
 
 
@@ -51,7 +56,12 @@ def _to_out(row: dict[str, object]) -> UtilisateurOut:
 def list_utilisateurs(
     user: Annotated[UserMe, Depends(require_permission("comptes.administrer"))]
 ) -> list[UtilisateurOut]:
-    rows = db.fetch_all(f"{_SELECT} ORDER BY u.role ASC, u.email ASC", (), role=user.role)
+    # Technical (applicative) super-admins are managed ONLY on their dedicated page and
+    # never surface in the general access-and-groups roster.
+    rows = db.fetch_all(
+        f"{_SELECT} WHERE u.acces_technique_global = false ORDER BY u.role ASC, u.email ASC",
+        (), role=user.role,
+    )
     return [_to_out(r) for r in rows]
 
 
@@ -122,6 +132,17 @@ def update_utilisateur(
     payload: UpdateUtilisateur,
     user: Annotated[UserMe, Depends(require_permission("comptes.systeme"))],
 ) -> UtilisateurOut:
+    # A technical (applicative) super-admin is administered ONLY on its dedicated page,
+    # never from the general access-and-groups surface.
+    tech = db.fetch_one(
+        "SELECT 1 FROM utilisateur WHERE id = %s AND acces_technique_global = true",
+        (utilisateur_id,), role=user.role,
+    )
+    if tech:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="compte technique: a gerer uniquement dans la page des super-admins techniques",
+        )
     fields = payload.model_dump(exclude_unset=True)
     if fields:
         # Capture the prior values so the audit trail records the actual change

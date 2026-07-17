@@ -51,7 +51,11 @@ def _config(role: str | None) -> tuple[bool, int]:
     auto = db.fetch_one("SELECT (valeur #>> '{}') AS v FROM parametre WHERE cle = 'sondage_pointage_auto'", (), role=role)
     off = db.fetch_one("SELECT (valeur #>> '{}')::int AS v FROM parametre WHERE cle = 'sondage_pointage_offset_min'", (), role=role)
     auto_on = (auto is None) or (str(auto.get("v")) == "true")  # default ON
-    offset = int(off["v"]) if off and off.get("v") is not None else 0
+    # Default trigger offset is 30 minutes after the scheduled start: the survey
+    # window opens at start + 30 min for the time-scan fallback. The primary path is
+    # event-driven (sent when the admin opens the live session), which ignores the
+    # offset. Admin-configurable via set_config_sondage.
+    offset = int(off["v"]) if off and off.get("v") is not None else 30
     return auto_on, offset
 
 
@@ -101,6 +105,43 @@ def dispatcher_sondage(
         else:
             sans_canal += 1
     return {"cibles": len(rows), "envoyes": envoyes, "canaux": sorted(canaux), "sans_canal": sans_canal, "lien": lien}
+
+
+def envoyer_sondage_ouverture(evenement_id: str, role: str | None) -> dict[str, object]:
+    """Send the attendance survey ONCE, when the activity's live session is opened.
+
+    Event-driven (called from the session-open action), so the survey reaches the
+    audience exactly when the activity is launched, and never again: the per-event
+    marker ``sondage_pointage_envoye_le`` makes the send idempotent, so re-opening
+    or toggling the session does not re-notify anyone. Respects the admin toggle
+    (auto on/off) and never raises (a survey must not break launching a session)."""
+    try:
+        auto_on, _ = _config(role)
+        if not auto_on:
+            return {"actif": False, "envois": 0}
+        ev = db.fetch_one(
+            "SELECT id, titre, debut, emargement_externe FROM evenement "
+            "WHERE id = %s AND coalesce(annule, false) = false AND sondage_pointage_envoye_le IS NULL",
+            (evenement_id,),
+            role=role,
+        )
+        if not ev:
+            return {"actif": True, "envois": 0, "deja_envoye": True}
+        # Mark first (idempotent guard), so two concurrent opens never double send.
+        marque = db.execute(
+            "UPDATE evenement SET sondage_pointage_envoye_le = now() "
+            "WHERE id = %s AND sondage_pointage_envoye_le IS NULL RETURNING id",
+            (evenement_id,),
+            role=role,
+        )
+        if not marque:
+            return {"actif": True, "envois": 0, "deja_envoye": True}
+        res = dispatcher_sondage(ev, role, dedup=True)
+        audit.log(None, role, "envoi_sondage", "evenement", evenement_id,
+                  {"cibles": res["cibles"], "envoyes": res["envoyes"], "mode": "ouverture_session"})
+        return {"actif": True, "envois": int(res["envoyes"]), "cibles": res["cibles"]}
+    except Exception:  # noqa: BLE001 - the survey must never block opening the session
+        return {"actif": True, "envois": 0, "erreur": True}
 
 
 @router.post("/evenements/{evenement_id}/sondage")

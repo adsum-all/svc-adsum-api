@@ -58,6 +58,35 @@ def _espace_id_or_403(carte_id: str, user: UserMe, allowed: tuple[str, ...]) -> 
     return espace_id
 
 
+# Resolve the parent card of a nested object SERVER-SIDE so the space guard is bound
+# to the object actually being written, not to a card id supplied in the body (which a
+# caller could point at a space they belong to while acting on another space's object).
+def _carte_of_checklist(checklist_id: str, role: str) -> str:
+    row = db.fetch_one("SELECT carte_id FROM collab_checklist WHERE id = %s", (checklist_id,), role=role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="checklist not found")
+    return str(row["carte_id"])
+
+
+def _carte_of_item(item_id: str, role: str) -> str:
+    row = db.fetch_one(
+        "SELECT cl.carte_id FROM collab_checklist_item ci JOIN collab_checklist cl ON cl.id = ci.checklist_id "
+        "WHERE ci.id = %s",
+        (item_id,),
+        role=role,
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="item not found")
+    return str(row["carte_id"])
+
+
+def _carte_of_commentaire(commentaire_id: str, role: str) -> str:
+    row = db.fetch_one("SELECT carte_id FROM collab_commentaire WHERE id = %s", (commentaire_id,), role=role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="comment not found")
+    return str(row["carte_id"])
+
+
 def _resolve_mentions(corps: str, espace_id: str, role: str) -> list[str]:
     """Match @tokens in the comment against the space members' display names or
     e-mail local part, returning the matched utilisateur ids. Best effort: an
@@ -180,7 +209,9 @@ def reagir(
     payload: ReactionIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> None:
-    _espace_id_or_403(payload.carte_id, user, COMMENTATEURS)
+    # Guard on the space of the comment being reacted to, resolved server-side from the
+    # path id, not on the body carte_id (which could point at another space).
+    _espace_id_or_403(_carte_of_commentaire(commentaire_id, user.role), user, COMMENTATEURS)
     existing = db.fetch_one(
         "SELECT 1 FROM collab_reaction WHERE commentaire_id = %s AND utilisateur_id = %s AND type = %s",
         (commentaire_id, user.id, payload.type),
@@ -222,7 +253,9 @@ def ajouter_checklist_item(
     payload: ChecklistItemIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> None:
-    _espace_id_or_403(payload.carte_id, user, MEMBRES_ACTIFS)
+    # Guard on the space of the checklist (path id), resolved server-side. The body
+    # carte_id is ignored for authorization: it could point at another space.
+    _espace_id_or_403(_carte_of_checklist(checklist_id, user.role), user, MEMBRES_ACTIFS)
     db.execute(
         "INSERT INTO collab_checklist_item (checklist_id, texte, position) "
         "VALUES (%s, %s, (SELECT coalesce(max(position), -1) + 1 FROM collab_checklist_item WHERE checklist_id = %s))",
@@ -237,10 +270,13 @@ def basculer_item(
     payload: ChecklistItemToggleIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> None:
-    _espace_id_or_403(payload.carte_id, user, MEMBRES_ACTIFS)
+    # Guard on the space of the item (path id), resolved server-side from the item's
+    # checklist and card. The body carte_id/checklist_id are ignored for authorization
+    # and no longer scope the write: the path item_id is the authoritative target.
+    _espace_id_or_403(_carte_of_item(item_id, user.role), user, MEMBRES_ACTIFS)
     db.execute(
-        "UPDATE collab_checklist_item SET fait = NOT fait WHERE id = %s AND checklist_id = %s",
-        (item_id, payload.checklist_id),
+        "UPDATE collab_checklist_item SET fait = NOT fait WHERE id = %s",
+        (item_id,),
         role=user.role,
     )
 

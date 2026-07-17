@@ -40,7 +40,10 @@ def _alias_from_call(val: ast.Call, tuples: dict[str, list[str]]) -> tuple[str, 
             if isinstance(a, ast.Starred) and isinstance(a.value, ast.Name) and a.value.id in tuples:
                 r += tuples[a.value.id]
         return ("roles", sorted(set(r)))
-    if nm == "require_permission" and val.args and isinstance(val.args[0], ast.Constant):
+    # require_permission_ecriture is require_permission plus an admin base-role check
+    # (mirrors the RLS write policy of the access-governance tables). For RBAC conformity it
+    # gates on the same permission, so it resolves identically.
+    if nm in ("require_permission", "require_permission_ecriture") and val.args and isinstance(val.args[0], ast.Constant):
         return ("perm", val.args[0].value)
     return None
 

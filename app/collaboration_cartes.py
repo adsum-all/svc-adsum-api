@@ -17,6 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from . import activites, attachments_core, audit, collaboration_notif, db, storage
+from .collaboration_cartes_read import _CARTE_COLS, CarteProtoOut, assemble_cartes, carte_out
+from .collaboration_cartes_read import CommentaireProtoOut as CommentaireProtoOut  # re-export
+from .collaboration_cartes_read import PieceOut as PieceOut  # re-export
 from .collaboration_espaces import GERANTS, require_espace_role
 from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
@@ -56,82 +59,6 @@ LECTEURS = ("proprietaire", "admin", "membre", "observateur")
 _INCR_COMPTEUR = "UPDATE collab_tableau SET compteur_cartes = compteur_cartes + 1 WHERE id = %s"
 
 
-class ReactionOut(BaseModel):
-    membre_id: str
-    type: str
-
-
-class PieceOut(BaseModel):
-    id: str
-    nom: str
-    taille: int
-    type: str
-    cree_le: str | None = None
-    data_url: str | None = None
-    couverture: bool = False
-
-
-class CommentaireProtoOut(BaseModel):
-    id: str
-    auteur_id: str
-    corps: str
-    cree_le: str | None = None
-    edite_le: str | None = None
-    reactions: list[ReactionOut]
-    pieces: list[PieceOut]
-    lu_par: list[str]
-    mentions: list[str]
-
-
-class ChecklistItemOut(BaseModel):
-    id: str
-    texte: str
-    fait: bool
-    assigne_id: str | None = None  # kept for backward compatibility (first assignee)
-    assignes: list[str] = []
-    echeance: str | None = None
-
-
-class ChecklistOut(BaseModel):
-    id: str
-    titre: str
-    items: list[ChecklistItemOut]
-
-
-class ActiviteOut(BaseModel):
-    id: str
-    auteur_id: str
-    cree_le: str | None = None
-    texte: str
-
-
-class CarteProtoOut(BaseModel):
-    id: str
-    tableau_id: str
-    colonne_id: str
-    numero: int
-    titre: str
-    description: str
-    etiquettes: list[str]
-    assignes: list[str]
-    suiveurs: list[str]
-    debut: str | None = None
-    echeance: str | None = None
-    rappel: str
-    priorite: str
-    complexite: int | None = None
-    position: int
-    checklists: list[ChecklistOut]
-    pieces: list[PieceOut]
-    commentaires: list[CommentaireProtoOut]
-    activite: list[ActiviteOut]
-    archive: bool
-    modele: bool
-    couverture_id: str | None = None
-    publie: bool = False
-    evenement_id: str | None = None
-
-
 class CarteIn(BaseModel):
     tableau_id: ShortStr
     colonne_id: ShortStr
@@ -167,16 +94,6 @@ class ArchiveIn(BaseModel):
     archive: bool
 
 
-_CARTE_COLS = (
-    "id, tableau_id, colonne_id, numero, titre, description, debut, echeance, rappel, "
-    "priorite, complexite, position, archive, modele, couverture_id, publie, evenement_id"
-)
-
-
-def _iso(v: Any) -> str | None:
-    return v.isoformat() if isinstance(v, datetime) else None
-
-
 def _espace_of_tableau(tableau_id: str, role: str) -> str:
     row = db.fetch_one("SELECT espace_id FROM collab_tableau WHERE id = %s", (tableau_id,), role=role)
     if not row:
@@ -210,158 +127,6 @@ def _ctx_carte(carte_id: str, role: str) -> dict[str, Any]:
     return {"titre": row["titre"], "espace": row["espace"] or "", "espace_id": str(row["espace_id"])}
 
 
-def _pieces_for(where_col: str, ref_id: str, couverture_id: str | None, role: str) -> list[PieceOut]:
-    # storage_path only exists once migration 0105 is applied (together with the
-    # bucket). In inline mode the column is never referenced, so this works with or
-    # without the migration. where_col is a controlled literal, never user input.
-    cols = (
-        "id, nom, taille, type, url, storage_path, cree_le"
-        if attachments_core.bucket()
-        else "id, nom, taille, type, url, cree_le"
-    )
-    rows = db.fetch_all(
-        f"SELECT {cols} FROM collab_piece WHERE {where_col} = %s ORDER BY cree_le",
-        (ref_id,),
-        role=role,
-    )
-    return [
-        PieceOut(
-            id=str(p["id"]),
-            nom=p["nom"],
-            taille=int(p["taille"]),
-            type=p["type"],
-            cree_le=_iso(p["cree_le"]),
-            data_url=attachments_core.served_url(p.get("url"), p.get("storage_path"), p["nom"], p.get("type") or ""),
-            couverture=(couverture_id is not None and str(p["id"]) == couverture_id),
-        )
-        for p in rows
-    ]
-
-
-def _commentaires_for(carte_id: str, role: str) -> list[CommentaireProtoOut]:
-    rows = db.fetch_all(
-        "SELECT id, auteur_id, corps, cree_le, edite_le FROM collab_commentaire WHERE carte_id = %s ORDER BY cree_le",
-        (carte_id,),
-        role=role,
-    )
-    out: list[CommentaireProtoOut] = []
-    for c in rows:
-        cid = str(c["id"])
-        reactions = db.fetch_all(
-            "SELECT utilisateur_id, type FROM collab_reaction WHERE commentaire_id = %s", (cid,), role=role
-        )
-        mentions = db.fetch_all(
-            "SELECT utilisateur_id FROM collab_commentaire_mention WHERE commentaire_id = %s", (cid,), role=role
-        )
-        lus = db.fetch_all(
-            "SELECT utilisateur_id FROM collab_commentaire_lu WHERE commentaire_id = %s", (cid,), role=role
-        )
-        out.append(
-            CommentaireProtoOut(
-                id=cid,
-                auteur_id=str(c["auteur_id"]) if c["auteur_id"] else "",
-                corps=c["corps"],
-                cree_le=_iso(c["cree_le"]),
-                edite_le=_iso(c["edite_le"]),
-                reactions=[ReactionOut(membre_id=str(r["utilisateur_id"]), type=r["type"]) for r in reactions],
-                pieces=_pieces_for("commentaire_id", cid, None, role),
-                lu_par=[str(x["utilisateur_id"]) for x in lus],
-                mentions=[str(x["utilisateur_id"]) for x in mentions],
-            )
-        )
-    return out
-
-
-def _checklists_for(carte_id: str, role: str) -> list[ChecklistOut]:
-    lists = db.fetch_all(
-        "SELECT id, titre FROM collab_checklist WHERE carte_id = %s ORDER BY position", (carte_id,), role=role
-    )
-    out: list[ChecklistOut] = []
-    for cl in lists:
-        clid = str(cl["id"])
-        items = db.fetch_all(
-            "SELECT ci.id, ci.texte, ci.fait, ci.assigne_id, ci.echeance, "
-            "COALESCE(array_agg(ia.utilisateur_id::text) FILTER (WHERE ia.utilisateur_id IS NOT NULL), '{}') "
-            "AS assignes "
-            "FROM collab_checklist_item ci LEFT JOIN collab_item_assigne ia ON ia.item_id = ci.id "
-            "WHERE ci.checklist_id = %s "
-            "GROUP BY ci.id, ci.texte, ci.fait, ci.assigne_id, ci.echeance, ci.position "
-            "ORDER BY ci.position",
-            (clid,),
-            role=role,
-        )
-        out.append(
-            ChecklistOut(
-                id=clid,
-                titre=cl["titre"],
-                items=[
-                    ChecklistItemOut(
-                        id=str(it["id"]),
-                        texte=it["texte"],
-                        fait=bool(it["fait"]),
-                        assigne_id=str(it["assigne_id"]) if it["assigne_id"] else None,
-                        assignes=[str(a) for a in (it["assignes"] or [])],
-                        echeance=_iso(it["echeance"]),
-                    )
-                    for it in items
-                ],
-            )
-        )
-    return out
-
-
-def carte_out(row: dict[str, Any], role: str) -> CarteProtoOut:
-    """Assemble the full nested card the front expects, from the card row plus its
-    labels, members, checklists, attachments, comments and activity."""
-    cid = str(row["id"])
-    couverture_id = str(row["couverture_id"]) if row["couverture_id"] else None
-    etiquettes = db.fetch_all(
-        "SELECT etiquette_id FROM collab_carte_etiquette WHERE carte_id = %s", (cid,), role=role
-    )
-    membres = db.fetch_all(
-        "SELECT utilisateur_id, role FROM collab_carte_membre WHERE carte_id = %s", (cid,), role=role
-    )
-    activite = db.fetch_all(
-        "SELECT id, auteur_id, texte, cree_le FROM collab_activite WHERE carte_id = %s ORDER BY cree_le",
-        (cid,),
-        role=role,
-    )
-    return CarteProtoOut(
-        id=cid,
-        tableau_id=str(row["tableau_id"]),
-        colonne_id=str(row["colonne_id"]),
-        numero=int(row["numero"]) if row["numero"] is not None else 0,
-        titre=row["titre"],
-        description=row["description"] or "",
-        etiquettes=[str(e["etiquette_id"]) for e in etiquettes],
-        assignes=[str(m["utilisateur_id"]) for m in membres if m["role"] == "assigne"],
-        suiveurs=[str(m["utilisateur_id"]) for m in membres if m["role"] == "suiveur"],
-        debut=_iso(row["debut"]),
-        echeance=_iso(row["echeance"]),
-        rappel=row["rappel"] or "aucun",
-        priorite=row["priorite"] or "normale",
-        complexite=int(row["complexite"]) if row["complexite"] is not None else None,
-        position=int(row["position"]),
-        checklists=_checklists_for(cid, role),
-        pieces=_pieces_for("carte_id", cid, couverture_id, role),
-        commentaires=_commentaires_for(cid, role),
-        activite=[
-            ActiviteOut(
-                id=str(a["id"]),
-                auteur_id=str(a["auteur_id"]) if a["auteur_id"] else "",
-                cree_le=_iso(a["cree_le"]),
-                texte=a["texte"],
-            )
-            for a in activite
-        ],
-        archive=bool(row["archive"]),
-        modele=bool(row["modele"]),
-        couverture_id=couverture_id,
-        publie=bool(row["publie"]),
-        evenement_id=str(row["evenement_id"]) if row["evenement_id"] else None,
-    )
-
-
 def _fetch_carte(carte_id: str, role: str) -> CarteProtoOut:
     row = db.fetch_one(f"SELECT {_CARTE_COLS} FROM collab_carte WHERE id = %s", (carte_id,), role=role)
     if not row:
@@ -380,7 +145,7 @@ def list_cartes(
         (tableau_id,),
         role=user.role,
     )
-    return [carte_out(r, user.role) for r in rows]
+    return assemble_cartes(rows, user.role)
 
 
 @router.get("/tableaux/{tableau_id}/cartes-archivees", response_model=list[CarteProtoOut])
@@ -394,7 +159,7 @@ def list_cartes_archivees(
         (tableau_id,),
         role=user.role,
     )
-    return [carte_out(r, user.role) for r in rows]
+    return assemble_cartes(rows, user.role)
 
 
 def _valider_colonne(colonne_id: str, tableau_id: str, role: str) -> None:
