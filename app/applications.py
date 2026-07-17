@@ -108,13 +108,25 @@ def acces_membre(
     if not db.fetch_one("SELECT id FROM membre WHERE id = %s", (membre_id,), role=user.role):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membre introuvable")
     rows = db.fetch_all(
-        "SELECT a.code, a.nom, a.description, a.url, a.actif, "
+        "SELECT a.code, a.nom, a.description, a.url, a.actif, a.est_defaut, "
         "COALESCE((SELECT m.actif FROM membre_application_acces m WHERE m.membre_id = %s AND m.application_code = a.code), false) AS acces_actif "
         "FROM application a WHERE a.actif = true ORDER BY a.ordre, a.nom",
         (membre_id,),
         role=user.role,
     )
-    return [ApplicationOut(code=r["code"], nom=r["nom"], description=r.get("description"), url=r.get("url"), actif=bool(r.get("actif")), acces_actif=bool(r.get("acces_actif"))) for r in rows]
+    # A default application (est_defaut) is visible to EVERY member automatically
+    # (mes_applications: est_defaut OR explicit grant), so its reported visibility is
+    # always true regardless of any membre_application_acces row. Reporting it from
+    # the grant table alone would wrongly show the member space as "not visible".
+    return [
+        ApplicationOut(
+            code=r["code"], nom=r["nom"], description=r.get("description"), url=r.get("url"),
+            actif=bool(r.get("actif")),
+            acces_actif=bool(r.get("est_defaut")) or bool(r.get("acces_actif")),
+            est_defaut=bool(r.get("est_defaut")),
+        )
+        for r in rows
+    ]
 
 
 class AccesIn(BaseModel):
@@ -135,8 +147,17 @@ def definir_acces(
     on their next « Mes applications » load or secure session re-check."""
     if not db.fetch_one("SELECT id FROM membre WHERE id = %s", (membre_id,), role=user.role):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membre introuvable")
-    if not db.fetch_one("SELECT code FROM application WHERE code = %s AND actif = true", (code,), role=user.role):
+    app_row = db.fetch_one("SELECT code, est_defaut FROM application WHERE code = %s AND actif = true", (code,), role=user.role)
+    if not app_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="application inconnue")
+    # A default application is visible to every member automatically: granting is
+    # pointless and revoking would be a silent no-op (mes_applications short-circuits
+    # on est_defaut). Refuse clearly instead of writing a misleading grant row.
+    if bool(app_row.get("est_defaut")):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="application par défaut : la visibilité est automatique pour tous les membres et ne se gère pas ici",
+        )
     if payload.actif:
         db.execute(
             "INSERT INTO membre_application_acces (membre_id, application_code, actif, accorde_le, accorde_par, revoque_le, revoque_par, motif, maj_le) "
