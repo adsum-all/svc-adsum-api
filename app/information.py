@@ -13,6 +13,7 @@ explicit "J'ai pris connaissance".
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -27,6 +28,7 @@ from .schemas import UserMe
 router = APIRouter(prefix="/api/v1", tags=["informations"])
 
 _PRIORITES = "^(normale|importante|urgente)$"
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 # --- Payloads ---------------------------------------------------------------
@@ -94,8 +96,13 @@ def _colonnes(payload: InformationIn | InformationPatch) -> dict[str, Any]:
     for k in ("titre", "sous_titre", "contenu", "priorite", "auteur", "requiert_accuse",
               "lecture_vocale_auto", "lien_url", "action_label", "action_url",
               "publier_le", "expire_le", "epingle_jusqu"):
-        if k in champs:
-            out[k] = champs[k]
+        if k not in champs:
+            continue
+        # titre/contenu are NOT NULL: a patch that explicitly clears them is ignored
+        # rather than crashing the UPDATE with a constraint violation.
+        if k in ("titre", "contenu") and (champs[k] is None or str(champs[k]).strip() == ""):
+            continue
+        out[k] = champs[k]
     if "cibles" in champs and champs["cibles"] is not None:
         out["cibles"] = json.dumps([c if isinstance(c, dict) else c.model_dump() for c in payload.cibles or []])
     return out
@@ -123,7 +130,12 @@ def _resoudre_destinataires(cibles: list[dict[str, Any]], role: str | None) -> l
         cible = ca.cible_valide_pour_creation(code, role)
         if not cible:
             continue
-        predicat, params = ca.predicat_membres(cible, c.get("cible_id"))
+        # A unit target carries a uuid; reject a malformed one here (a clean skip)
+        # rather than letting Postgres raise an opaque 500 on the uuid cast.
+        cible_id = c.get("cible_id")
+        if cible.get("type_regle") == "unite" and (not cible_id or not _UUID_RE.match(str(cible_id))):
+            continue
+        predicat, params = ca.predicat_membres(cible, cible_id)
         rows = db.fetch_all(f"SELECT DISTINCT m.id FROM membre m WHERE {predicat}", tuple(params), role=role)
         ids.update(str(r["id"]) for r in rows)
     return sorted(ids)
@@ -159,8 +171,10 @@ def admin_detail(info_id: str, user: Annotated[UserMe, Depends(require_permissio
 @router.patch("/admin/informations/{info_id}")
 def admin_modifier(info_id: str, payload: InformationPatch, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, Any]:
     info = _info_ou_404(info_id, user.role)
-    if info.get("statut") == "archive":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Une information archivée ne peut plus être modifiée.")
+    # Only an unsent draft (or a scheduled one) may be edited: once sent, members
+    # may already have read the exact wording, so it must not change under them.
+    if info.get("statut") not in ("brouillon", "programme"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Seul un brouillon peut être modifié: une information envoyée ou archivée est figée.")
     cols = _colonnes(payload)
     if not cols:
         return _info_dict(info)
@@ -172,8 +186,11 @@ def admin_modifier(info_id: str, payload: InformationPatch, user: Annotated[User
 @router.delete("/admin/informations/{info_id}", status_code=status.HTTP_204_NO_CONTENT)
 def admin_supprimer(info_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> None:
     info = _info_ou_404(info_id, user.role)
-    if info.get("statut") == "envoye":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Une information envoyée ne se supprime pas: archivez-la.")
+    # A sent OR archived information carries per-member delivery history: deleting it
+    # would CASCADE-wipe the read/confirm records. Only an unsent draft is deletable;
+    # a sent one is archived, never destroyed.
+    if info.get("statut") not in ("brouillon", "programme"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Une information diffusée ne se supprime pas (son suivi de lecture serait perdu): elle s'archive.")
     db.execute("DELETE FROM information WHERE id = %s", (info_id,), role=user.role)
 
 
@@ -268,6 +285,7 @@ def feed_membre(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str
     out = []
     for r in rows:
         d = _info_dict(r)
+        d.pop("cibles", None)  # the targeting is internal; a member never sees who else was targeted.
         d.update({"lu": r.get("d_statut") in ("lu", "confirme"), "confirme": r.get("d_statut") == "confirme",
                   "lu_le": r.get("lu_le"), "confirme_le": r.get("confirme_le")})
         out.append(d)
@@ -301,6 +319,7 @@ def detail_membre(info_id: str, user: Annotated[UserMe, Depends(current_user)]) 
     )
     r = rows[0]
     d = _info_dict(r)
+    d.pop("cibles", None)
     d.update({"lu": True, "confirme": r.get("d_statut") == "confirme", "confirme_le": r.get("confirme_le")})
     return d
 
@@ -308,9 +327,14 @@ def detail_membre(info_id: str, user: Annotated[UserMe, Depends(current_user)]) 
 @router.post("/membres/me/informations/{info_id}/confirmer")
 def confirmer_membre(info_id: str, user: Annotated[UserMe, Depends(current_user)]) -> dict[str, Any]:
     mid = _membre_ou_403(user)
+    # Confirm only an information the member actually receives, that is still sent and
+    # not expired (same scope as the feed), so a confirmation can never be recorded on
+    # a withdrawn or out-of-scope message.
     upd = db.execute(
-        "UPDATE information_destinataire SET statut = 'confirme', confirme_le = coalesce(confirme_le, now()), "
-        "lu_le = coalesce(lu_le, now()) WHERE information_id = %s AND membre_id = %s RETURNING confirme_le",
+        "UPDATE information_destinataire d SET statut = 'confirme', confirme_le = coalesce(d.confirme_le, now()), "
+        "lu_le = coalesce(d.lu_le, now()) FROM information i "
+        "WHERE d.information_id = i.id AND d.information_id = %s AND d.membre_id = %s "
+        "AND i.statut = 'envoye' AND (i.expire_le IS NULL OR i.expire_le > now()) RETURNING d.confirme_le",
         (info_id, mid), role=user.role,
     )
     if not upd:
