@@ -615,6 +615,18 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
 
     result["retention_renouvellements"] = scan_renouvellement(role)
 
+    # 7bis) Communications retention: archive old Informations and read/old
+    # notifications, cleanup Telegram within the Bot API window. Deletion stays OFF
+    # unless the administrator opted in (retention_auto_suppression). Never breaks
+    # the daily run.
+    try:
+        from .retention_archivage import executer_retention
+
+        rapport = executer_retention(simulation=False, acteur="cron:quotidien", role=role)
+        result["retention_communications"] = rapport
+    except Exception as exc:  # noqa: BLE001 - retention must never break the daily cron
+        result["retention_communications_erreur"] = str(exc)[:200]
+
     # 8) Collaboration card due-date reminders. The card carries a reminder offset
     # (2j / 1j / day-of); on the matching day, its assignees and followers who map
     # to a member get a real reminder (in-app + channels), deduped per card+day.
