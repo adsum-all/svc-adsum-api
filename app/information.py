@@ -33,11 +33,23 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 
 # --- Payloads ---------------------------------------------------------------
 
+class Croisement(BaseModel):
+    """Fine-grained crossed targeting: a commission INSIDE a coordination or a
+    stewardship, optionally narrowed to a sub-group. Every provided criterion is
+    ANDed, so "Chorale de la coordination Afrique" reaches exactly that audience."""
+    commission_id: str | None = None
+    intendance_id: str | None = None
+    coordination_id: str | None = None
+    groupe: str | None = Field(default=None, max_length=160)
+
+
 class CibleRef(BaseModel):
     code: str = Field(min_length=1, max_length=60)
     cible_id: str | None = None
     # Manual selection: explicit member ids, used with the reserved code "selection".
     membre_ids: list[str] | None = Field(default=None, max_length=2000)
+    # Crossed targeting, used with the reserved code "croisement".
+    croisement: Croisement | None = None
     # Display label (unit name) persisted so the editor's chips stay readable.
     libelle: str | None = Field(default=None, max_length=160)
 
@@ -130,6 +142,28 @@ def _resoudre_destinataires(cibles: list[dict[str, Any]], role: str | None) -> l
     for c in cibles:
         code = str(c.get("code") or "").strip()
         if not code:
+            continue
+        # Crossed targeting: every provided criterion is ANDed over the members.
+        if code == "croisement":
+            cr = c.get("croisement") or {}
+            preds: list[str] = ["m.statut = 'actif'"]
+            params: list[Any] = []
+            if cr.get("commission_id") and _UUID_RE.match(str(cr["commission_id"])):
+                preds.append("m.commission_id = %s")
+                params.append(str(cr["commission_id"]))
+            if cr.get("intendance_id") and _UUID_RE.match(str(cr["intendance_id"])):
+                preds.append("m.intendance_id = %s")
+                params.append(str(cr["intendance_id"]))
+            if cr.get("coordination_id") and _UUID_RE.match(str(cr["coordination_id"])):
+                # A member belongs to a coordination THROUGH their stewardship.
+                preds.append("EXISTS (SELECT 1 FROM intendance i WHERE i.id = m.intendance_id AND i.coordination_id = %s)")
+                params.append(str(cr["coordination_id"]))
+            if cr.get("groupe"):
+                preds.append("m.groupe = %s")
+                params.append(str(cr["groupe"]))
+            if len(preds) > 1:  # at least one real criterion beyond the active guard
+                rows = db.fetch_all(f"SELECT DISTINCT m.id FROM membre m WHERE {' AND '.join(preds)}", tuple(params), role=role)
+                ids.update(str(r["id"]) for r in rows)
             continue
         # Manual selection: explicit member ids chosen one by one in the editor.
         # Only ACTIVE members among them are retained, like every other segment.
