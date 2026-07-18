@@ -6,11 +6,28 @@ a published structure (commission, coordination, intendance, tribe) and every li
 encodes a real relation. Vacant roles are shown as such rather than hidden, so the
 skeleton of the organisation is always readable even before it is fully staffed.
 
-The result is written into an existing draft ``organisation_version`` as nodes and
-typed links, ready to be edited, validated and published.
+Structure, top to bottom:
+
+- the functional apex chain (founder -> ... -> general steward);
+- two grouping blocks "Intendances" and "Coordinations" at the same level;
+- under EACH intendance AND EACH coordination, the SAME sub-structure: a
+  "Responsables de commissions et de missions" group holding EVERY published
+  commission and mission. Each commission shows its responsible, then, only when a
+  sub-responsible is actually in post, a "Sous-responsables" level; the members
+  hang under the sub-responsibles when they exist, otherwise directly under the
+  commission responsible (the member's n+1 is dynamic). A commission with nobody
+  still appears, ready to receive members;
+- the particular branches: the College of shepherds, the Patriarchs group and the
+  twelve tribes with their members.
+
+All nodes carry a client-generated id so the whole draft is written with two batch
+inserts (nodes, then links) over a single connection, instead of hundreds of
+per-node round trips: at this size (hundreds of commission cells) that is the
+difference between a fast build and a serverless timeout.
 """
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from . import db
@@ -70,6 +87,30 @@ def _effectifs(colonne: str, role: str | None) -> dict[str, int]:
     return {str(r["uid"]): int(r["n"]) for r in rows}
 
 
+def _effectifs_paire(colonne_unite: str, role: str | None) -> dict[tuple[str, str], int]:
+    """Active members per (commission, unit) pair, so each commission cell shown under
+    a unit carries the real local head count (never a global one)."""
+    rows = db.fetch_all(
+        f"SELECT commission_id AS cm, {colonne_unite} AS u, count(*) AS n FROM membre "
+        f"WHERE statut = 'actif' AND commission_id IS NOT NULL AND {colonne_unite} IS NOT NULL GROUP BY 1, 2",
+        (), role=role,
+    )
+    return {(str(r["cm"]), str(r["u"])): int(r["n"]) for r in rows}
+
+
+def _membres_par_ids(ids: set[object], role: str | None) -> dict[str, dict[str, Any]]:
+    """Resolve every referenced member in a single query, so the build never fires one
+    lookup per commission cell (which, at hundreds of cells, would time out)."""
+    clean = [i for i in ids if i]
+    if not clean:
+        return {}
+    rows = db.fetch_all(
+        "SELECT id, prenoms, nom, nom_affiche AS nom_affiche_calc FROM membre WHERE id = ANY(%s)",
+        (clean,), role=role,
+    )
+    return {str(r["id"]): r for r in rows}
+
+
 def construire(version_id: str, role: str | None) -> dict[str, int]:
     """Populate a draft version with nodes and links derived from the real data.
 
@@ -82,38 +123,63 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
             "SELECT cle, libelle_n, categorie, abreviation FROM fonction_honorifique", (), role=role
         )
     }
-    eff_comm = _effectifs("commission_id", role)
-    eff_coord = _effectifs("coordination_id", role)
     eff_int = _effectifs("intendance_id", role)
+    eff_coord = _effectifs("coordination_id", role)
     eff_tribu = _effectifs("tribu_id", role)
+    eff_comm_int = _effectifs_paire("intendance_id", role)
+    eff_comm_coord = _effectifs_paire("coordination_id", role)
+
+    intendances = db.fetch_all("SELECT id, nom, responsable_id FROM intendance WHERE publie = true ORDER BY nom", (), role=role)
+    coordinations = db.fetch_all("SELECT id, nom, responsable_id FROM coordination WHERE publie = true ORDER BY nom", (), role=role)
+    # Commissions first, then missions; both are the same table split by type.
+    commissions = db.fetch_all(
+        "SELECT id, nom, responsable_id, type_organisation FROM commission WHERE publie = true "
+        "ORDER BY (type_organisation = 'mission'), nom",
+        (), role=role,
+    )
+    tribus = db.fetch_all("SELECT id, nom, patriarche, patriarche_membre_id FROM tribu ORDER BY nom", (), role=role)
+    # Occupied sub-responsibles only (a vacant one is not a level: members then hang
+    # directly on the commission responsible). Grouped by commission.
+    sousresp: dict[str, list[dict[str, Any]]] = {}
+    for r in db.fetch_all("SELECT id, nom, commission_id, responsable_id FROM sous_commission WHERE responsable_id IS NOT NULL", (), role=role):
+        sousresp.setdefault(str(r["commission_id"]), []).append(r)
+
+    # Resolve every referenced holder once, in a single query.
+    ref_ids: set[object] = set()
+    for row in (*intendances, *coordinations, *commissions):
+        if row.get("responsable_id"):
+            ref_ids.add(row["responsable_id"])
+    for tr in tribus:
+        if tr.get("patriarche_membre_id"):
+            ref_ids.add(tr["patriarche_membre_id"])
+    for lst in sousresp.values():
+        for r in lst:
+            if r.get("responsable_id"):
+                ref_ids.add(r["responsable_id"])
+    membres = _membres_par_ids(ref_ids, role)
 
     ids: dict[str, str] = {}
     ordre = [0]
+    pending_nodes: list[tuple[Any, ...]] = []
+    pending_links: list[tuple[str, str, str, str | None]] = []
 
     def add_node(cle: str, nom: str, **kw: Any) -> str:
         ordre[0] += 10
-        row = db.execute(
-            "INSERT INTO organisation_node (version_id, cle, type_noeud, nom, sous_titre, membre_id, "
-            "fonction_cle, categorie, unite_type, unite_id, effectif, statut, ordre) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-            (
-                version_id, cle, kw.get("type_noeud", "structure"), nom, kw.get("sous_titre"),
-                kw.get("membre_id"), kw.get("fonction_cle"), kw.get("categorie"),
-                kw.get("unite_type"), kw.get("unite_id"), kw.get("effectif"),
-                kw.get("statut", "actif"), ordre[0],
-            ),
-            role=role,
-        )
-        ids[cle] = str(row["id"])
-        return ids[cle]
+        nid = str(uuid.uuid4())
+        ids[cle] = nid
+        pending_nodes.append((
+            nid, version_id, cle, kw.get("type_noeud", "structure"), nom, kw.get("sous_titre"),
+            kw.get("membre_id"), kw.get("fonction_cle"), kw.get("categorie"),
+            kw.get("unite_type"), kw.get("unite_id"), kw.get("effectif"),
+            kw.get("statut", "actif"), ordre[0],
+        ))
+        return nid
 
     def add_link(src_cle: str, dst_cle: str, type_lien: str, libelle: str | None = None) -> None:
-        if src_cle not in ids or dst_cle not in ids:
-            return
-        db.execute(
-            "INSERT INTO organisation_link (version_id, source_id, cible_id, type_lien, libelle) VALUES (%s, %s, %s, %s, %s)",
-            (version_id, ids[src_cle], ids[dst_cle], type_lien, libelle), role=role,
-        )
+        pending_links.append((src_cle, dst_cle, type_lien, libelle))
+
+    def eff_label(n: int) -> str:
+        return f"{n} membre{'s' if n > 1 else ''}"
 
     # 1. Functional apex chain (person nodes; vacant when no confirmed holder).
     precedent: str | None = None
@@ -131,111 +197,128 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
             add_link(precedent, cle, "hierarchique")
         precedent = cle
 
-    # 2. Coordinations then intendances (published only), under the general steward.
-    # Two grouping blocks under the general steward: "Intendances" and
-    # "Coordinations", at the same level. Each holds its units, folded by default,
-    # so the chart stays readable and accepts new units without changing shape.
-    # Responsibles are NEVER at this level: they hang under a concrete unit below.
-    intendances = db.fetch_all("SELECT id, nom, responsable_id FROM intendance WHERE publie = true ORDER BY nom", (), role=role)
-    coordinations = db.fetch_all("SELECT id, nom, responsable_id FROM coordination WHERE publie = true ORDER BY nom", (), role=role)
+    # 2. Two grouping blocks under the general steward: "Intendances" and
+    # "Coordinations", at the same level. Each holds its units, folded by default.
     add_node("bloc_intendances", "Intendances", type_noeud="groupe",
              sous_titre=f"{len(intendances)} intendance{'s' if len(intendances) > 1 else ''}")
     add_link("role:intendant_general", "bloc_intendances", "hierarchique")
     add_node("bloc_coordinations", "Coordinations", type_noeud="groupe",
              sous_titre=f"{len(coordinations)} coordination{'s' if len(coordinations) > 1 else ''}")
     add_link("role:intendant_general", "bloc_coordinations", "hierarchique")
-    def _membres_unite(parent_cle: str, unite_type: str, uid: object, eff: int | None) -> None:
-        # Every unit is drillable down to a "Membres" leaf showing its real head
-        # count, so an admin can open any intendance or coordination and read its size.
-        mcle = f"{unite_type}_membres:{uid}"
-        add_node(mcle, "Membres", type_noeud="structure", sous_titre=f"{eff or 0} membre{'s' if (eff or 0) > 1 else ''}",
-                 unite_type=unite_type, unite_id=uid, effectif=eff)
-        add_link(parent_cle, mcle, "hierarchique")
+
+    n_comm = sum(1 for c in commissions if c.get("type_organisation") != "mission")
+    n_miss = len(commissions) - n_comm
+    grp_sous_titre = f"{n_comm} commission{'s' if n_comm > 1 else ''}, {n_miss} mission{'s' if n_miss > 1 else ''}"
+
+    def _sous_unite(unite_cle: str, unite_type: str, unite_id: object, eff_pairs: dict[tuple[str, str], int]) -> None:
+        """Full sub-structure under one intendance or coordination: a responsibles
+        group holding EVERY commission and mission, each drilled down to its members.
+        The members are NEVER a sibling of the responsibles: they live at the bottom of
+        each commission, under the sub-responsibles when those exist, else directly
+        under the commission responsible."""
+        uid = str(unite_id)
+        grp_cle = f"respgrp:{unite_type}:{uid}"
+        add_node(grp_cle, "Responsables de commissions et de missions", type_noeud="groupe", sous_titre=grp_sous_titre)
+        add_link(unite_cle, grp_cle, "hierarchique")
+        for cm in commissions:
+            cm_id = str(cm["id"])
+            resp = membres.get(str(cm.get("responsable_id"))) if cm.get("responsable_id") else None
+            nom_unite = str(cm["nom"]).replace("Commission ", "").replace("Mission ", "").strip()
+            eff = eff_pairs.get((cm_id, uid), 0)
+            c_cle = f"commission:{unite_type}:{uid}:{cm_id}"
+            add_node(c_cle, f"Responsable {nom_unite}", sous_titre=_nom_membre(resp) or "Poste vacant",
+                     membre_id=resp["id"] if resp else None, fonction_cle="responsable", categorie="fonction",
+                     unite_type="commission", unite_id=cm["id"], effectif=eff, statut="actif" if resp else "vacant")
+            add_link(grp_cle, c_cle, "hierarchique")
+            # Dynamic n+1: members hang under the sub-responsibles only when at least
+            # one is in post; otherwise they attach straight to the commission head.
+            parent_membres = c_cle
+            occupied = sousresp.get(cm_id) or []
+            if occupied:
+                sr_cle = f"sousresp:{unite_type}:{uid}:{cm_id}"
+                add_node(sr_cle, "Sous-responsables", type_noeud="structure",
+                         sous_titre=f"{len(occupied)} sous-responsable{'s' if len(occupied) > 1 else ''}",
+                         unite_type="commission", unite_id=cm["id"])
+                add_link(c_cle, sr_cle, "hierarchique")
+                parent_membres = sr_cle
+            m_cle = f"membres:{unite_type}:{uid}:{cm_id}"
+            add_node(m_cle, "Membres", type_noeud="structure", sous_titre=eff_label(eff),
+                     unite_type="commission", unite_id=cm["id"], effectif=eff)
+            add_link(parent_membres, m_cle, "hierarchique")
 
     for it in intendances:
         cle = f"intendance:{it['id']}"
-        resp = _membre_par_id(it.get("responsable_id"), role)
-        eff = eff_int.get(str(it["id"]))
+        resp = membres.get(str(it.get("responsable_id"))) if it.get("responsable_id") else None
         add_node(cle, str(it["nom"]), sous_titre=_nom_membre(resp) or "Intendant à désigner", membre_id=resp["id"] if resp else None,
                  fonction_cle="intendant", categorie="fonction", unite_type="intendance", unite_id=it["id"],
-                 effectif=eff, statut="actif" if resp else "vacant")
+                 effectif=eff_int.get(str(it["id"])), statut="actif" if resp else "vacant")
         add_link("bloc_intendances", cle, "hierarchique")
-        _membres_unite(cle, "intendance", it["id"], eff)
+        _sous_unite(cle, "intendance", it["id"], eff_comm_int)
     for co in coordinations:
         cle = f"coordination:{co['id']}"
-        resp = _membre_par_id(co.get("responsable_id"), role)
-        eff = eff_coord.get(str(co["id"]))
+        resp = membres.get(str(co.get("responsable_id"))) if co.get("responsable_id") else None
         add_node(cle, str(co["nom"]), sous_titre=_nom_membre(resp) or "Coordinateur à désigner", membre_id=resp["id"] if resp else None,
                  fonction_cle="coordinateur", categorie="fonction", unite_type="coordination", unite_id=co["id"],
-                 effectif=eff, statut="actif" if resp else "vacant")
+                 effectif=eff_coord.get(str(co["id"])), statut="actif" if resp else "vacant")
         add_link("bloc_coordinations", cle, "hierarchique")
-        _membres_unite(cle, "coordination", co["id"], eff)
-
-    # 3. Full example branches under ONE intendance and ONE coordination:
-    # unit -> "Responsables de commissions et de missions" -> a "Responsable <unit>"
-    # per commission -> "Sous-responsables" -> "Membres" (real head count). The
-    # commissions carry no unit link in the data, so they are split between the two
-    # examples to make both branches complete; the other units stay foldable leaves,
-    # ready to receive the same structure.
-    commissions = db.fetch_all("SELECT id, nom, responsable_id FROM commission WHERE publie = true ORDER BY nom", (), role=role)
-    milieu = (len(commissions) + 1) // 2
-    exemples: list[tuple[str, str, list[dict[str, Any]]]] = []
-    if intendances:
-        exemples.append(("respgrp_int", f"intendance:{intendances[0]['id']}", commissions[:milieu]))
-    if coordinations:
-        exemples.append(("respgrp_coord", f"coordination:{coordinations[0]['id']}", commissions[milieu:]))
-    for grp_cle, parent_cle, lot in exemples:
-        if parent_cle not in ids or not lot:
-            continue
-        add_node(grp_cle, "Responsables de commissions et de missions", type_noeud="groupe",
-                 sous_titre=f"{len(lot)} responsable{'s' if len(lot) > 1 else ''}")
-        add_link(parent_cle, grp_cle, "hierarchique")
-        for cm in lot:
-            cle = f"commission:{cm['id']}"
-            resp = _membre_par_id(cm.get("responsable_id"), role)
-            nom_unite = str(cm["nom"]).replace("Commission ", "").replace("Mission ", "").strip()
-            eff = eff_comm.get(str(cm["id"]))
-            add_node(cle, f"Responsable {nom_unite}", sous_titre=_nom_membre(resp) or "Poste vacant",
-                     membre_id=resp["id"] if resp else None, fonction_cle="responsable", categorie="fonction",
-                     unite_type="commission", unite_id=cm["id"], effectif=eff, statut="actif" if resp else "vacant")
-            add_link(grp_cle, cle, "hierarchique")
-            sr_cle = f"sousresp:{cm['id']}"
-            add_node(sr_cle, "Sous-responsables", type_noeud="structure", sous_titre=nom_unite, unite_type="commission", unite_id=cm["id"])
-            add_link(cle, sr_cle, "hierarchique")
-            m_cle = f"membres:{cm['id']}"
-            add_node(m_cle, "Membres", type_noeud="structure", sous_titre=nom_unite, unite_type="commission", unite_id=cm["id"], effectif=eff)
-            add_link(sr_cle, m_cle, "hierarchique")
+        _sous_unite(cle, "coordination", co["id"], eff_comm_coord)
 
     # A central separator between the main functional chain (left) and the
-    # particular branches (right), like the reference diagram. It is a free
-    # modeling element the administration can move, duplicate or remove.
+    # particular branches (right), like the reference diagram.
     add_node("separateur_central", "Branches particulières reliées", type_noeud="separateur",
              sous_titre="Séparation gouvernance principale / branches particulières")
 
-    # 4. Special branch: College of shepherds, coordinated by the mission shepherd.
+    # 3. Special branch: College of shepherds, coordinated by the mission shepherd.
     n_bergers = int((db.fetch_one("SELECT count(*) AS n FROM membre WHERE est_berger = true AND statut = 'actif'", (), role=role) or {}).get("n") or 0)
     add_node("college_bergers", "Collège des bergers", type_noeud="groupe", sous_titre="Titre : Berger / Bergère",
              unite_type="college", effectif=n_bergers)
     add_link("role:berger_missions", "college_bergers", "coordination", "Coordonne le Collège des bergers")
 
-    # 5. Special branch: Patriarchs group, supervised by the founder and moderator,
+    # 4. Special branch: Patriarchs group, supervised by the founder and moderator,
     # with the twelve tribes under it (tribal responsibility links).
     add_node("groupe_patriarches", "Groupe des Patriarches", type_noeud="groupe", sous_titre="Fonction particulière",
              unite_type="groupe")
     add_link("role:fondateur", "groupe_patriarches", "supervision", "Supervision directe")
     add_link("role:moderateur", "groupe_patriarches", "supervision", "Coordination directe")
-    for tr in db.fetch_all("SELECT id, nom, patriarche, patriarche_membre_id FROM tribu ORDER BY nom", (), role=role):
+    for tr in tribus:
         cle = f"tribu:{tr['id']}"
-        patr = _membre_par_id(tr.get("patriarche_membre_id"), role)
+        patr = membres.get(str(tr.get("patriarche_membre_id"))) if tr.get("patriarche_membre_id") else None
         sous = _nom_membre(patr) or (str(tr["patriarche"]) if tr.get("patriarche") else "Patriarche à désigner")
         eff_tr = eff_tribu.get(str(tr["id"]))
         add_node(cle, str(tr["nom"]), sous_titre=sous, membre_id=patr["id"] if patr else None,
                  fonction_cle="patriarche", categorie="fonction_particuliere", unite_type="tribu", unite_id=tr["id"],
                  effectif=eff_tr, statut="actif" if patr or tr.get("patriarche") else "vacant")
         add_link("groupe_patriarches", cle, "responsabilite_tribu")
-        # Members of the tribe as a collapsible leaf.
         tm_cle = f"tribu_membres:{tr['id']}"
-        add_node(tm_cle, "Membres", type_noeud="structure", sous_titre=str(tr["nom"]), unite_type="tribu", unite_id=tr["id"], effectif=eff_tr)
+        add_node(tm_cle, "Membres", type_noeud="structure", sous_titre=eff_label(eff_tr or 0), unite_type="tribu", unite_id=tr["id"], effectif=eff_tr)
         add_link(cle, tm_cle, "hierarchique")
 
-    return {"noeuds": len(ids), "chaine": len(_CHAINE)}
+    # Single-connection flush: all nodes, then all links whose ends both resolved.
+    # One multi-row INSERT each (a single, unprepared statement), NOT executemany:
+    # over the Supabase transaction pooler a named prepared statement from one request
+    # collides with a leftover on a reused backend ("_pg3_0 already exists"), so a
+    # one-off statement is the reliable way to write hundreds of rows at once.
+    link_rows = [(version_id, ids[s], ids[d], t, lb) for (s, d, t, lb) in pending_links if s in ids and d in ids]
+
+    def _flush(cur: Any, sql_head: str, cols: int, rows: list[tuple[Any, ...]]) -> None:
+        if not rows:
+            return
+        tuple_sql = "(" + ", ".join(["%s"] * cols) + ")"
+        values_sql = ", ".join([tuple_sql] * len(rows))
+        flat = [value for row in rows for value in row]
+        cur.execute(sql_head + values_sql, flat)
+
+    with db.connection(role) as conn, conn.cursor() as cur:
+        _flush(
+            cur,
+            "INSERT INTO organisation_node (id, version_id, cle, type_noeud, nom, sous_titre, membre_id, "
+            "fonction_cle, categorie, unite_type, unite_id, effectif, statut, ordre) VALUES ",
+            14, pending_nodes,
+        )
+        _flush(
+            cur,
+            "INSERT INTO organisation_link (version_id, source_id, cible_id, type_lien, libelle) VALUES ",
+            5, link_rows,
+        )
+
+    return {"noeuds": len(pending_nodes), "liens": len(link_rows), "chaine": len(_CHAINE)}
