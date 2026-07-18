@@ -20,6 +20,9 @@ from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["fonctions"])
 
+# The four attribution categories. Kept as a stable ASCII enum; the French label
+# shown to the operator lives in the front-office, never in the stored code.
+CATEGORIES = ("titre", "fonction_speciale", "fonction", "fonction_particuliere")
 
 
 class FonctionIn(BaseModel):
@@ -27,6 +30,8 @@ class FonctionIn(BaseModel):
     libelle_h: str = Field(min_length=1, max_length=60)
     libelle_f: str = Field(min_length=1, max_length=60)
     libelle_n: str = Field(min_length=1, max_length=60)
+    categorie: str = Field(default="fonction")
+    abreviation: str | None = Field(default=None, max_length=20)
     est_vip: bool = False
     ordre: int = 100
 
@@ -35,6 +40,8 @@ class FonctionPatch(BaseModel):
     libelle_h: str | None = Field(default=None, max_length=60)
     libelle_f: str | None = Field(default=None, max_length=60)
     libelle_n: str | None = Field(default=None, max_length=60)
+    categorie: str | None = None
+    abreviation: str | None = Field(default=None, max_length=20)
     est_vip: bool | None = None
     ordre: int | None = None
     actif: bool | None = None
@@ -45,20 +52,34 @@ class MembreFonctionIn(BaseModel):
     confirmee: bool = True
 
 
+_CATALOGUE_COLS = "cle, libelle_h, libelle_f, libelle_n, categorie, abreviation, est_vip, ordre, actif"
+
+
 def _row_to_dict(r: dict[str, object]) -> dict[str, object]:
     return {
         "cle": r["cle"], "libelle_h": r["libelle_h"], "libelle_f": r["libelle_f"],
-        "libelle_n": r["libelle_n"], "est_vip": bool(r["est_vip"]), "ordre": r["ordre"],
-        "actif": bool(r["actif"]),
+        "libelle_n": r["libelle_n"], "categorie": r.get("categorie") or "fonction",
+        "abreviation": r.get("abreviation"), "est_vip": bool(r["est_vip"]),
+        "ordre": r["ordre"], "actif": bool(r["actif"]),
     }
+
+
+def _valider_categorie(categorie: object) -> str:
+    valeur = str(categorie or "fonction")
+    if valeur not in CATEGORIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Catégorie invalide : {valeur}. Valeurs admises : {', '.join(CATEGORIES)}.",
+        )
+    return valeur
 
 
 @router.get("/fonctions")
 def catalogue_actif(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, object]]:
-    """Active catalogue, used to populate the registration select for any member."""
+    """Active catalogue, used to populate the registration selects for any member.
+    Callers filter by ``categorie`` to build the four separate blocks."""
     rows = db.fetch_all(
-        "SELECT cle, libelle_h, libelle_f, libelle_n, est_vip, ordre, actif "
-        "FROM fonction_honorifique WHERE actif = true ORDER BY ordre, cle",
+        f"SELECT {_CATALOGUE_COLS} FROM fonction_honorifique WHERE actif = true ORDER BY categorie, ordre, cle",
         (),
         role=user.role,
     )
@@ -68,8 +89,7 @@ def catalogue_actif(user: Annotated[UserMe, Depends(current_user)]) -> list[dict
 @router.get("/admin/fonctions")
 def list_fonctions(user: Annotated[UserMe, Depends(require_permission("fonctions.consulter"))]) -> list[dict[str, object]]:
     rows = db.fetch_all(
-        "SELECT cle, libelle_h, libelle_f, libelle_n, est_vip, ordre, actif "
-        "FROM fonction_honorifique ORDER BY ordre, cle",
+        f"SELECT {_CATALOGUE_COLS} FROM fonction_honorifique ORDER BY categorie, ordre, cle",
         (),
         role=user.role,
     )
@@ -78,16 +98,19 @@ def list_fonctions(user: Annotated[UserMe, Depends(require_permission("fonctions
 
 @router.post("/admin/fonctions")
 def create_fonction(payload: FonctionIn, user: Annotated[UserMe, Depends(require_permission("fonctions.gerer"))]) -> dict[str, object]:
+    categorie = _valider_categorie(payload.categorie)
     exists = db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (payload.cle,), role=user.role)
     if exists:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="function already exists")
+    abrege = (payload.abreviation or "").strip() or None
     db.execute(
-        "INSERT INTO fonction_honorifique (cle, libelle_h, libelle_f, libelle_n, est_vip, ordre, maj_par, maj_le) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, now())",
-        (payload.cle, payload.libelle_h, payload.libelle_f, payload.libelle_n, payload.est_vip, payload.ordre, user.id),
+        "INSERT INTO fonction_honorifique (cle, libelle_h, libelle_f, libelle_n, categorie, abreviation, est_vip, ordre, transversal, maj_par, maj_le) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())",
+        (payload.cle, payload.libelle_h, payload.libelle_f, payload.libelle_n, categorie, abrege,
+         payload.est_vip, payload.ordre, categorie == "fonction_particuliere", user.id),
         role=user.role,
     )
-    audit.log(user.id, user.role, "creation_fonction", "fonction_honorifique", payload.cle, {})
+    audit.log(user.id, user.role, "creation_fonction", "fonction_honorifique", payload.cle, {"categorie": categorie})
     return {"ok": True, "cle": payload.cle}
 
 
@@ -96,6 +119,12 @@ def update_fonction(cle: str, payload: FonctionPatch, user: Annotated[UserMe, De
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
+    if "categorie" in fields:
+        fields["categorie"] = _valider_categorie(fields["categorie"])
+        # The transversal flag follows the particular-function category.
+        fields["transversal"] = fields["categorie"] == "fonction_particuliere"
+    if "abreviation" in fields:
+        fields["abreviation"] = (str(fields["abreviation"]).strip() or None) if fields["abreviation"] is not None else None
     sets = ", ".join(f"{k} = %s" for k in fields)
     row = db.execute(
         f"UPDATE fonction_honorifique SET {sets}, maj_par = %s, maj_le = now() WHERE cle = %s RETURNING cle",
@@ -135,7 +164,8 @@ def dependances_fonction(
     """How many members currently hold this function (with a sample), and the active
     functions it can be reassigned to, so the administration can resolve the holders
     before deactivating a title instead of leaving them pointing at a dead key."""
-    if not db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s", (cle,), role=user.role):
+    source = db.fetch_one("SELECT cle, categorie FROM fonction_honorifique WHERE cle = %s", (cle,), role=user.role)
+    if not source:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown function")
     n = int((db.fetch_one("SELECT count(*) AS n FROM membre_fonction WHERE fonction_cle = %s", (cle,)) or {}).get("n") or 0)
     ech = [
@@ -145,13 +175,15 @@ def dependances_fonction(
             (cle,),
         )
     ]
+    # Only offer targets of the SAME category: reassigning a title holder onto an
+    # ordinary function would reintroduce the very category leak we are removing.
     cibles = [
         {"cle": r["cle"], "nom": r["libelle_h"]} for r in db.fetch_all(
-            "SELECT cle, libelle_h FROM fonction_honorifique WHERE cle <> %s AND actif = true ORDER BY ordre, cle",
-            (cle,), role=user.role,
+            "SELECT cle, libelle_h FROM fonction_honorifique WHERE cle <> %s AND actif = true AND categorie = %s ORDER BY ordre, cle",
+            (cle, source.get("categorie") or "fonction"), role=user.role,
         )
     ]
-    return {"cle": cle, "porteurs": n, "supprimable": n == 0, "echantillon": ech, "cibles": cibles}
+    return {"cle": cle, "categorie": source.get("categorie") or "fonction", "porteurs": n, "supprimable": n == 0, "echantillon": ech, "cibles": cibles}
 
 
 @router.post("/admin/fonctions/{cle}/reaffecter")

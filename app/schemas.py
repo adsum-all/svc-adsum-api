@@ -70,10 +70,17 @@ class UserMe(BaseModel):
 
 
 class FonctionPublique(BaseModel):
-    """One function held by a member, shown in the dedicated function zone."""
+    """One function held by a member, shown in the dedicated function zone.
+
+    ``categorie`` lets the client group the four attribution kinds (titre,
+    fonction_speciale, fonction, fonction_particuliere) without re-deriving it.
+    """
 
     libelle: str
     perimetre: str | None = None
+    cle: str | None = None
+    categorie: str = "fonction"
+    abreviation: str | None = None
 
 
 class MembreProfile(BaseModel):
@@ -100,6 +107,12 @@ class MembreProfile(BaseModel):
     berger_declare: bool = False
     berger_nom_declare: str | None = None
     fonctions: list[FonctionPublique] = []
+    # Resolved organisational appellation (central resolver, single precedence:
+    # fonction_speciale > titre > fonction > fonction_particuliere > civil), so the
+    # card and directory never re-derive the display rule client-side.
+    appellation: str = ""
+    appellation_formelle: str = ""
+    categorie_principale: str = "civil"
     telephone: str | None = None
     indicatif_telephone: str | None = None
     groupe: str | None = None

@@ -15,10 +15,21 @@ TITRES_INTERDITS = {"berger", "bergere", "bergère"}
 
 _SELECT = (
     "SELECT mf.id, mf.fonction_cle, mf.perimetre, mf.confirmee, mf.actif, mf.principale, mf.ordre, "
-    "fh.libelle_h AS h, fh.libelle_f AS f, fh.libelle_n AS n, fh.actif AS fh_actif "
+    "fh.libelle_h AS h, fh.libelle_f AS f, fh.libelle_n AS n, fh.actif AS fh_actif, "
+    "fh.categorie AS categorie, fh.abreviation AS abreviation, fh.est_vip AS est_vip "
     "FROM membre_fonction mf LEFT JOIN fonction_honorifique fh ON fh.cle = mf.fonction_cle "
     "WHERE mf.membre_id = %s"
 )
+
+# Display precedence between the four attribution categories. Lower rank wins in
+# compact contexts (salutations, cards). A special function outranks a title,
+# which outranks an ordinary function, which outranks a transversal one.
+CATEGORIE_RANG = {
+    "fonction_speciale": 0,
+    "titre": 1,
+    "fonction": 2,
+    "fonction_particuliere": 3,
+}
 
 
 def label_genre(genre: object, h: object, f: object, n: object) -> str | None:
@@ -50,7 +61,13 @@ def fonctions_publiques(membre_id: str, genre: object, role: str | None) -> list
         if r.get("fh_actif") is False:
             continue
         libelle = label_genre(genre, r.get("h"), r.get("f"), r.get("n")) or str(r.get("fonction_cle"))
-        out.append({"libelle": libelle, "perimetre": r.get("perimetre")})
+        out.append({
+            "libelle": libelle,
+            "perimetre": r.get("perimetre"),
+            "cle": r.get("fonction_cle"),
+            "categorie": r.get("categorie") or "fonction",
+            "abreviation": r.get("abreviation"),
+        })
     return out
 
 
@@ -68,6 +85,8 @@ def fonctions_admin(membre_id: str, genre: object, role: str | None) -> list[dic
                 "actif": bool(r.get("actif")),
                 "principale": bool(r.get("principale")),
                 "ordre": int(r.get("ordre") or 100),
+                "categorie": r.get("categorie") or "fonction",
+                "abreviation": r.get("abreviation"),
             }
         )
     return out
