@@ -68,6 +68,24 @@ def _lookup_membre(membre_id: str, role: str) -> dict[str, object] | None:
         row["titre"] = titre_prefixe(
             row.get("genre"), row.get("fonction_confirmee"), row.get("fh"), row.get("ff"), row.get("fn")
         )
+        # Category-aware appellation for the scan card, from the central resolver
+        # (special function > title > function > particular). Additive: the legacy
+        # ``titre`` field stays for the offline cache, ``appellation`` is preferred.
+        from . import fonctions_membre
+        choix = row.get("nom_affiche")
+        fam = (row.get("nom_naissance") if choix == "naissance" and row.get("nom_naissance")
+               else row.get("nom_marital") if choix == "marital" and row.get("nom_marital")
+               else row.get("nom"))
+        nom_civil = identite.nom_affichage(fam, row.get("prenoms"))
+        fonctions = fonctions_membre.fonctions_publiques(membre_id, row.get("genre"), role)
+        ident = identite.resoudre_identite(
+            genre=row.get("genre"), prenoms=row.get("prenoms"), nom_civil=nom_civil,
+            est_berger=bool(row.get("est_berger")), nom_pastoral=row.get("nom_pastoral"),
+            fonctions=fonctions,
+        )
+        row["appellation"] = ident.get("appellation")
+        row["appellation_formelle"] = ident.get("formel")
+        row["categorie_principale"] = ident.get("categorie_principale")
     return row
 
 

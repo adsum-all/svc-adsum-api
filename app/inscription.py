@@ -300,11 +300,13 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
 
     fonctions = [
-        {"libelle": f.get("libelle_h"), "perimetre": f.get("perimetre"), "confirmee": bool(f.get("confirmee"))}
+        {"libelle": f.get("libelle_h"), "perimetre": f.get("perimetre"), "confirmee": bool(f.get("confirmee")),
+         "categorie": f.get("categorie") or "fonction"}
         for f in db.fetch_all(
-            "SELECT fh.libelle_h, mf.perimetre, mf.confirmee FROM membre_fonction mf "
+            "SELECT fh.libelle_h, fh.categorie, mf.perimetre, mf.confirmee FROM membre_fonction mf "
             "JOIN fonction_honorifique fh ON fh.cle = mf.fonction_cle "
-            "WHERE mf.membre_id = %s AND mf.actif = true ORDER BY mf.principale DESC, mf.ordre",
+            "WHERE mf.membre_id = %s AND mf.actif = true "
+            "ORDER BY CASE fh.categorie WHEN 'fonction_speciale' THEN 0 WHEN 'titre' THEN 1 WHEN 'fonction' THEN 2 ELSE 3 END, mf.principale DESC, mf.ordre",
             (membre_id,),
             role=None,
         ) or []
@@ -425,6 +427,15 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
 # --- Member: status and submission ----------------------------------------
 
 
+class FonctionSouhaitee(BaseModel):
+    """One attribution the member declares at registration (special function,
+    function or particular function), to be confirmed by the administration. The
+    consecration title is handled apart, through ``berger_declare``."""
+
+    cle: str = Field(min_length=2, max_length=40, pattern="^[a-z0-9_]+$")
+    perimetre: str | None = Field(default=None, max_length=120)
+
+
 class ProfilUpdate(BaseModel):
     prenoms: LineStr | None = None
     nom: LineStr | None = None
@@ -452,6 +463,10 @@ class ProfilUpdate(BaseModel):
     premiere_communion: bool | None = None
     type_membre: str | None = Field(default=None, max_length=120, pattern="^[a-z][a-z0-9_]{1,39}$")
     fonction_cle: ShortStr | None = None
+    # Multi-category declarations at registration: the four form blocks (special
+    # functions, functions, particular functions) each submit their selections
+    # here, with an optional scope. Titles go through berger_declare, never here.
+    fonctions_souhaitees: list[FonctionSouhaitee] | None = None
     # External member code in the wider organisation (distinct from the ADSUM
     # matricule): optional, uppercased, unique (partial index 0080), refused when
     # it collides with an existing matricule (the login resolver accepts both).
@@ -514,28 +529,39 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
     # answering "no" clears any previously stored name so no orphan value stays.
     if fields.get("berger_declare") is False:
         fields["berger_nom_declare"] = None
-    # During registration, a chosen function is a PROPOSAL: it is recorded as an
-    # unconfirmed catalogue function (never the confirmed mirror), so the wizard
-    # select is no longer silently dropped and the administration keeps the sole
-    # authority to confirm it (fonction_confirmee stays false until then).
-    fonction_souhaitee = payload.fonction_cle if incomplet else None
-    if fonction_souhaitee:
+    # During registration, every chosen attribution is a PROPOSAL: recorded as an
+    # unconfirmed catalogue function (never the confirmed mirror), so the four form
+    # blocks are no longer silently dropped and the administration keeps the sole
+    # authority to confirm them (fonction_confirmee stays false until then). The
+    # consecration TITLE is refused here on purpose: it flows through berger_declare.
+    souhaitees: list[tuple[str, str | None]] = []
+    if incomplet:
+        if payload.fonction_cle:
+            souhaitees.append((str(payload.fonction_cle).strip().lower(), None))
+        for item in payload.fonctions_souhaitees or []:
+            souhaitees.append((item.cle.strip().lower(), (item.perimetre or "").strip() or None))
+    fonctions_proposees = 0
+    for cle_souhaitee, perimetre in souhaitees:
         connue = db.fetch_one(
-            "SELECT cle FROM fonction_honorifique WHERE cle = %s AND actif = true",
-            (str(fonction_souhaitee).strip().lower(),), role=role,
+            "SELECT cle, categorie FROM fonction_honorifique WHERE cle = %s AND actif = true",
+            (cle_souhaitee,), role=role,
         )
-        if connue:
-            db.execute(
-                "INSERT INTO membre_fonction (membre_id, fonction_cle, confirmee, actif, principale, ordre) "
-                "SELECT %s, %s, false, true, NOT EXISTS (SELECT 1 FROM membre_fonction WHERE membre_id = %s AND principale), 0 "
-                "WHERE NOT EXISTS (SELECT 1 FROM membre_fonction WHERE membre_id = %s AND lower(fonction_cle) = %s)",
-                (membre_id, str(connue["cle"]), membre_id, membre_id, str(connue["cle"]).lower()),
-                role=role,
-            )
-    if not fields and not fonction_souhaitee:
+        # A title is never self-assigned through the function list (managed via the
+        # consecration flag), and an unknown/inactive key is silently ignored.
+        if not connue or (connue.get("categorie") == "titre"):
+            continue
+        db.execute(
+            "INSERT INTO membre_fonction (membre_id, fonction_cle, perimetre, confirmee, actif, principale, ordre) "
+            "SELECT %s, %s, %s, false, true, NOT EXISTS (SELECT 1 FROM membre_fonction WHERE membre_id = %s AND principale), 0 "
+            "WHERE NOT EXISTS (SELECT 1 FROM membre_fonction WHERE membre_id = %s AND lower(fonction_cle) = %s)",
+            (membre_id, str(connue["cle"]), perimetre, membre_id, membre_id, str(connue["cle"]).lower()),
+            role=role,
+        )
+        fonctions_proposees += 1
+    if not fields and not fonctions_proposees:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
     if not fields:
-        return {"ok": True, "updated": ["fonction_cle"]}
+        return {"ok": True, "updated": ["fonctions_souhaitees"]}
     if incomplet:
         # On a correction cycle, keep an old/new trail before overwriting so the
         # admin can see exactly what changed (data itself is preserved, only the

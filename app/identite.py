@@ -99,3 +99,133 @@ def nom_pastoral_affichage(genre: str | None, nom_pastoral: str | None) -> str |
         return None
     label = "Bergère" if genre == "femme" else "Berger"
     return f"{label} {pastoral}"
+
+
+# --- Central organisational identity resolver -------------------------------
+#
+# A member accumulates at most one title (Berger/Bergere), plus any number of
+# special functions, ordinary functions and transversal (particular) functions.
+# Every display surface (notifications, birthdays, directory, QR card) must build
+# the shown appellation from HERE, following one single precedence, so the rules
+# never drift between screens.
+#
+# Display precedence (compact contexts): special function > title > function >
+# particular function > civil name. A special-function holder who also has a
+# title is shown as "Moderateur (Berger Christ Marie)". Titles and special
+# functions are always written in full; ordinary/particular functions may use a
+# configured abbreviation in compact contexts, never an arbitrary truncation.
+
+_ORDRE_CATEGORIES = ("fonction_speciale", "titre", "fonction", "fonction_particuliere")
+
+
+def _premiere(fonctions: list[dict[str, object]], categorie: str) -> dict[str, object] | None:
+    """First confirmed function of a category (input is pre-ordered principale/ordre)."""
+    for f in fonctions:
+        if (f.get("categorie") or "fonction") == categorie:
+            return f
+    return None
+
+
+def _avec_perimetre(base: str, perimetre: object) -> str:
+    per = _collapse(str(perimetre)) if perimetre else ""
+    return f"{base} ({per})" if per else base
+
+
+def resoudre_identite(
+    *,
+    genre: str | None,
+    prenoms: str | None,
+    nom_civil: str,
+    est_berger: bool,
+    nom_pastoral: str | None,
+    fonctions: list[dict[str, object]],
+) -> dict[str, object]:
+    """Build every display variant of a member's organisational identity.
+
+    ``fonctions`` is the member's list of confirmed, active functions, each a dict
+    with ``categorie``, ``libelle`` (already gendered), optional ``abreviation``
+    and ``perimetre``, pre-ordered by principale then ordre. Pure, DB-free and
+    fully testable. Returns keys:
+
+    - ``appellation``: compact salutation form ("Moderateur (Berger X)", "Berger X",
+      "Resp. Jean", first name).
+    - ``formel``: full form with civil name and scope, no abbreviation.
+    - ``anniversaire``: birthday label.
+    - ``annuaire``: directory label.
+    - ``detail``: ordered list of all attributions (title then functions with scope).
+    - ``titre``: the title text if any; ``categorie_principale``: the winning category.
+    """
+    prenom = (liste_prenoms(prenoms) or [""])[0]
+    pastoral = nom_pastoral_affichage(genre, nom_pastoral) if est_berger else None
+    titre_fn = _premiere(fonctions, "titre")
+    titre_text = pastoral or (str(titre_fn.get("libelle")) if titre_fn else None)
+
+    special = _premiere(fonctions, "fonction_speciale")
+    fonction = _premiere(fonctions, "fonction")
+    particuliere = _premiere(fonctions, "fonction_particuliere")
+
+    def _label_court(f: dict[str, object]) -> str:
+        return str(f.get("abreviation") or f.get("libelle") or "")
+
+    # Compact appellation (used by "Bonjour {appellation}" and short cards).
+    if special:
+        base = str(special.get("libelle") or "")
+        appellation = f"{base} ({titre_text})" if titre_text else base
+        categorie_principale = "fonction_speciale"
+    elif titre_text:
+        appellation = titre_text
+        categorie_principale = "titre"
+    elif fonction:
+        appellation = f"{_label_court(fonction)} {prenom}".strip()
+        categorie_principale = "fonction"
+    elif particuliere:
+        appellation = f"{_label_court(particuliere)} {prenom}".strip()
+        categorie_principale = "fonction_particuliere"
+    else:
+        appellation = prenom or nom_civil
+        categorie_principale = "civil"
+
+    # Formal / directory form: full label + civil name + scope, never abbreviated.
+    if special:
+        inner = titre_text or nom_civil
+        formel = f"{special.get('libelle')} ({inner})"
+    elif titre_text:
+        formel = titre_text
+    elif fonction:
+        formel = _avec_perimetre(f"{fonction.get('libelle')} {nom_civil}".strip(), fonction.get("perimetre"))
+    elif particuliere:
+        formel = _avec_perimetre(f"{particuliere.get('libelle')} {nom_civil}".strip(), particuliere.get("perimetre"))
+    else:
+        formel = nom_civil
+
+    # Birthday label: special keeps the title in parentheses; functions use the
+    # compact label with the full civil name; particular functions carry scope.
+    if special:
+        anniversaire = f"{special.get('libelle')} ({titre_text or nom_civil})"
+    elif titre_text:
+        anniversaire = titre_text
+    elif fonction:
+        anniversaire = f"{_label_court(fonction)} {nom_civil}".strip()
+    elif particuliere:
+        base_part = f"{_label_court(particuliere)} {nom_civil}".strip()
+        anniversaire = _avec_perimetre(base_part, particuliere.get("perimetre"))
+    else:
+        anniversaire = nom_civil
+
+    detail: list[str] = []
+    if titre_text:
+        detail.append(titre_text)
+    for f in fonctions:
+        cat = f.get("categorie") or "fonction"
+        if cat in ("fonction_speciale", "fonction", "fonction_particuliere"):
+            detail.append(_avec_perimetre(str(f.get("libelle") or ""), f.get("perimetre")))
+
+    return {
+        "appellation": appellation,
+        "formel": formel,
+        "anniversaire": anniversaire,
+        "annuaire": formel,
+        "detail": detail,
+        "titre": titre_text,
+        "categorie_principale": categorie_principale,
+    }
