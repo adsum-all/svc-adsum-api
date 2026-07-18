@@ -138,6 +138,8 @@ class MembreProfile(BaseModel):
     promotion: str | None = None
     situation_matrimoniale: str | None = None
     type_mariage: str | None = None
+    # Relational journey toward marriage; only meaningful for celibataire/en_couple.
+    en_cheminement: bool | None = None
     profession: str | None = None
     niveau_etudes: str | None = None
     baptise: bool | None = None
@@ -356,6 +358,7 @@ class MembreFields(BaseModel):
     promotion: str | None = None
     situation_matrimoniale: str | None = Field(default=None, pattern=_SITUATION)
     type_mariage: str | None = Field(default=None, pattern=_MARIAGE)
+    en_cheminement: bool | None = None
     profession: str | None = None
     niveau_etudes: str | None = None
     baptise: bool | None = None

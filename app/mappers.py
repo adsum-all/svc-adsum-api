@@ -17,7 +17,7 @@ MEMBRE_PROFILE_SELECT = (
     "m.statut, m.verifie, m.genre, m.date_naissance, m.naissance_annee_visible, m.pays, m.region, m.ville, "
     "m.adresse, m.adresse_complement, m.date_entree, "
     "m.cheminement_pastoral, m.statut_administratif, m.intendance_id, m.berger_referent_id, "
-    "m.tribu_id, m.type_membre, m.promotion, m.situation_matrimoniale, m.type_mariage, "
+    "m.tribu_id, m.type_membre, m.promotion, m.situation_matrimoniale, m.type_mariage, m.en_cheminement, "
     "m.profession, m.niveau_etudes, m.baptise, m.confirme, m.premiere_communion, "
     "m.champs_deverrouilles, m.langue, m.theme, m.anniversaire_visible_annuaire, m.whatsapp_numero, "
     "m.commission_id, m.fonction_cle, m.fonction_confirmee, "
@@ -228,6 +228,7 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
         promotion=row.get("promotion"),
         situation_matrimoniale=row.get("situation_matrimoniale"),
         type_mariage=row.get("type_mariage"),
+        en_cheminement=row.get("en_cheminement"),
         profession=row.get("profession"),
         niveau_etudes=row.get("niveau_etudes"),
         baptise=row.get("baptise"),

@@ -38,7 +38,7 @@ _EDITABLE_FIELDS = {
     "prenoms", "nom", "code_membre", "telephone", "indicatif_telephone", "date_naissance",
     "naissance_annee_visible", "genre", "pays", "region", "ville", "adresse",
     "adresse_complement", "commission_id", "intendance_id", "coordination_id", "tribu_id", "groupe",
-    "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage",
+    "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage", "en_cheminement",
     "baptise", "confirme", "premiere_communion", "type_membre",
     "date_entree", "promotion", "berger_declare", "berger_nom_declare",
     "nom_naissance", "nom_marital", "nom_affiche", "whatsapp_numero",
