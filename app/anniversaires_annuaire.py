@@ -15,20 +15,35 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from . import db
+from . import db, fonctions_membre, identite
 from .auth import current_user
 from .mappers import titre_prefixe
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["anniversaires"])
 
+# Highest-precedence confirmed function of the member (special > title > function >
+# particular), so the birthday label follows the same rule as everywhere else. A
+# single LATERAL keeps this to one query, no per-member round-trip.
+_BEST_FONCTION_LATERAL = (
+    "LEFT JOIN LATERAL ("
+    "  SELECT fh3.libelle_h AS bh, fh3.libelle_f AS bf, fh3.libelle_n AS bn, fh3.categorie AS bcat, fh3.abreviation AS babrev "
+    "  FROM membre_fonction mf JOIN fonction_honorifique fh3 ON fh3.cle = lower(mf.fonction_cle) "
+    "  WHERE mf.membre_id = m.id AND mf.actif = true AND mf.confirmee = true "
+    "  ORDER BY CASE fh3.categorie WHEN 'fonction_speciale' THEN 0 WHEN 'titre' THEN 1 WHEN 'fonction' THEN 2 ELSE 3 END, "
+    "           mf.principale DESC, mf.ordre ASC, mf.cree_le ASC LIMIT 1"
+    ") best ON true"
+)
+
 _BASE_SELECT = (
-    "SELECT m.id, m.prenoms, m.nom, m.photo_url, m.genre, m.fonction_confirmee, "
+    "SELECT m.id, m.prenoms, m.nom, m.photo_url, m.genre, m.fonction_confirmee, m.est_berger, m.nom_pastoral, "
     "extract(month from m.date_naissance)::int AS mois, extract(day from m.date_naissance)::int AS jour, "
-    "fh.libelle_h AS fh, fh.libelle_f AS ff, fh.libelle_n AS fn, fh.est_vip AS est_vip, c.nom AS commission "
+    "fh.libelle_h AS fh, fh.libelle_f AS ff, fh.libelle_n AS fn, fh.est_vip AS est_vip, c.nom AS commission, "
+    "best.bh, best.bf, best.bn, best.bcat, best.babrev "
     "FROM membre m "
     "LEFT JOIN fonction_honorifique fh ON fh.cle = m.fonction_cle "
     "LEFT JOIN commission c ON c.id = m.commission_id "
+    f"{_BEST_FONCTION_LATERAL} "
     "WHERE m.date_naissance IS NOT NULL AND m.statut = 'actif'"
 )
 
@@ -62,6 +77,21 @@ def _membre(user: Annotated[UserMe, Depends(current_user)]) -> str:
 
 
 def _row_to_out(r: dict[str, object]) -> dict[str, object]:
+    genre = r.get("genre")
+    # Feed only the highest-precedence function to the central resolver; est_berger
+    # supplies the title independently, so a special-function holder who is also a
+    # Berger yields "Moderateur (Berger X)" without any extra query.
+    best_label = fonctions_membre.label_genre(genre, r.get("bh"), r.get("bf"), r.get("bn")) if r.get("bcat") else None
+    fonctions = (
+        [{"categorie": r.get("bcat"), "libelle": best_label, "abreviation": r.get("babrev"), "perimetre": None}]
+        if best_label else []
+    )
+    nom_civil = identite.nom_affichage(r.get("nom"), r.get("prenoms"))
+    ident = identite.resoudre_identite(
+        genre=genre, prenoms=r.get("prenoms"), nom_civil=nom_civil,
+        est_berger=bool(r.get("est_berger")), nom_pastoral=r.get("nom_pastoral"),
+        fonctions=fonctions,
+    )
     return {
         "id": str(r["id"]),
         "prenoms": r["prenoms"],
@@ -72,6 +102,9 @@ def _row_to_out(r: dict[str, object]) -> dict[str, object]:
         "commission": r.get("commission"),
         "est_vip": bool(r.get("est_vip")),
         "titre": titre_prefixe(r.get("genre"), r.get("fonction_confirmee"), r.get("fh"), r.get("ff"), r.get("fn")),
+        # Hierarchical birthday label ("Anniversaire de {appellation}"), category-aware.
+        "appellation": ident.get("anniversaire"),
+        "categorie_principale": ident.get("categorie_principale"),
     }
 
 

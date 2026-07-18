@@ -137,6 +137,32 @@ def _nom_civil_source(row: dict[str, Any]) -> str | None:
     return row.get("nom")
 
 
+def _identite_org(row: dict[str, Any], fonctions: list[dict[str, Any]]) -> dict[str, str]:
+    """Resolved organisational appellation for the profile, via the central resolver."""
+    nom_civil = identite.nom_affichage(_nom_civil_source(row), row.get("prenoms"))
+    ident = identite.resoudre_identite(
+        genre=row.get("genre"),
+        prenoms=row.get("prenoms"),
+        nom_civil=nom_civil,
+        est_berger=bool(row.get("est_berger")),
+        nom_pastoral=row.get("nom_pastoral"),
+        fonctions=[
+            {
+                "categorie": fn.get("categorie") or "fonction",
+                "libelle": fn.get("libelle"),
+                "abreviation": fn.get("abreviation"),
+                "perimetre": fn.get("perimetre"),
+            }
+            for fn in (fonctions or [])
+        ],
+    )
+    return {
+        "appellation": str(ident.get("appellation") or ""),
+        "appellation_formelle": str(ident.get("formel") or ""),
+        "categorie_principale": str(ident.get("categorie_principale") or "civil"),
+    }
+
+
 def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] | None = None) -> MembreProfile:
     """Map a full member row (with all joins) to its profile.
 
@@ -166,7 +192,17 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
             else None
         ),
         fonction_perimetre=row.get("fonction_perimetre"),
-        fonctions=[{"libelle": str(fn.get("libelle")), "perimetre": fn.get("perimetre")} for fn in (fonctions or [])],  # type: ignore[misc]
+        fonctions=[  # type: ignore[misc]
+            {
+                "libelle": str(fn.get("libelle")),
+                "perimetre": fn.get("perimetre"),
+                "cle": fn.get("cle"),
+                "categorie": fn.get("categorie") or "fonction",
+                "abreviation": fn.get("abreviation"),
+            }
+            for fn in (fonctions or [])
+        ],
+        **_identite_org(row, fonctions or []),
         telephone=row["telephone"],
         indicatif_telephone=row.get("indicatif_telephone"),
         groupe=row["groupe"],

@@ -20,7 +20,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 
-from . import audit, channels, db, identite, mappers, temps
+from . import audit, channels, db, fonctions_membre, identite, temps
 from .config import settings
 from .cron_auth import require_cron_auth
 from .email_templates import render_anniversaire_email, render_notification_email
@@ -352,26 +352,20 @@ def _appellation(membre_id: str, role: str | None) -> dict[str, str]:
         ) or {}
         liste = identite.liste_prenoms(m.get("prenoms"))
         prenom = liste[0] if liste else "cher membre"
-        # Honorific label of the member's PRIMARY confirmed function (authoritative source).
-        fh = db.fetch_one(
-            "SELECT fh.libelle_h AS h, fh.libelle_f AS f, fh.libelle_n AS n "
-            "FROM membre_fonction mf JOIN fonction_honorifique fh ON fh.cle = mf.fonction_cle "
-            "WHERE mf.membre_id = %s AND mf.actif = true AND mf.confirmee = true "
-            "ORDER BY mf.principale DESC, mf.ordre ASC, mf.cree_le ASC LIMIT 1",
-            (membre_id,), role=role,
-        ) or {}
-        titre = mappers.titre_prefixe(m.get("genre"), True, fh.get("h"), fh.get("f"), fh.get("n")) if fh else None
-        pastoral = identite.nom_pastoral_affichage(m.get("genre"), m.get("nom_pastoral")) if m.get("est_berger") else None
-        if pastoral:
-            appellation = pastoral
-        elif titre:
-            appellation = f"{titre} {prenom}"
-        else:
-            appellation = prenom
         choix = m.get("nom_affiche")
         fam = m.get("nom_naissance") if choix == "naissance" and m.get("nom_naissance") else (
             m.get("nom_marital") if choix == "marital" and m.get("nom_marital") else m.get("nom"))
         nom_civil = identite.nom_affichage(fam, m.get("prenoms"))
+        # Central resolver: every confirmed function (with its category) feeds the
+        # single precedence rule (special function > title > function > particular),
+        # so a Moderateur who is also a Berger is greeted "Moderateur (Berger X)".
+        fonctions = fonctions_membre.fonctions_publiques(membre_id, m.get("genre"), role)
+        ident = identite.resoudre_identite(
+            genre=m.get("genre"), prenoms=m.get("prenoms"), nom_civil=nom_civil,
+            est_berger=bool(m.get("est_berger")), nom_pastoral=m.get("nom_pastoral"),
+            fonctions=fonctions,
+        )
+        appellation = str(ident.get("appellation") or prenom)
         # ``prenom`` carries the appellation so existing "Bonjour {prenom}" templates greet
         # with the title without any template change; ``prenom_simple`` keeps the bare name.
         return {"prenom": appellation, "prenom_simple": prenom, "appellation": appellation, "nom": nom_civil, "salutation": f"Bonjour {appellation}"}
