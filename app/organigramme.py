@@ -15,7 +15,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import audit, db, fonctions_membre, organigramme_builder
+from . import audit, db, fonctions_membre, organigramme_builder, organigramme_stats
 from . import organigramme_core as oc
 from .auth import current_user
 from .permissions_rbac import require_permission
@@ -389,6 +389,17 @@ def organigramme_publie(user: Annotated[UserMe, Depends(current_user)]) -> dict[
     if not pub:
         return {"version": None, "noeuds": [], "liens": []}
     return {"version": oc.version_dict(pub), **oc.contenu(str(pub["id"]), user.role)}
+
+
+@router.get("/organigramme/statistiques")
+def organigramme_statistiques(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> dict[str, Any]:
+    """Live, database-derived counters for the organisation, never hand-entered.
+
+    ``effectif_unique`` counts distinct active members holding a responsibility;
+    ``affectations_actives`` counts the responsibilities themselves, so the gap
+    measures the cumul. Structural placement is reported apart and ``anomalies``
+    lists the real integrity gaps. Computation lives in ``organigramme_stats``."""
+    return organigramme_stats.calculer(user.role)
 
 
 @router.get("/membres/me/hierarchie")
