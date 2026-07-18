@@ -66,9 +66,13 @@ def contenu(version_id: str, role: str | None) -> dict[str, Any]:
     return {"noeuds": [node_dict(n) for n in nodes], "liens": [link_dict(le) for le in links]}
 
 
-def aretes_hierarchiques(version_id: str, role: str | None, extra: tuple[str, str] | None = None) -> dict[str, list[str]]:
+def aretes_hierarchiques(version_id: str, role: str | None, extra: tuple[str, str] | None = None, exclure_lien: str | None = None) -> dict[str, list[str]]:
     adj: dict[str, list[str]] = {}
-    for le in db.fetch_all("SELECT source_id, cible_id FROM organisation_link WHERE version_id = %s AND actif = true AND type_lien = %s", (version_id, LIEN_HIERARCHIQUE), role=role):
+    for le in db.fetch_all("SELECT id, source_id, cible_id FROM organisation_link WHERE version_id = %s AND actif = true AND type_lien = %s", (version_id, LIEN_HIERARCHIQUE), role=role):
+        # When re-testing a link that is being MOVED, drop its old edge so only the new
+        # endpoints are checked (otherwise the stale edge could distort the result).
+        if exclure_lien and str(le["id"]) == exclure_lien:
+            continue
         adj.setdefault(str(le["source_id"]), []).append(str(le["cible_id"]))
     if extra:
         adj.setdefault(extra[0], []).append(extra[1])
@@ -92,3 +96,8 @@ def detecte_cycle(adj: dict[str, list[str]]) -> bool:
 
 def cree_un_cycle(version_id: str, source_id: str, cible_id: str, role: str | None) -> bool:
     return detecte_cycle(aretes_hierarchiques(version_id, role, extra=(source_id, cible_id)))
+
+
+def cree_un_cycle_maj(version_id: str, lien_id: str, source_id: str, cible_id: str, role: str | None) -> bool:
+    """Cycle test for MOVING an existing hierarchical link: exclude its old edge, add the new one."""
+    return detecte_cycle(aretes_hierarchiques(version_id, role, extra=(source_id, cible_id), exclure_lien=lien_id))
