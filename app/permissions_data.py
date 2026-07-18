@@ -249,6 +249,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'POST /api/v1/admin/organigramme/versions/{version_id}/valider': 'organisation.consulter',
     'POST /api/v1/admin/organigramme/versions/{version_id}/publier': 'organisation.administrer',
     'POST /api/v1/admin/organigramme/versions/{version_id}/restaurer': 'organisation.administrer',
+    'GET /api/v1/organigramme/statistiques': 'organisation.consulter',
     'GET /api/v1/admin/deblocage/elements': 'deblocage.superviser',
     'GET /api/v1/admin/demandes': 'demandes.superviser',
     'GET /api/v1/admin/demandes/{demande_id}': 'demandes.superviser',
