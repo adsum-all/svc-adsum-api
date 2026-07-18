@@ -479,6 +479,17 @@ class ProfilUpdate(BaseModel):
     # itself; the administration reviews the dossier and grants the real flag.
     berger_declare: bool | None = None
     berger_nom_declare: LineStr | None = None
+    # Civil identity completeness (mostly for married women): birth name, marital
+    # name and which one is displayed. nom_affiche selects the shown family name.
+    nom_naissance: LineStr | None = None
+    nom_marital: LineStr | None = None
+    nom_affiche: str | None = Field(default=None, max_length=20, pattern="^(naissance|marital)?$")
+    # Extra contact channel and preferences the member can set at registration.
+    whatsapp_numero: str | None = Field(default=None, max_length=32, pattern=r"^[+0-9 ().\-]*$")
+    langue: str | None = Field(default=None, max_length=5, pattern="^(fr|en)?$")
+    # Peer birthday directory opt-in (RGPD): whether the member appears in others'
+    # birthday overlays. Defaults to visible; the member may opt out here.
+    anniversaire_visible_annuaire: bool | None = None
 
     @field_validator("*", mode="before")
     @classmethod
