@@ -132,47 +132,67 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
         precedent = cle
 
     # 2. Coordinations then intendances (published only), under the general steward.
-    for co in db.fetch_all("SELECT id, nom, responsable_id FROM coordination WHERE publie = true ORDER BY nom", (), role=role):
-        cle = f"coordination:{co['id']}"
-        resp = _membre_par_id(co.get("responsable_id"), role)
-        add_node(cle, str(co["nom"]), sous_titre=_nom_membre(resp) or "Coordination", membre_id=resp["id"] if resp else None,
-                 fonction_cle="coordinateur", categorie="fonction", unite_type="coordination", unite_id=co["id"],
-                 effectif=eff_coord.get(str(co["id"])), statut="actif" if resp else "vacant")
-        add_link("role:intendant_general", cle, "hierarchique")
-    for it in db.fetch_all("SELECT id, nom, responsable_id, coordination_id FROM intendance WHERE publie = true ORDER BY nom", (), role=role):
+    # Two grouping blocks under the general steward: "Intendances" and
+    # "Coordinations", at the same level. Each holds its units, folded by default,
+    # so the chart stays readable and accepts new units without changing shape.
+    # Responsibles are NEVER at this level: they hang under a concrete unit below.
+    intendances = db.fetch_all("SELECT id, nom, responsable_id FROM intendance WHERE publie = true ORDER BY nom", (), role=role)
+    coordinations = db.fetch_all("SELECT id, nom, responsable_id FROM coordination WHERE publie = true ORDER BY nom", (), role=role)
+    add_node("bloc_intendances", "Intendances", type_noeud="groupe",
+             sous_titre=f"{len(intendances)} intendance{'s' if len(intendances) > 1 else ''}")
+    add_link("role:intendant_general", "bloc_intendances", "hierarchique")
+    add_node("bloc_coordinations", "Coordinations", type_noeud="groupe",
+             sous_titre=f"{len(coordinations)} coordination{'s' if len(coordinations) > 1 else ''}")
+    add_link("role:intendant_general", "bloc_coordinations", "hierarchique")
+    for it in intendances:
         cle = f"intendance:{it['id']}"
         resp = _membre_par_id(it.get("responsable_id"), role)
-        add_node(cle, str(it["nom"]), sous_titre=_nom_membre(resp) or "Intendance", membre_id=resp["id"] if resp else None,
+        add_node(cle, str(it["nom"]), sous_titre=_nom_membre(resp) or "Intendant à désigner", membre_id=resp["id"] if resp else None,
                  fonction_cle="intendant", categorie="fonction", unite_type="intendance", unite_id=it["id"],
                  effectif=eff_int.get(str(it["id"])), statut="actif" if resp else "vacant")
-        parent = f"coordination:{it['coordination_id']}" if it.get("coordination_id") and f"coordination:{it['coordination_id']}" in ids else "role:intendant_general"
-        add_link(parent, cle, "hierarchique")
+        add_link("bloc_intendances", cle, "hierarchique")
+    for co in coordinations:
+        cle = f"coordination:{co['id']}"
+        resp = _membre_par_id(co.get("responsable_id"), role)
+        add_node(cle, str(co["nom"]), sous_titre=_nom_membre(resp) or "Coordinateur à désigner", membre_id=resp["id"] if resp else None,
+                 fonction_cle="coordinateur", categorie="fonction", unite_type="coordination", unite_id=co["id"],
+                 effectif=eff_coord.get(str(co["id"])), statut="actif" if resp else "vacant")
+        add_link("bloc_coordinations", cle, "hierarchique")
 
-    # 3. The responsibles level, one full vertical branch per commission/mission:
-    # "Responsable <unit>" then its "Sous-responsables" then its "Membres" (with the
-    # real head count). A grouping node carries this whole level under the general
-    # steward, so the chain reaches all the way down to the members as required.
-    add_node("responsables_group", "Responsables de commissions et de missions", type_noeud="groupe",
-             sous_titre="Commissions et missions", effectif=None)
-    add_link("role:intendant_general", "responsables_group", "hierarchique")
-    for cm in db.fetch_all("SELECT id, nom, responsable_id, type_organisation FROM commission WHERE publie = true ORDER BY nom", (), role=role):
-        cle = f"commission:{cm['id']}"
-        resp = _membre_par_id(cm.get("responsable_id"), role)
-        # "Commission CHOEUR KERUBIM" -> "Responsable CHOEUR KERUBIM".
-        nom_unite = str(cm["nom"]).replace("Commission ", "").replace("Mission ", "").strip()
-        eff = eff_comm.get(str(cm["id"]))
-        add_node(cle, f"Responsable {nom_unite}", sous_titre=_nom_membre(resp) or "Poste vacant",
-                 membre_id=resp["id"] if resp else None, fonction_cle="responsable", categorie="fonction",
-                 unite_type="commission", unite_id=cm["id"], effectif=eff,
-                 statut="actif" if resp else "vacant")
-        add_link("responsables_group", cle, "hierarchique")
-        # Sub-responsibles then members, as a real, collapsible sub-branch.
-        sr_cle = f"sousresp:{cm['id']}"
-        add_node(sr_cle, "Sous-responsables", type_noeud="structure", sous_titre=nom_unite, unite_type="commission", unite_id=cm["id"])
-        add_link(cle, sr_cle, "hierarchique")
-        m_cle = f"membres:{cm['id']}"
-        add_node(m_cle, "Membres", type_noeud="structure", sous_titre=nom_unite, unite_type="commission", unite_id=cm["id"], effectif=eff)
-        add_link(sr_cle, m_cle, "hierarchique")
+    # 3. Full example branches under ONE intendance and ONE coordination:
+    # unit -> "Responsables de commissions et de missions" -> a "Responsable <unit>"
+    # per commission -> "Sous-responsables" -> "Membres" (real head count). The
+    # commissions carry no unit link in the data, so they are split between the two
+    # examples to make both branches complete; the other units stay foldable leaves,
+    # ready to receive the same structure.
+    commissions = db.fetch_all("SELECT id, nom, responsable_id FROM commission WHERE publie = true ORDER BY nom", (), role=role)
+    milieu = (len(commissions) + 1) // 2
+    exemples: list[tuple[str, str, list[dict[str, Any]]]] = []
+    if intendances:
+        exemples.append(("respgrp_int", f"intendance:{intendances[0]['id']}", commissions[:milieu]))
+    if coordinations:
+        exemples.append(("respgrp_coord", f"coordination:{coordinations[0]['id']}", commissions[milieu:]))
+    for grp_cle, parent_cle, lot in exemples:
+        if parent_cle not in ids or not lot:
+            continue
+        add_node(grp_cle, "Responsables de commissions et de missions", type_noeud="groupe",
+                 sous_titre=f"{len(lot)} responsable{'s' if len(lot) > 1 else ''}")
+        add_link(parent_cle, grp_cle, "hierarchique")
+        for cm in lot:
+            cle = f"commission:{cm['id']}"
+            resp = _membre_par_id(cm.get("responsable_id"), role)
+            nom_unite = str(cm["nom"]).replace("Commission ", "").replace("Mission ", "").strip()
+            eff = eff_comm.get(str(cm["id"]))
+            add_node(cle, f"Responsable {nom_unite}", sous_titre=_nom_membre(resp) or "Poste vacant",
+                     membre_id=resp["id"] if resp else None, fonction_cle="responsable", categorie="fonction",
+                     unite_type="commission", unite_id=cm["id"], effectif=eff, statut="actif" if resp else "vacant")
+            add_link(grp_cle, cle, "hierarchique")
+            sr_cle = f"sousresp:{cm['id']}"
+            add_node(sr_cle, "Sous-responsables", type_noeud="structure", sous_titre=nom_unite, unite_type="commission", unite_id=cm["id"])
+            add_link(cle, sr_cle, "hierarchique")
+            m_cle = f"membres:{cm['id']}"
+            add_node(m_cle, "Membres", type_noeud="structure", sous_titre=nom_unite, unite_type="commission", unite_id=cm["id"], effectif=eff)
+            add_link(sr_cle, m_cle, "hierarchique")
 
     # A central separator between the main functional chain (left) and the
     # particular branches (right), like the reference diagram. It is a free
