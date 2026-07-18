@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .activites_membre import router as activites_membre_router
 from .admin import router as admin_router
 from .ai_config import router as ai_config_router
 from .ai_tts import router as ai_tts_router
@@ -63,6 +64,7 @@ from .middleware import (
 from .modifications import router as modifications_router
 from .niveaux import router as niveaux_router
 from .notifications import router as notifications_router
+from .notifications_centre import router as notifications_centre_router
 from .organigramme import router as organigramme_router
 from .organisation import router as organisation_router
 from .organisation_admin import router as organisation_admin_router
@@ -113,6 +115,8 @@ app.include_router(organisation_router)
 app.include_router(organigramme_router)
 app.include_router(information_router)
 app.include_router(ai_tts_router)
+app.include_router(activites_membre_router)
+app.include_router(notifications_centre_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
 app.include_router(pilotage_router)
