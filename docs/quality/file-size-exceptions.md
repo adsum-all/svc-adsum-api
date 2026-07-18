@@ -67,6 +67,12 @@ deployment-unblock constraint.
   preferences (per-group channel matrix, master switches, week-start and questionnaire
   window parameters). To be split by extracting the admin parameter endpoints.
 
+- app/permissions_data.py (507 lines): the RBAC data tables (permission catalogue,
+  endpoint-to-permission mapping, role permission sets). It is pure declarative
+  data, not logic, and crossed 500 when the organigramme admin endpoints were
+  mapped. Next split: move the ENDPOINT_PERMISSION mapping into its own module,
+  keeping CATALOGUE and ROLE_PERMISSIONS here.
+
 The rich collaboration card domain used to be listed here at 641 lines; it was split
 under 500 (497) by extracting the nested-card assembly into collaboration_cartes_read.py,
 so app/collaboration_cartes.py is no longer an exception.

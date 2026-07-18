@@ -115,6 +115,7 @@ class MembreProfile(BaseModel):
     categorie_principale: str = "civil"
     telephone: str | None = None
     indicatif_telephone: str | None = None
+    whatsapp_numero: str | None = None
     groupe: str | None = None
     photo_url: str | None = None
     photo_pending: bool = False

@@ -61,6 +61,7 @@ from .middleware import (
 from .modifications import router as modifications_router
 from .niveaux import router as niveaux_router
 from .notifications import router as notifications_router
+from .organigramme import router as organigramme_router
 from .organisation import router as organisation_router
 from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
@@ -107,6 +108,7 @@ app.include_router(admin_router)
 app.include_router(evenements_series_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
+app.include_router(organigramme_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
 app.include_router(pilotage_router)
