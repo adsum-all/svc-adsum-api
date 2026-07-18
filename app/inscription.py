@@ -458,6 +458,8 @@ class ProfilUpdate(BaseModel):
     niveau_etudes: LineStr | None = None
     situation_matrimoniale: str | None = Field(default=None, max_length=120, pattern="^(celibataire|en_couple|fiance|marie|veuf|divorce)$")
     type_mariage: str | None = Field(default=None, max_length=120, pattern="^(dot|religieux|dot_et_religieux|civil)$")
+    # Relational journey toward marriage, self-declared for a single/in-couple member.
+    en_cheminement: bool | None = None
     baptise: bool | None = None
     confirme: bool | None = None
     premiere_communion: bool | None = None
