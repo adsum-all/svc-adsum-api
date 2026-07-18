@@ -71,6 +71,7 @@ REAL_ROLESET: dict[str, list[str]] = {
     'GET /api/v1/admin/consentements': ['admin', 'controleur', 'direction', 'gestionnaire', 'super_admin'],
     'GET /api/v1/admin/consentements/{cle}': ['admin', 'controleur', 'direction', 'gestionnaire', 'super_admin'],
     'GET /api/v1/admin/coordinations': ['admin', 'controleur', 'direction', 'gestionnaire', 'super_admin'],
+    'GET /api/v1/organigramme/statistiques': ['admin', 'controleur', 'direction', 'gestionnaire', 'super_admin'],
     'GET /api/v1/admin/deblocage/elements': ['admin', 'direction', 'gestionnaire', 'super_admin'],
     'GET /api/v1/admin/demandes': ['admin', 'direction', 'gestionnaire', 'super_admin'],
     'GET /api/v1/admin/demandes/{demande_id}': ['admin', 'direction', 'gestionnaire', 'super_admin'],
