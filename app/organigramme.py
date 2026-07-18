@@ -106,6 +106,16 @@ class LinkIn(BaseModel):
     libelle: str | None = Field(default=None, max_length=120)
 
 
+class LinkPatch(BaseModel):
+    # Every field is optional: only those explicitly present in the request are
+    # changed (tracked via model_fields_set), so an endpoint can be re-attached
+    # (source/cible), re-typed or re-labelled independently, without deleting it.
+    source_id: str | None = None
+    cible_id: str | None = None
+    type_lien: str | None = None
+    libelle: str | None = Field(default=None, max_length=120)
+
+
 # --- Version lifecycle ------------------------------------------------------
 
 @router.get("/admin/organigramme/versions")
@@ -306,6 +316,46 @@ def add_link(version_id: str, payload: LinkIn, user: Annotated[UserMe, Depends(r
     lid = str(row["id"])
     _log(version_id, user.id, "ajout_lien", "lien", lid, None, {"type": payload.type_lien})
     return {"id": lid}
+
+
+@router.patch("/admin/organigramme/links/{link_id}")
+def update_link(link_id: str, payload: LinkPatch, user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))]) -> dict[str, Any]:
+    """Move, re-type or re-label a link without deleting it. Reconnecting an endpoint
+    (source/cible) is how a mis-placed link is corrected, e.g. moving the supervision
+    of the Patriarchs from the mission shepherd to the moderator. A hierarchical result
+    that would close a reporting loop is refused (409)."""
+    link = db.fetch_one(
+        "SELECT l.id, l.version_id, l.source_id, l.cible_id, l.type_lien, l.libelle, v.statut AS v_statut "
+        "FROM organisation_link l JOIN organisation_version v ON v.id = l.version_id WHERE l.id = %s",
+        (link_id,), role=user.role,
+    )
+    if not link:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="lien inconnu")
+    if link.get("v_statut") != "brouillon":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Seule une version en brouillon peut être modifiée.")
+    vid = str(link["version_id"])
+    champs = payload.model_fields_set
+    new_source = payload.source_id if "source_id" in champs else str(link["source_id"])
+    new_cible = payload.cible_id if "cible_id" in champs else str(link["cible_id"])
+    new_type = payload.type_lien if "type_lien" in champs else str(link["type_lien"])
+    new_libelle = payload.libelle if "libelle" in champs else link.get("libelle")
+    if new_type not in oc.TYPES_LIEN:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type de lien invalide")
+    if new_source == new_cible:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un lien ne peut pas relier un noeud à lui-même")
+    for nid in (new_source, new_cible):
+        if not db.fetch_one("SELECT id FROM organisation_node WHERE id = %s AND version_id = %s", (nid, vid), role=user.role):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="noeud source ou cible hors de la version")
+    if new_type == oc.LIEN_HIERARCHIQUE and oc.cree_un_cycle_maj(vid, link_id, new_source, new_cible, user.role):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce lien hiérarchique créerait une boucle dans l'organigramme.")
+    avant = {"source_id": str(link["source_id"]), "cible_id": str(link["cible_id"]), "type_lien": link["type_lien"], "libelle": link.get("libelle")}
+    db.execute(
+        "UPDATE organisation_link SET source_id = %s, cible_id = %s, type_lien = %s, libelle = %s WHERE id = %s",
+        (new_source, new_cible, new_type, new_libelle, link_id), role=user.role,
+    )
+    apres = {"source_id": new_source, "cible_id": new_cible, "type_lien": new_type, "libelle": new_libelle}
+    _log(vid, user.id, "modification_lien", "lien", link_id, avant, apres)
+    return {"id": link_id, **apres}
 
 
 @router.delete("/admin/organigramme/links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
