@@ -144,20 +144,32 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
     add_node("bloc_coordinations", "Coordinations", type_noeud="groupe",
              sous_titre=f"{len(coordinations)} coordination{'s' if len(coordinations) > 1 else ''}")
     add_link("role:intendant_general", "bloc_coordinations", "hierarchique")
+    def _membres_unite(parent_cle: str, unite_type: str, uid: object, eff: int | None) -> None:
+        # Every unit is drillable down to a "Membres" leaf showing its real head
+        # count, so an admin can open any intendance or coordination and read its size.
+        mcle = f"{unite_type}_membres:{uid}"
+        add_node(mcle, "Membres", type_noeud="structure", sous_titre=f"{eff or 0} membre{'s' if (eff or 0) > 1 else ''}",
+                 unite_type=unite_type, unite_id=uid, effectif=eff)
+        add_link(parent_cle, mcle, "hierarchique")
+
     for it in intendances:
         cle = f"intendance:{it['id']}"
         resp = _membre_par_id(it.get("responsable_id"), role)
+        eff = eff_int.get(str(it["id"]))
         add_node(cle, str(it["nom"]), sous_titre=_nom_membre(resp) or "Intendant à désigner", membre_id=resp["id"] if resp else None,
                  fonction_cle="intendant", categorie="fonction", unite_type="intendance", unite_id=it["id"],
-                 effectif=eff_int.get(str(it["id"])), statut="actif" if resp else "vacant")
+                 effectif=eff, statut="actif" if resp else "vacant")
         add_link("bloc_intendances", cle, "hierarchique")
+        _membres_unite(cle, "intendance", it["id"], eff)
     for co in coordinations:
         cle = f"coordination:{co['id']}"
         resp = _membre_par_id(co.get("responsable_id"), role)
+        eff = eff_coord.get(str(co["id"]))
         add_node(cle, str(co["nom"]), sous_titre=_nom_membre(resp) or "Coordinateur à désigner", membre_id=resp["id"] if resp else None,
                  fonction_cle="coordinateur", categorie="fonction", unite_type="coordination", unite_id=co["id"],
-                 effectif=eff_coord.get(str(co["id"])), statut="actif" if resp else "vacant")
+                 effectif=eff, statut="actif" if resp else "vacant")
         add_link("bloc_coordinations", cle, "hierarchique")
+        _membres_unite(cle, "coordination", co["id"], eff)
 
     # 3. Full example branches under ONE intendance and ONE coordination:
     # unit -> "Responsables de commissions et de missions" -> a "Responsable <unit>"
