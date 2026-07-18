@@ -241,6 +241,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'POST /api/v1/admin/organigramme/versions/{version_id}/construire': 'organisation.administrer',
     'DELETE /api/v1/admin/organigramme/versions/{version_id}': 'organisation.administrer',
     'POST /api/v1/admin/organigramme/versions/{version_id}/nodes': 'organisation.administrer',
+    'POST /api/v1/admin/organigramme/nodes/{node_id}/affecter': 'organisation.administrer',
     'PATCH /api/v1/admin/organigramme/nodes/{node_id}': 'organisation.administrer',
     'DELETE /api/v1/admin/organigramme/nodes/{node_id}': 'organisation.administrer',
     'POST /api/v1/admin/organigramme/versions/{version_id}/links': 'organisation.administrer',
