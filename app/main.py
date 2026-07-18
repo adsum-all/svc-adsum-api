@@ -47,6 +47,7 @@ from .formation import router as formation_router
 from .gestion import router as gestion_router
 from .groupes import router as groupes_router
 from .groupes_lecture import router as groupes_lecture_router
+from .information import router as information_router
 from .inscription import router as inscription_router
 from .inscription_admin import router as inscription_admin_router
 from .integrations import router as integrations_router
@@ -109,6 +110,7 @@ app.include_router(evenements_series_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(organigramme_router)
+app.include_router(information_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
 app.include_router(pilotage_router)
