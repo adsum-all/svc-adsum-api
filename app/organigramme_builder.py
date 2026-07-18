@@ -148,17 +148,31 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
         parent = f"coordination:{it['coordination_id']}" if it.get("coordination_id") and f"coordination:{it['coordination_id']}" in ids else "role:intendant_general"
         add_link(parent, cle, "hierarchique")
 
-    # 3. Commissions and missions (published), each with its responsible, under the
-    # general steward. The member count is shown; sub-responsibles and members are
-    # summarised by that count rather than exploded into thousands of nodes.
+    # 3. The responsibles level, one full vertical branch per commission/mission:
+    # "Responsable <unit>" then its "Sous-responsables" then its "Membres" (with the
+    # real head count). A grouping node carries this whole level under the general
+    # steward, so the chain reaches all the way down to the members as required.
+    add_node("responsables_group", "Responsables de commissions et de missions", type_noeud="groupe",
+             sous_titre="Commissions et missions", effectif=None)
+    add_link("role:intendant_general", "responsables_group", "hierarchique")
     for cm in db.fetch_all("SELECT id, nom, responsable_id, type_organisation FROM commission WHERE publie = true ORDER BY nom", (), role=role):
         cle = f"commission:{cm['id']}"
         resp = _membre_par_id(cm.get("responsable_id"), role)
-        add_node(cle, str(cm["nom"]), sous_titre=_nom_membre(resp) or ("Mission" if cm.get("type_organisation") == "mission" else "Commission"),
+        # "Commission CHOEUR KERUBIM" -> "Responsable CHOEUR KERUBIM".
+        nom_unite = str(cm["nom"]).replace("Commission ", "").replace("Mission ", "").strip()
+        eff = eff_comm.get(str(cm["id"]))
+        add_node(cle, f"Responsable {nom_unite}", sous_titre=_nom_membre(resp) or "Poste vacant",
                  membre_id=resp["id"] if resp else None, fonction_cle="responsable", categorie="fonction",
-                 unite_type="commission", unite_id=cm["id"], effectif=eff_comm.get(str(cm["id"])),
+                 unite_type="commission", unite_id=cm["id"], effectif=eff,
                  statut="actif" if resp else "vacant")
-        add_link("role:intendant_general", cle, "hierarchique")
+        add_link("responsables_group", cle, "hierarchique")
+        # Sub-responsibles then members, as a real, collapsible sub-branch.
+        sr_cle = f"sousresp:{cm['id']}"
+        add_node(sr_cle, "Sous-responsables", type_noeud="structure", sous_titre=nom_unite, unite_type="commission", unite_id=cm["id"])
+        add_link(cle, sr_cle, "hierarchique")
+        m_cle = f"membres:{cm['id']}"
+        add_node(m_cle, "Membres", type_noeud="structure", sous_titre=nom_unite, unite_type="commission", unite_id=cm["id"], effectif=eff)
+        add_link(sr_cle, m_cle, "hierarchique")
 
     # A central separator between the main functional chain (left) and the
     # particular branches (right), like the reference diagram. It is a free
@@ -182,9 +196,14 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
         cle = f"tribu:{tr['id']}"
         patr = _membre_par_id(tr.get("patriarche_membre_id"), role)
         sous = _nom_membre(patr) or (str(tr["patriarche"]) if tr.get("patriarche") else "Patriarche à désigner")
+        eff_tr = eff_tribu.get(str(tr["id"]))
         add_node(cle, str(tr["nom"]), sous_titre=sous, membre_id=patr["id"] if patr else None,
                  fonction_cle="patriarche", categorie="fonction_particuliere", unite_type="tribu", unite_id=tr["id"],
-                 effectif=eff_tribu.get(str(tr["id"])), statut="actif" if patr or tr.get("patriarche") else "vacant")
+                 effectif=eff_tr, statut="actif" if patr or tr.get("patriarche") else "vacant")
         add_link("groupe_patriarches", cle, "responsabilite_tribu")
+        # Members of the tribe as a collapsible leaf.
+        tm_cle = f"tribu_membres:{tr['id']}"
+        add_node(tm_cle, "Membres", type_noeud="structure", sous_titre=str(tr["nom"]), unite_type="tribu", unite_id=tr["id"], effectif=eff_tr)
+        add_link(cle, tm_cle, "hierarchique")
 
     return {"noeuds": len(ids), "chaine": len(_CHAINE)}
