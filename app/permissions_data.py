@@ -305,6 +305,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'PATCH /api/v1/admin/informations/{info_id}': 'notifications.gerer',
     'DELETE /api/v1/admin/informations/{info_id}': 'notifications.gerer',
     'POST /api/v1/admin/informations/{info_id}/apercu-destinataires': 'notifications.consulter',
+    'POST /api/v1/admin/informations/{info_id}/media': 'notifications.gerer',
     'POST /api/v1/admin/informations/{info_id}/publier': 'notifications.gerer',
     'POST /api/v1/admin/informations/{info_id}/archiver': 'notifications.gerer',
     'GET /api/v1/admin/informations/{info_id}/statistiques': 'notifications.consulter',

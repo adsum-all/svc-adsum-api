@@ -36,6 +36,10 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 class CibleRef(BaseModel):
     code: str = Field(min_length=1, max_length=60)
     cible_id: str | None = None
+    # Manual selection: explicit member ids, used with the reserved code "selection".
+    membre_ids: list[str] | None = Field(default=None, max_length=2000)
+    # Display label (unit name) persisted so the editor's chips stay readable.
+    libelle: str | None = Field(default=None, max_length=160)
 
 
 class InformationIn(BaseModel):
@@ -127,6 +131,17 @@ def _resoudre_destinataires(cibles: list[dict[str, Any]], role: str | None) -> l
         code = str(c.get("code") or "").strip()
         if not code:
             continue
+        # Manual selection: explicit member ids chosen one by one in the editor.
+        # Only ACTIVE members among them are retained, like every other segment.
+        if code == "selection":
+            bruts = [str(m) for m in (c.get("membre_ids") or []) if _UUID_RE.match(str(m))]
+            if bruts:
+                rows = db.fetch_all(
+                    "SELECT id FROM membre WHERE statut = 'actif' AND id = ANY(%s)",
+                    (bruts,), role=role,
+                )
+                ids.update(str(r["id"]) for r in rows)
+            continue
         cible = ca.cible_valide_pour_creation(code, role)
         if not cible:
             continue
@@ -180,6 +195,51 @@ def admin_modifier(info_id: str, payload: InformationPatch, user: Annotated[User
         return _info_dict(info)
     sets = ", ".join(f"{k} = %s" for k in cols) + ", maj_le = now()"
     row = db.execute(f"UPDATE information SET {sets} WHERE id = %s RETURNING *", (*cols.values(), info_id), role=user.role)
+    return _info_dict(row or {})
+
+
+# Media attached to an Information (voice note, cover image, document), sent by the
+# editor as a data URL and stored inline, like the event attachments in inline mode.
+# The cap bounds the row size (~4/3 base64 overhead: 3.5 MB of data URL is roughly a
+# 2.5 MB file, several minutes of an Opus voice note).
+_MAX_MEDIA_DATA_URL = 3_500_000
+_MEDIA_TYPES: dict[str, frozenset[str]] = {
+    "audio": frozenset({"audio/webm", "audio/ogg", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-m4a", "audio/aac"}),
+    "image": frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}),
+    "document": frozenset({
+        "application/pdf", "text/plain",
+        "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+}
+_MEDIA_COLONNE = {"audio": "audio_url", "image": "image_url", "document": "document_url"}
+
+
+class MediaIn(BaseModel):
+    kind: str = Field(pattern="^(audio|image|document)$")
+    # Empty string clears the media; otherwise a data URL whose declared type must
+    # belong to the kind's allow-list (active-content types are never accepted).
+    data_url: str = Field(max_length=_MAX_MEDIA_DATA_URL)
+
+
+@router.post("/admin/informations/{info_id}/media")
+def admin_media(info_id: str, payload: MediaIn, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, Any]:
+    """Attach (or clear) a voice note, cover image or document on a draft."""
+    info = _info_ou_404(info_id, user.role)
+    if info.get("statut") not in ("brouillon", "programme"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Seul un brouillon peut recevoir un média.")
+    colonne = _MEDIA_COLONNE[payload.kind]
+    valeur: str | None = None
+    if payload.data_url:
+        # MediaRecorder emits parameterised types (audio/webm;codecs=opus): accept
+        # optional parameters between the mime and ";base64", validate the bare mime.
+        m = re.match(r"^data:([a-zA-Z0-9.+/-]+)(?:;[a-zA-Z0-9=+._-]+)*;base64,", payload.data_url)
+        if not m:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="format attendu: data URL base64")
+        if m.group(1).lower() not in _MEDIA_TYPES[payload.kind]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"type non autorisé pour {payload.kind}: {m.group(1)}")
+        valeur = payload.data_url
+    row = db.execute(f"UPDATE information SET {colonne} = %s, maj_le = now() WHERE id = %s RETURNING *", (valeur, info_id), role=user.role)
     return _info_dict(row or {})
 
 
