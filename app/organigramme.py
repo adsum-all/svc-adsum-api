@@ -15,57 +15,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import db, organigramme_builder
+from . import audit, db, fonctions_membre, organigramme_builder
+from . import organigramme_core as oc
 from .auth import current_user
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["organigramme"])
 
-_LIEN_HIERARCHIQUE = "hierarchique"
-_TYPES_LIEN = {"hierarchique", "coordination", "supervision", "suivi_transversal", "responsabilite_tribu", "assistance"}
-_STATUTS_NOEUD = {"actif", "vacant", "attente", "archive"}
-
-
-# --- Serialisation ----------------------------------------------------------
-
-def _node_dict(r: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": str(r["id"]), "cle": r.get("cle"), "type_noeud": r.get("type_noeud"),
-        "nom": r.get("nom"), "sous_titre": r.get("sous_titre"),
-        "membre_id": str(r["membre_id"]) if r.get("membre_id") else None,
-        "fonction_cle": r.get("fonction_cle"), "categorie": r.get("categorie"),
-        "unite_type": r.get("unite_type"), "unite_id": str(r["unite_id"]) if r.get("unite_id") else None,
-        "effectif": r.get("effectif"), "statut": r.get("statut"),
-        "pos_x": r.get("pos_x"), "pos_y": r.get("pos_y"), "ordre": r.get("ordre"),
-    }
-
-
-def _link_dict(r: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": str(r["id"]), "source_id": str(r["source_id"]), "cible_id": str(r["cible_id"]),
-        "type_lien": r.get("type_lien"), "libelle": r.get("libelle"),
-    }
-
-
-def _version_dict(r: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": str(r["id"]), "libelle": r.get("libelle"), "statut": r.get("statut"),
-        "note": r.get("note"), "cree_le": r.get("cree_le"), "publie_le": r.get("publie_le"),
-    }
-
-
-def _contenu(version_id: str, role: str | None) -> dict[str, Any]:
-    nodes = db.fetch_all(
-        "SELECT id, cle, type_noeud, nom, sous_titre, membre_id, fonction_cle, categorie, unite_type, unite_id, "
-        "effectif, statut, pos_x, pos_y, ordre FROM organisation_node WHERE version_id = %s AND actif = true ORDER BY ordre",
-        (version_id,), role=role,
-    )
-    links = db.fetch_all(
-        "SELECT id, source_id, cible_id, type_lien, libelle FROM organisation_link WHERE version_id = %s AND actif = true",
-        (version_id,), role=role,
-    )
-    return {"noeuds": [_node_dict(n) for n in nodes], "liens": [_link_dict(le) for le in links]}
 
 
 def _log(version_id: str | None, acteur: str, action: str, cible_type: str | None, cible_id: str | None, avant: Any, apres: Any) -> None:
@@ -100,7 +57,7 @@ class VersionIn(BaseModel):
 
 class NodeIn(BaseModel):
     nom: str = Field(min_length=1, max_length=160)
-    type_noeud: str = Field(default="structure", pattern="^(personne|structure|groupe)$")
+    type_noeud: str = Field(default="structure", pattern="^(personne|structure|groupe|separateur|note|zone)$")
     sous_titre: str | None = Field(default=None, max_length=200)
     membre_id: str | None = None
     fonction_cle: str | None = Field(default=None, max_length=40)
@@ -110,15 +67,36 @@ class NodeIn(BaseModel):
     statut: str = Field(default="actif")
     pos_x: float | None = None
     pos_y: float | None = None
+    couleur: str | None = Field(default=None, max_length=32)
+    afficher_photo: bool = False
+    largeur: float | None = None
+    hauteur: float | None = None
 
 
 class NodePatch(BaseModel):
     nom: str | None = Field(default=None, max_length=160)
     sous_titre: str | None = Field(default=None, max_length=200)
     membre_id: str | None = None
+    fonction_cle: str | None = Field(default=None, max_length=40)
+    categorie: str | None = Field(default=None, max_length=40)
+    unite_type: str | None = Field(default=None, max_length=40)
+    unite_id: str | None = None
     statut: str | None = None
     pos_x: float | None = None
     pos_y: float | None = None
+    couleur: str | None = Field(default=None, max_length=32)
+    afficher_photo: bool | None = None
+    largeur: float | None = None
+    hauteur: float | None = None
+
+
+class AffectationIn(BaseModel):
+    # Assign a member to a node. When appliquer_au_profil is true and the node
+    # carries a function, the assignment is ALSO written to the member's profile
+    # (confirmed function, or the est_berger consecration flag for a title), so the
+    # chart is a real assignment tool, not just a drawing.
+    membre_id: str | None = None
+    appliquer_au_profil: bool = False
 
 
 class LinkIn(BaseModel):
@@ -133,7 +111,7 @@ class LinkIn(BaseModel):
 @router.get("/admin/organigramme/versions")
 def list_versions(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> list[dict[str, Any]]:
     rows = db.fetch_all("SELECT id, libelle, statut, note, cree_le, publie_le FROM organisation_version ORDER BY cree_le DESC", (), role=user.role)
-    return [_version_dict(r) for r in rows]
+    return [oc.version_dict(r) for r in rows]
 
 
 @router.post("/admin/organigramme/versions", status_code=status.HTTP_201_CREATED)
@@ -178,7 +156,7 @@ def _cloner_publiee(vid: str, role: str | None) -> dict[str, int]:
 @router.get("/admin/organigramme/versions/{version_id}")
 def get_version(version_id: str, user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> dict[str, Any]:
     version = _version_ou_404(version_id, user.role)
-    return {"version": _version_dict(version), **_contenu(version_id, user.role)}
+    return {"version": oc.version_dict(version), **oc.contenu(version_id, user.role)}
 
 
 @router.post("/admin/organigramme/versions/{version_id}/construire")
@@ -190,7 +168,7 @@ def construire_version(version_id: str, user: Annotated[UserMe, Depends(require_
     db.execute("DELETE FROM organisation_node WHERE version_id = %s", (version_id,), role=user.role)
     resume = organigramme_builder.construire(version_id, user.role)
     _log(version_id, user.id, "construction_reelle", "version", version_id, None, resume)
-    return {"ok": True, "resume": resume, **_contenu(version_id, user.role)}
+    return {"ok": True, "resume": resume, **oc.contenu(version_id, user.role)}
 
 
 @router.delete("/admin/organigramme/versions/{version_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -208,18 +186,74 @@ def delete_version(version_id: str, user: Annotated[UserMe, Depends(require_perm
 def add_node(version_id: str, payload: NodeIn, user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))]) -> dict[str, Any]:
     version = _version_ou_404(version_id, user.role)
     _brouillon_ou_409(version)
-    if payload.statut not in _STATUTS_NOEUD:
+    if payload.statut not in oc.STATUTS_NOEUD:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statut de noeud invalide")
     row = db.execute(
-        "INSERT INTO organisation_node (version_id, type_noeud, nom, sous_titre, membre_id, fonction_cle, categorie, unite_type, unite_id, statut, pos_x, pos_y, ordre) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 500) RETURNING id",
+        "INSERT INTO organisation_node (version_id, type_noeud, nom, sous_titre, membre_id, fonction_cle, categorie, unite_type, unite_id, statut, pos_x, pos_y, couleur, afficher_photo, largeur, hauteur, ordre) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 500) RETURNING id",
         (version_id, payload.type_noeud, payload.nom, payload.sous_titre, payload.membre_id, payload.fonction_cle,
-         payload.categorie, payload.unite_type, payload.unite_id, payload.statut, payload.pos_x, payload.pos_y),
+         payload.categorie, payload.unite_type, payload.unite_id, payload.statut, payload.pos_x, payload.pos_y,
+         payload.couleur, payload.afficher_photo, payload.largeur, payload.hauteur),
         role=user.role,
     )
     nid = str(row["id"])
-    _log(version_id, user.id, "ajout_noeud", "noeud", nid, None, {"nom": payload.nom})
+    _log(version_id, user.id, "ajout_noeud", "noeud", nid, None, {"nom": payload.nom, "type": payload.type_noeud})
     return {"id": nid}
+
+
+@router.post("/admin/organigramme/nodes/{node_id}/affecter")
+def affecter_membre(node_id: str, payload: AffectationIn, user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))]) -> dict[str, Any]:
+    """Assign a member to a node and, optionally, mirror it onto the member profile.
+
+    When ``appliquer_au_profil`` is set and the node carries a function, the member
+    receives that function (confirmed) via the shared functions manager, or the
+    ``est_berger`` consecration flag for a title category, so the chart drives the
+    real member data instead of only drawing it. Fully audited.
+    """
+    node = db.fetch_one(
+        "SELECT n.id, n.version_id, n.fonction_cle, n.categorie, n.nom, v.statut AS v_statut "
+        "FROM organisation_node n JOIN organisation_version v ON v.id = n.version_id WHERE n.id = %s",
+        (node_id,), role=user.role,
+    )
+    if not node:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="noeud inconnu")
+    if node.get("v_statut") != "brouillon":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Seule une version en brouillon peut être modifiée.")
+    membre = None
+    if payload.membre_id:
+        membre = db.fetch_one("SELECT id, prenoms, nom, nom_affiche, genre FROM membre WHERE id = %s", (payload.membre_id,), role=user.role)
+        if not membre:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="membre inconnu")
+    # Update the node: bind the member and refresh its displayed name/status.
+    nom_membre = None
+    if membre:
+        nom_membre = membre.get("nom_affiche") or f"{membre.get('prenoms') or ''} {membre.get('nom') or ''}".strip() or None
+    db.execute(
+        "UPDATE organisation_node SET membre_id = %s, statut = %s WHERE id = %s",
+        (payload.membre_id, "actif" if payload.membre_id else "vacant", node_id), role=user.role,
+    )
+    applique = False
+    fonction_cle = str(node.get("fonction_cle") or "").strip().lower()
+    if payload.membre_id and payload.appliquer_au_profil and fonction_cle:
+        if node.get("categorie") == "titre" or fonction_cle in fonctions_membre.TITRES_INTERDITS:
+            # A title is granted through the consecration flag, never as a function.
+            db.execute("UPDATE membre SET est_berger = true WHERE id = %s", (payload.membre_id,), role=user.role)
+        else:
+            connue = db.fetch_one("SELECT cle FROM fonction_honorifique WHERE cle = %s AND actif = true", (fonction_cle,), role=user.role)
+            if connue:
+                db.execute("UPDATE membre_fonction SET principale = false WHERE membre_id = %s", (payload.membre_id,), role=user.role)
+                existe = db.fetch_one("SELECT id FROM membre_fonction WHERE membre_id = %s AND lower(fonction_cle) = %s", (payload.membre_id, fonction_cle), role=user.role)
+                if existe:
+                    db.execute("UPDATE membre_fonction SET confirmee = true, actif = true, principale = true, maj_le = now() WHERE id = %s", (existe["id"],), role=user.role)
+                else:
+                    db.execute("INSERT INTO membre_fonction (membre_id, fonction_cle, confirmee, actif, principale, ordre) VALUES (%s, %s, true, true, true, 0)", (payload.membre_id, str(connue["cle"])), role=user.role)
+                fonctions_membre.sync_principale(payload.membre_id, user.role)
+        applique = True
+    _log(str(node["version_id"]), user.id, "affectation_membre", "noeud", node_id,
+         {"nom": node.get("nom")}, {"membre_id": payload.membre_id, "profil": applique})
+    audit.log(user.id, user.role, "organigramme_affectation", "membre", payload.membre_id or node_id,
+              {"noeud": node_id, "fonction_cle": fonction_cle, "applique_au_profil": applique})
+    return {"ok": True, "membre_nom": nom_membre, "profil_applique": applique}
 
 
 @router.patch("/admin/organigramme/nodes/{node_id}")
@@ -230,7 +264,7 @@ def update_node(node_id: str, payload: NodePatch, user: Annotated[UserMe, Depend
     if node.get("v_statut") != "brouillon":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Seule une version en brouillon peut être modifiée.")
     fields = payload.model_dump(exclude_unset=True)
-    if fields.get("statut") and fields["statut"] not in _STATUTS_NOEUD:
+    if fields.get("statut") and fields["statut"] not in oc.STATUTS_NOEUD:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statut de noeud invalide")
     if not fields:
         return {"ok": True}
@@ -255,7 +289,7 @@ def delete_node(node_id: str, user: Annotated[UserMe, Depends(require_permission
 def add_link(version_id: str, payload: LinkIn, user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))]) -> dict[str, Any]:
     version = _version_ou_404(version_id, user.role)
     _brouillon_ou_409(version)
-    if payload.type_lien not in _TYPES_LIEN:
+    if payload.type_lien not in oc.TYPES_LIEN:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type de lien invalide")
     if payload.source_id == payload.cible_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un lien ne peut pas relier un noeud à lui-même")
@@ -263,7 +297,7 @@ def add_link(version_id: str, payload: LinkIn, user: Annotated[UserMe, Depends(r
         if not db.fetch_one("SELECT id FROM organisation_node WHERE id = %s AND version_id = %s", (nid, version_id), role=user.role):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="noeud source ou cible hors de la version")
     # A hierarchical link must not close a cycle in the reporting tree.
-    if payload.type_lien == _LIEN_HIERARCHIQUE and _cree_un_cycle(version_id, payload.source_id, payload.cible_id, user.role):
+    if payload.type_lien == oc.LIEN_HIERARCHIQUE and oc.cree_un_cycle(version_id, payload.source_id, payload.cible_id, user.role):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce lien hiérarchique créerait une boucle dans l'organigramme.")
     row = db.execute(
         "INSERT INTO organisation_link (version_id, source_id, cible_id, type_lien, libelle) VALUES (%s, %s, %s, %s, %s) RETURNING id",
@@ -287,32 +321,6 @@ def delete_link(link_id: str, user: Annotated[UserMe, Depends(require_permission
 
 # --- Validation and publication --------------------------------------------
 
-def _aretes_hierarchiques(version_id: str, role: str | None, extra: tuple[str, str] | None = None) -> dict[str, list[str]]:
-    adj: dict[str, list[str]] = {}
-    for le in db.fetch_all("SELECT source_id, cible_id FROM organisation_link WHERE version_id = %s AND actif = true AND type_lien = %s", (version_id, _LIEN_HIERARCHIQUE), role=role):
-        adj.setdefault(str(le["source_id"]), []).append(str(le["cible_id"]))
-    if extra:
-        adj.setdefault(extra[0], []).append(extra[1])
-    return adj
-
-
-def _detecte_cycle(adj: dict[str, list[str]]) -> bool:
-    couleur: dict[str, int] = {}
-
-    def visite(n: str) -> bool:
-        couleur[n] = 1
-        for v in adj.get(n, []):
-            c = couleur.get(v, 0)
-            if c == 1 or (c == 0 and visite(v)):
-                return True
-        couleur[n] = 2
-        return False
-
-    return any(couleur.get(n, 0) == 0 and visite(n) for n in list(adj.keys()))
-
-
-def _cree_un_cycle(version_id: str, source_id: str, cible_id: str, role: str | None) -> bool:
-    return _detecte_cycle(_aretes_hierarchiques(version_id, role, extra=(source_id, cible_id)))
 
 
 @router.post("/admin/organigramme/versions/{version_id}/valider")
@@ -320,10 +328,10 @@ def valider_version(version_id: str, user: Annotated[UserMe, Depends(require_per
     """Structural check before publishing: cycles, orphan hierarchical nodes,
     vacant apex roles. Returns issues; an empty ``bloquants`` means publishable."""
     _version_ou_404(version_id, user.role)
-    contenu = _contenu(version_id, user.role)
+    contenu = oc.contenu(version_id, user.role)
     bloquants: list[str] = []
     avertissements: list[str] = []
-    if _detecte_cycle(_aretes_hierarchiques(version_id, user.role)):
+    if oc.detecte_cycle(oc.aretes_hierarchiques(version_id, user.role)):
         bloquants.append("Une boucle hiérarchique existe dans l'organigramme.")
     if not contenu["noeuds"]:
         bloquants.append("L'organigramme est vide.")
@@ -338,7 +346,7 @@ def valider_version(version_id: str, user: Annotated[UserMe, Depends(require_per
 def publier_version(version_id: str, user: Annotated[UserMe, Depends(require_permission("organisation.administrer"))]) -> dict[str, Any]:
     version = _version_ou_404(version_id, user.role)
     _brouillon_ou_409(version)
-    if _detecte_cycle(_aretes_hierarchiques(version_id, user.role)):
+    if oc.detecte_cycle(oc.aretes_hierarchiques(version_id, user.role)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Publication impossible : une boucle hiérarchique existe.")
     if not db.fetch_one("SELECT id FROM organisation_node WHERE version_id = %s AND actif = true LIMIT 1", (version_id,), role=user.role):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Publication impossible : l'organigramme est vide.")
@@ -380,7 +388,7 @@ def organigramme_publie(user: Annotated[UserMe, Depends(current_user)]) -> dict[
     pub = db.fetch_one("SELECT id, libelle, statut, note, cree_le, publie_le FROM organisation_version WHERE statut = 'publie'", (), role=user.role)
     if not pub:
         return {"version": None, "noeuds": [], "liens": []}
-    return {"version": _version_dict(pub), **_contenu(str(pub["id"]), user.role)}
+    return {"version": oc.version_dict(pub), **oc.contenu(str(pub["id"]), user.role)}
 
 
 @router.get("/membres/me/hierarchie")

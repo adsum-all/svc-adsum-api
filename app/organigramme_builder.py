@@ -160,6 +160,12 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
                  statut="actif" if resp else "vacant")
         add_link("role:intendant_general", cle, "hierarchique")
 
+    # A central separator between the main functional chain (left) and the
+    # particular branches (right), like the reference diagram. It is a free
+    # modeling element the administration can move, duplicate or remove.
+    add_node("separateur_central", "Branches particulières reliées", type_noeud="separateur",
+             sous_titre="Séparation gouvernance principale / branches particulières")
+
     # 4. Special branch: College of shepherds, coordinated by the mission shepherd.
     n_bergers = int((db.fetch_one("SELECT count(*) AS n FROM membre WHERE est_berger = true AND statut = 'actif'", (), role=role) or {}).get("n") or 0)
     add_node("college_bergers", "Collège des bergers", type_noeud="groupe", sous_titre="Titre : Berger / Bergère",
