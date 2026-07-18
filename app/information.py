@@ -60,6 +60,8 @@ class InformationIn(BaseModel):
     contenu: str = Field(default="", max_length=20000)
     priorite: str = Field(default="normale", pattern=_PRIORITES)
     auteur: str | None = Field(default=None, max_length=160)
+    signature: str | None = Field(default=None, max_length=200)
+    signature_url: str | None = Field(default=None, max_length=500)
     requiert_accuse: bool = False
     lecture_vocale_auto: bool = True
     lien_url: str | None = Field(default=None, max_length=1000)
@@ -77,6 +79,8 @@ class InformationPatch(BaseModel):
     contenu: str | None = Field(default=None, max_length=20000)
     priorite: str | None = Field(default=None, pattern=_PRIORITES)
     auteur: str | None = Field(default=None, max_length=160)
+    signature: str | None = Field(default=None, max_length=200)
+    signature_url: str | None = Field(default=None, max_length=500)
     requiert_accuse: bool | None = None
     lecture_vocale_auto: bool | None = None
     lien_url: str | None = Field(default=None, max_length=1000)
@@ -98,6 +102,7 @@ def _info_dict(r: dict[str, Any]) -> dict[str, Any]:
         "id": str(r["id"]), "titre": r.get("titre"), "sous_titre": r.get("sous_titre"),
         "contenu": r.get("contenu"), "priorite": r.get("priorite"), "auteur": r.get("auteur"),
         "statut": r.get("statut"), "requiert_accuse": bool(r.get("requiert_accuse")),
+        "signature": r.get("signature"), "signature_url": r.get("signature_url"),
         "lecture_vocale_auto": bool(r.get("lecture_vocale_auto")),
         "lien_url": r.get("lien_url"), "action_label": r.get("action_label"), "action_url": r.get("action_url"),
         "audio_url": r.get("audio_url"), "image_url": r.get("image_url"), "document_url": r.get("document_url"),
@@ -109,7 +114,7 @@ def _info_dict(r: dict[str, Any]) -> dict[str, Any]:
 def _colonnes(payload: InformationIn | InformationPatch) -> dict[str, Any]:
     champs = payload.model_dump(exclude_unset=True)
     out: dict[str, Any] = {}
-    for k in ("titre", "sous_titre", "contenu", "priorite", "auteur", "requiert_accuse",
+    for k in ("titre", "sous_titre", "contenu", "priorite", "auteur", "signature", "signature_url", "requiert_accuse",
               "lecture_vocale_auto", "lien_url", "action_label", "action_url",
               "publier_le", "expire_le", "epingle_jusqu"):
         if k not in champs:
@@ -193,7 +198,7 @@ def _resoudre_destinataires(cibles: list[dict[str, Any]], role: str | None) -> l
 # --- Admin: CRUD ------------------------------------------------------------
 
 @router.get("/admin/informations")
-def admin_liste(statut: str | None = None, user: Annotated[UserMe, Depends(require_permission("notifications.consulter"))] = ...) -> list[dict[str, Any]]:
+def admin_liste(statut: str | None = None, user: Annotated[UserMe, Depends(require_permission("informations.consulter"))] = ...) -> list[dict[str, Any]]:
     if statut:
         rows = db.fetch_all("SELECT * FROM information WHERE statut = %s ORDER BY cree_le DESC", (statut,), role=user.role)
     else:
@@ -202,7 +207,7 @@ def admin_liste(statut: str | None = None, user: Annotated[UserMe, Depends(requi
 
 
 @router.post("/admin/informations", status_code=status.HTTP_201_CREATED)
-def admin_creer(payload: InformationIn, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, Any]:
+def admin_creer(payload: InformationIn, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> dict[str, Any]:
     cols = _colonnes(payload)
     cols.setdefault("cibles", json.dumps([c.model_dump() for c in payload.cibles]))
     noms = list(cols.keys()) + ["cree_par"]
@@ -213,12 +218,12 @@ def admin_creer(payload: InformationIn, user: Annotated[UserMe, Depends(require_
 
 
 @router.get("/admin/informations/{info_id}")
-def admin_detail(info_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.consulter"))]) -> dict[str, Any]:
+def admin_detail(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.consulter"))]) -> dict[str, Any]:
     return _info_dict(_info_ou_404(info_id, user.role))
 
 
 @router.patch("/admin/informations/{info_id}")
-def admin_modifier(info_id: str, payload: InformationPatch, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, Any]:
+def admin_modifier(info_id: str, payload: InformationPatch, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> dict[str, Any]:
     info = _info_ou_404(info_id, user.role)
     # Only an unsent draft (or a scheduled one) may be edited: once sent, members
     # may already have read the exact wording, so it must not change under them.
@@ -257,7 +262,7 @@ class MediaIn(BaseModel):
 
 
 @router.post("/admin/informations/{info_id}/media")
-def admin_media(info_id: str, payload: MediaIn, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, Any]:
+def admin_media(info_id: str, payload: MediaIn, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> dict[str, Any]:
     """Attach (or clear) a voice note, cover image or document on a draft."""
     info = _info_ou_404(info_id, user.role)
     if info.get("statut") not in ("brouillon", "programme"):
@@ -278,7 +283,7 @@ def admin_media(info_id: str, payload: MediaIn, user: Annotated[UserMe, Depends(
 
 
 @router.delete("/admin/informations/{info_id}", status_code=status.HTTP_204_NO_CONTENT)
-def admin_supprimer(info_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> None:
+def admin_supprimer(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> None:
     info = _info_ou_404(info_id, user.role)
     # A sent OR archived information carries per-member delivery history: deleting it
     # would CASCADE-wipe the read/confirm records. Only an unsent draft is deletable;
@@ -289,7 +294,7 @@ def admin_supprimer(info_id: str, user: Annotated[UserMe, Depends(require_permis
 
 
 @router.post("/admin/informations/{info_id}/apercu-destinataires")
-def admin_apercu(info_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.consulter"))]) -> dict[str, Any]:
+def admin_apercu(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.consulter"))]) -> dict[str, Any]:
     info = _info_ou_404(info_id, user.role)
     cibles = info.get("cibles")
     if isinstance(cibles, str):
@@ -299,7 +304,7 @@ def admin_apercu(info_id: str, user: Annotated[UserMe, Depends(require_permissio
 
 
 @router.post("/admin/informations/{info_id}/publier")
-def admin_publier(info_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, Any]:
+def admin_publier(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> dict[str, Any]:
     """Materialise the deduplicated recipient set and mark the Information as sent."""
     info = _info_ou_404(info_id, user.role)
     if info.get("statut") == "archive":
@@ -324,14 +329,14 @@ def admin_publier(info_id: str, user: Annotated[UserMe, Depends(require_permissi
 
 
 @router.post("/admin/informations/{info_id}/archiver")
-def admin_archiver(info_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.gerer"))]) -> dict[str, Any]:
+def admin_archiver(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> dict[str, Any]:
     _info_ou_404(info_id, user.role)
     row = db.execute("UPDATE information SET statut = 'archive', maj_le = now() WHERE id = %s RETURNING *", (info_id,), role=user.role)
     return _info_dict(row or {})
 
 
 @router.get("/admin/informations/{info_id}/statistiques")
-def admin_stats(info_id: str, user: Annotated[UserMe, Depends(require_permission("notifications.consulter"))]) -> dict[str, Any]:
+def admin_stats(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.consulter"))]) -> dict[str, Any]:
     _info_ou_404(info_id, user.role)
     r = db.fetch_one(
         "SELECT count(*) AS total, count(*) FILTER (WHERE statut IN ('lu', 'confirme')) AS lus, "
@@ -360,7 +365,7 @@ def _membre_ou_403(user: UserMe) -> str:
 _FEED_SELECT = (
     "SELECT i.id, i.titre, i.sous_titre, i.contenu, i.priorite, i.auteur, i.statut, i.requiert_accuse, "
     "i.lecture_vocale_auto, i.lien_url, i.action_label, i.action_url, i.audio_url, i.image_url, i.document_url, "
-    "i.publier_le, i.expire_le, i.epingle_jusqu, i.cibles, i.cree_le, i.envoye_le, "
+    "i.publier_le, i.expire_le, i.epingle_jusqu, i.cibles, i.cree_le, i.envoye_le, i.signature, i.signature_url, "
     "d.statut AS d_statut, d.lu_le, d.confirme_le "
     "FROM information_destinataire d JOIN information i ON i.id = d.information_id "
     "WHERE d.membre_id = %s AND i.statut = 'envoye' AND (i.expire_le IS NULL OR i.expire_le > now())"
