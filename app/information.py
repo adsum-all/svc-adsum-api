@@ -62,6 +62,8 @@ class InformationIn(BaseModel):
     auteur: str | None = Field(default=None, max_length=160)
     signature: str | None = Field(default=None, max_length=200)
     signature_url: str | None = Field(default=None, max_length=500)
+    protege: bool = False
+    institutionnelle: bool = False
     requiert_accuse: bool = False
     lecture_vocale_auto: bool = True
     lien_url: str | None = Field(default=None, max_length=1000)
@@ -81,6 +83,8 @@ class InformationPatch(BaseModel):
     auteur: str | None = Field(default=None, max_length=160)
     signature: str | None = Field(default=None, max_length=200)
     signature_url: str | None = Field(default=None, max_length=500)
+    protege: bool | None = None
+    institutionnelle: bool | None = None
     requiert_accuse: bool | None = None
     lecture_vocale_auto: bool | None = None
     lien_url: str | None = Field(default=None, max_length=1000)
@@ -103,6 +107,7 @@ def _info_dict(r: dict[str, Any]) -> dict[str, Any]:
         "contenu": r.get("contenu"), "priorite": r.get("priorite"), "auteur": r.get("auteur"),
         "statut": r.get("statut"), "requiert_accuse": bool(r.get("requiert_accuse")),
         "signature": r.get("signature"), "signature_url": r.get("signature_url"),
+        "protege": bool(r.get("protege")), "institutionnelle": bool(r.get("institutionnelle")),
         "lecture_vocale_auto": bool(r.get("lecture_vocale_auto")),
         "lien_url": r.get("lien_url"), "action_label": r.get("action_label"), "action_url": r.get("action_url"),
         "audio_url": r.get("audio_url"), "image_url": r.get("image_url"), "document_url": r.get("document_url"),
@@ -114,7 +119,8 @@ def _info_dict(r: dict[str, Any]) -> dict[str, Any]:
 def _colonnes(payload: InformationIn | InformationPatch) -> dict[str, Any]:
     champs = payload.model_dump(exclude_unset=True)
     out: dict[str, Any] = {}
-    for k in ("titre", "sous_titre", "contenu", "priorite", "auteur", "signature", "signature_url", "requiert_accuse",
+    for k in ("titre", "sous_titre", "contenu", "priorite", "auteur", "signature", "signature_url",
+              "protege", "institutionnelle", "requiert_accuse",
               "lecture_vocale_auto", "lien_url", "action_label", "action_url",
               "publier_le", "expire_le", "epingle_jusqu"):
         if k not in champs:

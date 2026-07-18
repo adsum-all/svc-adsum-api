@@ -50,6 +50,7 @@ from .gestion import router as gestion_router
 from .groupes import router as groupes_router
 from .groupes_lecture import router as groupes_lecture_router
 from .information import router as information_router
+from .information_feed import router as information_feed_router
 from .inscription import router as inscription_router
 from .inscription_admin import router as inscription_admin_router
 from .integrations import router as integrations_router
@@ -71,6 +72,7 @@ from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
 from .pilotage import router as pilotage_router
 from .reference import router as reference_router
+from .retention_archivage import router as retention_archivage_router
 from .rgpd import router as rgpd_router
 from .sondage import cron_router as sondage_cron_router
 from .sondage import router as sondage_router
@@ -113,10 +115,12 @@ app.include_router(evenements_series_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(organigramme_router)
+app.include_router(information_feed_router)
 app.include_router(information_router)
 app.include_router(ai_tts_router)
 app.include_router(activites_membre_router)
 app.include_router(notifications_centre_router)
+app.include_router(retention_archivage_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
 app.include_router(pilotage_router)
