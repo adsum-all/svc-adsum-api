@@ -64,6 +64,7 @@ class InformationIn(BaseModel):
     signature_url: str | None = Field(default=None, max_length=500)
     protege: bool = False
     institutionnelle: bool = False
+    canaux: list[str] | None = Field(default=None, max_length=6)
     requiert_accuse: bool = False
     lecture_vocale_auto: bool = True
     lien_url: str | None = Field(default=None, max_length=1000)
@@ -85,6 +86,7 @@ class InformationPatch(BaseModel):
     signature_url: str | None = Field(default=None, max_length=500)
     protege: bool | None = None
     institutionnelle: bool | None = None
+    canaux: list[str] | None = Field(default=None, max_length=6)
     requiert_accuse: bool | None = None
     lecture_vocale_auto: bool | None = None
     lien_url: str | None = Field(default=None, max_length=1000)
@@ -108,6 +110,7 @@ def _info_dict(r: dict[str, Any]) -> dict[str, Any]:
         "statut": r.get("statut"), "requiert_accuse": bool(r.get("requiert_accuse")),
         "signature": r.get("signature"), "signature_url": r.get("signature_url"),
         "protege": bool(r.get("protege")), "institutionnelle": bool(r.get("institutionnelle")),
+        "canaux": (json.loads(r["canaux"]) if isinstance(r.get("canaux"), str) else r.get("canaux")) or ["application", "telegram"],
         "lecture_vocale_auto": bool(r.get("lecture_vocale_auto")),
         "lien_url": r.get("lien_url"), "action_label": r.get("action_label"), "action_url": r.get("action_url"),
         "audio_url": r.get("audio_url"), "image_url": r.get("image_url"), "document_url": r.get("document_url"),
@@ -132,6 +135,13 @@ def _colonnes(payload: InformationIn | InformationPatch) -> dict[str, Any]:
         out[k] = champs[k]
     if "cibles" in champs and champs["cibles"] is not None:
         out["cibles"] = json.dumps([c if isinstance(c, dict) else c.model_dump() for c in payload.cibles or []])
+    if "canaux" in champs and champs["canaux"] is not None:
+        # In-app is always included; the rest are the admin's channel choices.
+        valides = {"application", "push", "telegram", "email", "sms"}
+        choisis = [c for c in (payload.canaux or []) if c in valides]
+        if "application" not in choisis:
+            choisis.insert(0, "application")
+        out["canaux"] = json.dumps(choisis)
     return out
 
 
@@ -311,10 +321,15 @@ def admin_apercu(info_id: str, user: Annotated[UserMe, Depends(require_permissio
 
 @router.post("/admin/informations/{info_id}/publier")
 def admin_publier(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> dict[str, Any]:
-    """Materialise the deduplicated recipient set and mark the Information as sent."""
+    """Materialise the deduplicated recipient set, mark the Information as sent, and
+    relay it professionally on the selected channels (Telegram)."""
     info = _info_ou_404(info_id, user.role)
     if info.get("statut") == "archive":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Information archivée.")
+    # Mandatory display duration: an Information can never be published without an
+    # explicit end of its priority window (no indefinitely active Information).
+    if not info.get("expire_le"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Durée d'affichage obligatoire : définissez une date de fin d'activation avant de publier.")
     cibles = info.get("cibles")
     if isinstance(cibles, str):
         cibles = json.loads(cibles or "[]")
@@ -331,7 +346,15 @@ def admin_publier(info_id: str, user: Annotated[UserMe, Depends(require_permissi
         tuple(flat), role=user.role,
     )
     db.execute("UPDATE information SET statut = 'envoye', envoye_le = coalesce(envoye_le, now()), maj_le = now() WHERE id = %s", (info_id,), role=user.role)
-    return {"ok": True, "destinataires": len(ids)}
+    # Relay on the selected channels. The in-app feed is always the source of truth.
+    canaux = info.get("canaux")
+    if isinstance(canaux, str):
+        canaux = json.loads(canaux or "[]")
+    telegram = {"envoyes": 0, "eligibles": 0, "tronques": 0}
+    if "telegram" in (canaux or ["application", "telegram"]):
+        from . import information_diffusion
+        telegram = information_diffusion.diffuser_telegram(info_id, info, ids, user.role)
+    return {"ok": True, "destinataires": len(ids), "telegram": telegram}
 
 
 @router.post("/admin/informations/{info_id}/archiver")
@@ -371,7 +394,7 @@ def _membre_ou_403(user: UserMe) -> str:
 _FEED_SELECT = (
     "SELECT i.id, i.titre, i.sous_titre, i.contenu, i.priorite, i.auteur, i.statut, i.requiert_accuse, "
     "i.lecture_vocale_auto, i.lien_url, i.action_label, i.action_url, i.audio_url, i.image_url, i.document_url, "
-    "i.publier_le, i.expire_le, i.epingle_jusqu, i.cibles, i.cree_le, i.envoye_le, i.signature, i.signature_url, "
+    "i.publier_le, i.expire_le, i.epingle_jusqu, i.cibles, i.cree_le, i.envoye_le, i.signature, i.signature_url, i.canaux, "
     "d.statut AS d_statut, d.lu_le, d.confirme_le "
     "FROM information_destinataire d JOIN information i ON i.id = d.information_id "
     "WHERE d.membre_id = %s AND i.statut = 'envoye' AND (i.expire_le IS NULL OR i.expire_le > now())"
