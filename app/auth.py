@@ -542,6 +542,7 @@ class PreferencesCompte(BaseModel):
     never be abused to store sensitive or unbounded data."""
 
     vue_evenements: str | None = Field(default=None, pattern="^(calendrier|liste)$")
+    theme: str | None = Field(default=None, pattern="^(light|dark|system)$")
 
 
 @router.get("/me/preferences", response_model=PreferencesCompte)
@@ -550,8 +551,14 @@ def mes_preferences(user: Annotated[UserMe, Depends(current_user)]) -> Preferenc
     across browsers and devices instead of living in one browser's storage)."""
     row = db.fetch_one("SELECT preferences FROM utilisateur WHERE id = %s", (user.id,), role=user.role)
     prefs = (row or {}).get("preferences") or {}
-    vue = prefs.get("vue_evenements") if isinstance(prefs, dict) else None
-    return PreferencesCompte(vue_evenements=vue if vue in ("calendrier", "liste") else None)
+    if not isinstance(prefs, dict):
+        prefs = {}
+    vue = prefs.get("vue_evenements")
+    theme = prefs.get("theme")
+    return PreferencesCompte(
+        vue_evenements=vue if vue in ("calendrier", "liste") else None,
+        theme=theme if theme in ("light", "dark", "system") else None,
+    )
 
 
 @router.put("/me/preferences", response_model=PreferencesCompte)
@@ -568,6 +575,12 @@ def set_mes_preferences(
             "UPDATE utilisateur SET preferences = coalesce(preferences, '{}'::jsonb) || %s::jsonb WHERE id = %s",
             (_json.dumps(fournis), user.id),
             role=user.role,
+        )
+        from . import audit
+
+        audit.log(
+            user.id, user.role, "compte_preferences_maj", "utilisateur", user.id,
+            {"champs": sorted(fournis.keys())},
         )
     return mes_preferences(user)
 

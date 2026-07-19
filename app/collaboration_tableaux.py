@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import audit, db
 from .collaboration_espaces import (
@@ -20,6 +20,7 @@ from .collaboration_espaces import (
     _name_from_email,
     require_espace_role,
 )
+from .collaboration_modeles import modeles_perso_visibles, structure_perso
 from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
 from .schemas import UserMe
@@ -139,7 +140,7 @@ class ModeleIn(BaseModel):
     espace_id: ShortStr
     nom: TitleStr
     modele: ShortStr = "vide"
-    visibilite: ShortStr = "espace"
+    visibilite: str = Field(default="espace", pattern="^(espace|prive)$")
 
 
 class TableauPatch(BaseModel):
@@ -442,27 +443,39 @@ def create_tableau_modele(
     payload: ModeleIn, user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))]
 ) -> TableauOut:
     require_espace_role(payload.espace_id, user, MEMBRES_ACTIFS)
-    modele = MODELES.get(payload.modele, MODELES["vide"])
-    return _create_board(payload.espace_id, payload.nom, "", payload.visibilite, modele["colonnes"], user)
+    if payload.modele in MODELES:
+        colonnes = MODELES[payload.modele]["colonnes"]
+    else:
+        # Not a built-in key: try a custom template usable in this workspace, else fall
+        # back to the blank one (never leak another space's template through a stray id).
+        colonnes = structure_perso(payload.modele, payload.espace_id, user) or MODELES["vide"]["colonnes"]
+    return _create_board(payload.espace_id, payload.nom, "", payload.visibilite, colonnes, user)
 
 
 @router.get("/modeles-catalogue")
 def modeles_catalogue(
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
+    espace_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """The premium board templates the picker offers, with their columns (name,
-    colour, WIP), so the front previews exactly what a template will create."""
-    return [
+    """The board templates the picker offers, with their columns (name, colour, WIP), so
+    the front previews exactly what a template will create. When ``espace_id`` is given,
+    the workspace custom templates are appended after the built-in catalogue."""
+    catalogue: list[dict[str, Any]] = [
         {
             "id": key,
             "libelle": modele["libelle"],
             "description": modele["description"],
+            "source": "systeme",
             "colonnes": [
                 {"nom": c["nom"], "couleur": c["couleur"], "wip": c["wip"]} for c in modele["colonnes"]
             ],
         }
         for key, modele in MODELES.items()
     ]
+    if espace_id:
+        require_espace_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
+        catalogue.extend(modeles_perso_visibles(espace_id, user))
+    return catalogue
 
 
 @router.patch("/tableaux-espace/{tableau_id}", response_model=TableauOut)
