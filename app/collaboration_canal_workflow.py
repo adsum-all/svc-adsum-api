@@ -8,7 +8,8 @@ collab_canal_etape (who, when) so a Jira-style workflow view can be rendered, an
 readable reference (INS-YYYY-NNNNNN) is minted on first take-in-charge.
 
 A closed instruction cannot be reopened or reassigned; only complements (channel
-replies) may still be added. Writes are guarded by ``collaboration.gerer``.
+replies) may still be added. Every write here is guarded by ``canal.traiter`` (the
+channel's processing permission), plus per-space membership isolation.
 """
 from __future__ import annotations
 
