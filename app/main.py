@@ -14,6 +14,7 @@ from .anniversaires_annuaire import router as anniversaires_annuaire_router
 from .applications import router as applications_router
 from .audit import router as audit_router
 from .auth import router as auth_router
+from .calendrier_institutionnel import router as calendrier_institutionnel_router
 from .cibles_activite import router as cibles_activite_router
 from .collaboration_canal import router as collaboration_canal_router
 from .collaboration_canal_config import router as collaboration_canal_config_router
@@ -129,6 +130,7 @@ app.include_router(activites_membre_router)
 app.include_router(notifications_centre_router)
 app.include_router(retention_archivage_router)
 app.include_router(institutionnel_router)
+app.include_router(calendrier_institutionnel_router)
 app.include_router(communication_centre_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
