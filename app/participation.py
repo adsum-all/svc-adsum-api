@@ -45,15 +45,17 @@ _COMPTE = "(source = 'scan' OR valide)"
 _SEUIL_EVAL = 3
 
 # Single source of truth for the response window: the real end of the session
-# (or debut + 1 day when no end is set) plus the per-event duration when the
-# administration set one, else the global admin parameter
-# questionnaire_fenetre_heures, else 5 hours. Every read (display), write
-# (submission guard) and reminder must use this same formula.
+# (or debut + 2 hours when no end is set) plus a duration in MINUTES. The duration
+# is the per-event override (fenetre_reponse_heures, in hours) when set, else the
+# global admin parameter questionnaire_fenetre_minutes (default 120 = 2 hours,
+# adjustable in 30-minute steps from 0, where 0 closes the survey exactly at the
+# activity end). Every read (display), write (submission guard) and reminder must
+# use this same formula.
 FENETRE_FIN_SQL = (
-    "coalesce(e.fin, e.debut + interval '1 day') + make_interval(hours => coalesce("
-    "e.fenetre_reponse_heures, "
-    "(SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'questionnaire_fenetre_heures'), "
-    "5))"
+    "coalesce(e.fin, e.debut + interval '2 hours') + make_interval(mins => coalesce("
+    "e.fenetre_reponse_heures * 60, "
+    "(SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'questionnaire_fenetre_minutes'), "
+    "120))"
 )
 
 

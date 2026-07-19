@@ -161,12 +161,12 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                CASE
                  WHEN now() < e.debut - interval '15 minutes' THEN 'a_venir'
                  WHEN now() < e.debut THEN 'bientot'
-                 WHEN now() <= COALESCE(e.fin, e.debut + interval '6 hours') THEN 'en_cours'
+                 WHEN now() <= COALESCE(e.fin, e.debut + interval '2 hours') THEN 'en_cours'
                  ELSE 'termine'
                END AS phase,
                (now() >= e.debut) AS formulaire_ouvert,
                (now() >= e.debut - interval '15 minutes'
-                AND now() <= COALESCE(e.fin, e.debut + interval '6 hours')) AS in_window
+                AND now() <= COALESCE(e.fin, e.debut + interval '2 hours')) AS in_window
         FROM evenement e
         JOIN membre m ON m.id = %s
         LEFT JOIN intendance mi ON mi.id = m.intendance_id
