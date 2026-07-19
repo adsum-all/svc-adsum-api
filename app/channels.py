@@ -124,8 +124,10 @@ def send_telegram(chat_id: str, message: Message, contexte: str | None = None) -
     if not token or not chat_id:
         return False
     url = f"{settings.telegram_api_base}/bot{token}/sendMessage"
-    # Telegram rejects messages over 4096 characters; keep a safe margin.
-    text = f"<b>{_esc(message.titre)}</b>\n{_esc(message.corps_text)}"[:4000]
+    # Telegram rejects messages over 4096 characters; keep a safe margin. A message
+    # that carries ready HTML (corps_html) is sent as-is (the caller is responsible
+    # for valid, escaped Telegram HTML); otherwise the plain title/body is escaped.
+    text = (message.corps_html or f"<b>{_esc(message.titre)}</b>\n{_esc(message.corps_text)}")[:4000]
     ok, body = _post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, {})
     if ok:
         _record_telegram_message(str(chat_id), body, contexte)
