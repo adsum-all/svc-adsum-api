@@ -518,12 +518,18 @@ def recherche(
         out.append(
             ResultatRecherche(kind="espace", id=str(e["id"]), titre=e["nom"], sous_titre=e["description"] or "Espace")
         )
+    # A private board (and its cards) must never surface in search to a member who is
+    # not one of its participants (a technical super-admin sees everything).
+    prive_ok = (
+        "(t.visibilite <> 'prive' OR %s OR EXISTS (SELECT 1 FROM collab_tableau_participant p "
+        "WHERE p.tableau_id = t.id AND p.utilisateur_id = %s))"
+    )
     tab_rows = db.fetch_all(
         "SELECT t.id, t.nom, t.espace_id, e.nom AS espace_nom FROM collab_tableau t "
         "JOIN collab_espace e ON e.id = t.espace_id "
         "WHERE t.espace_id = ANY(%s) AND NOT t.archive AND (lower(t.nom) LIKE %s OR lower(t.description) LIKE %s) "
-        "LIMIT 15",
-        (espaces, like, like),
+        f"AND {prive_ok} LIMIT 15",
+        (espaces, like, like, user.acces_technique_global, user.id),
         role=user.role,
     )
     for t in tab_rows:
@@ -541,8 +547,8 @@ def recherche(
         "FROM collab_carte c JOIN collab_tableau t ON t.id = c.tableau_id "
         "JOIN collab_espace e ON e.id = t.espace_id "
         "WHERE t.espace_id = ANY(%s) AND NOT c.archive AND (lower(c.titre) LIKE %s OR lower(c.description) LIKE %s) "
-        "LIMIT 20",
-        (espaces, like, like),
+        f"AND {prive_ok} LIMIT 20",
+        (espaces, like, like, user.acces_technique_global, user.id),
         role=user.role,
     )
     for c in carte_rows:

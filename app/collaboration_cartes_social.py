@@ -58,6 +58,24 @@ def _espace_id_or_403(carte_id: str, user: UserMe, allowed: tuple[str, ...]) -> 
     return espace_id
 
 
+def _gate_commentaire(carte_id: str, user: UserMe) -> str:
+    """Write guard for comments/reactions: active members always may; an observer may
+    only when the space's ``observateurs_commentent`` toggle is on (the setting was inert
+    before). Reading and read-tracking stay open to observers. Returns the space id."""
+    _, espace_id = _espace_of_carte(carte_id, user.role)
+    role = require_espace_role(espace_id, user, COMMENTATEURS)
+    if role == "observateur":
+        row = db.fetch_one(
+            "SELECT observateurs_commentent FROM collab_espace WHERE id = %s", (espace_id,), role=user.role
+        )
+        if not (row and row.get("observateurs_commentent")):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="les observateurs ne peuvent pas commenter dans cet espace",
+            )
+    return espace_id
+
+
 # Resolve the parent card of a nested object SERVER-SIDE so the space guard is bound
 # to the object actually being written, not to a card id supplied in the body (which a
 # caller could point at a space they belong to while acting on another space's object).
@@ -121,7 +139,7 @@ def ajouter_commentaire(
     payload: CommentaireIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> CommentaireProtoOut:
-    espace_id = _espace_id_or_403(carte_id, user, COMMENTATEURS)
+    espace_id = _gate_commentaire(carte_id, user)
     created = db.execute(
         "INSERT INTO collab_commentaire (carte_id, auteur_id, auteur_nom, corps) VALUES (%s, %s, %s, %s) "
         "RETURNING id, auteur_id, corps, cree_le, edite_le",
@@ -211,7 +229,7 @@ def reagir(
 ) -> None:
     # Guard on the space of the comment being reacted to, resolved server-side from the
     # path id, not on the body carte_id (which could point at another space).
-    _espace_id_or_403(_carte_of_commentaire(commentaire_id, user.role), user, COMMENTATEURS)
+    _gate_commentaire(_carte_of_commentaire(commentaire_id, user.role), user)
     existing = db.fetch_one(
         "SELECT 1 FROM collab_reaction WHERE commentaire_id = %s AND utilisateur_id = %s AND type = %s",
         (commentaire_id, user.id, payload.type),
@@ -293,7 +311,7 @@ def modifier_commentaire(
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="comment not found")
     carte_id = str(row["carte_id"])
-    espace_id = _espace_id_or_403(carte_id, user, COMMENTATEURS)
+    espace_id = _gate_commentaire(carte_id, user)
     if str(row["auteur_id"]) != user.id:  # only the author edits their own comment
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="not the comment author")
     updated = db.execute(
