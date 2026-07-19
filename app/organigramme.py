@@ -15,7 +15,15 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import audit, db, fonctions_membre, hierarchie_membre, organigramme_builder, organigramme_stats
+from . import (
+    audit,
+    db,
+    fonctions_membre,
+    hierarchie_membre,
+    organigramme_builder,
+    organigramme_coherence,
+    organigramme_stats,
+)
 from . import organigramme_core as oc
 from .auth import current_user
 from .permissions_rbac import require_permission
@@ -388,8 +396,19 @@ def valider_version(version_id: str, user: Annotated[UserMe, Depends(require_per
     vacants = [n["nom"] for n in contenu["noeuds"] if n.get("statut") == "vacant"]
     if vacants:
         avertissements.append(f"{len(vacants)} poste(s) vacant(s) : {', '.join(vacants[:6])}{'...' if len(vacants) > 6 else ''}.")
+    # Coherence over the real organisation data (units, apex, interims, attachments).
+    coh = organigramme_coherence.rapport(user.role)
+    bloquants.extend(f["message"] for f in coh["bloquants"])
+    avertissements.extend(f["message"] for f in coh["avertissements"])
     return {"publiable": not bloquants, "bloquants": bloquants, "avertissements": avertissements,
-            "noeuds": len(contenu["noeuds"]), "liens": len(contenu["liens"])}
+            "coherence": coh, "noeuds": len(contenu["noeuds"]), "liens": len(contenu["liens"])}
+
+
+@router.get("/admin/organigramme/coherence")
+def rapport_coherence(user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))]) -> dict[str, Any]:
+    """Standalone coherence report over the real organisation data, independent of any
+    draft version, so the direction can audit the structure at any time."""
+    return organigramme_coherence.rapport(user.role)
 
 
 @router.post("/admin/organigramme/versions/{version_id}/publier")
