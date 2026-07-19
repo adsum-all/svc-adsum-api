@@ -19,8 +19,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from . import audit, db
 from . import cibles_activite as ca
-from . import db
 from .auth import current_user
 from .permissions_rbac import require_permission
 from .schemas import UserMe
@@ -64,6 +64,9 @@ class InformationIn(BaseModel):
     signature_url: str | None = Field(default=None, max_length=500)
     protege: bool = False
     institutionnelle: bool = False
+    # Opt-in header banner in the member app: strictly off by default, reserved for
+    # information the admin deems critical enough to surface above the member card.
+    affiche_entete: bool = False
     canaux: list[str] | None = Field(default=None, max_length=6)
     requiert_accuse: bool = False
     lecture_vocale_auto: bool = True
@@ -86,6 +89,7 @@ class InformationPatch(BaseModel):
     signature_url: str | None = Field(default=None, max_length=500)
     protege: bool | None = None
     institutionnelle: bool | None = None
+    affiche_entete: bool | None = None
     canaux: list[str] | None = Field(default=None, max_length=6)
     requiert_accuse: bool | None = None
     lecture_vocale_auto: bool | None = None
@@ -110,6 +114,7 @@ def _info_dict(r: dict[str, Any]) -> dict[str, Any]:
         "statut": r.get("statut"), "requiert_accuse": bool(r.get("requiert_accuse")),
         "signature": r.get("signature"), "signature_url": r.get("signature_url"),
         "protege": bool(r.get("protege")), "institutionnelle": bool(r.get("institutionnelle")),
+        "affiche_entete": bool(r.get("affiche_entete")),
         "canaux": (json.loads(r["canaux"]) if isinstance(r.get("canaux"), str) else r.get("canaux")) or ["application", "telegram"],
         "lecture_vocale_auto": bool(r.get("lecture_vocale_auto")),
         "lien_url": r.get("lien_url"), "action_label": r.get("action_label"), "action_url": r.get("action_url"),
@@ -123,7 +128,7 @@ def _colonnes(payload: InformationIn | InformationPatch) -> dict[str, Any]:
     champs = payload.model_dump(exclude_unset=True)
     out: dict[str, Any] = {}
     for k in ("titre", "sous_titre", "contenu", "priorite", "auteur", "signature", "signature_url",
-              "protege", "institutionnelle", "requiert_accuse",
+              "protege", "institutionnelle", "affiche_entete", "requiert_accuse",
               "lecture_vocale_auto", "lien_url", "action_label", "action_url",
               "publier_le", "expire_le", "epingle_jusqu"):
         if k not in champs:
@@ -241,14 +246,25 @@ def admin_detail(info_id: str, user: Annotated[UserMe, Depends(require_permissio
 @router.patch("/admin/informations/{info_id}")
 def admin_modifier(info_id: str, payload: InformationPatch, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> dict[str, Any]:
     info = _info_ou_404(info_id, user.role)
-    # Only an unsent draft (or a scheduled one) may be edited: once sent, members
-    # may already have read the exact wording, so it must not change under them.
-    if info.get("statut") not in ("brouillon", "programme"):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Seul un brouillon peut être modifié: une information envoyée ou archivée est figée.")
+    statut = info.get("statut")
+    # Archived is frozen; a draft is fully editable; a SENT one may be corrected (rare)
+    # but its audience is frozen (cibles dropped, never re-delivered).
+    if statut == "archive":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Une information archivée est figée: désarchivez-la ou créez-en une nouvelle.")
     cols = _colonnes(payload)
+    if statut == "envoye":
+        cols.pop("cibles", None)
     if not cols:
         return _info_dict(info)
     sets = ", ".join(f"{k} = %s" for k in cols) + ", maj_le = now()"
+    if statut == "envoye":
+        # Members may already have read the previous wording: write the audit trace in
+        # the SAME transaction as the UPDATE (log_cursor), never a best-effort log().
+        with db.connection(role=user.role) as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE information SET {sets} WHERE id = %s RETURNING *", (*cols.values(), info_id))
+            row = cur.fetchone()
+            audit.log_cursor(cur, user.id, user.role, "modification_information_envoyee", "information", info_id, {"champs": list(cols.keys())})
+        return _info_dict(row or {})
     row = db.execute(f"UPDATE information SET {sets} WHERE id = %s RETURNING *", (*cols.values(), info_id), role=user.role)
     return _info_dict(row or {})
 
@@ -301,11 +317,18 @@ def admin_media(info_id: str, payload: MediaIn, user: Annotated[UserMe, Depends(
 @router.delete("/admin/informations/{info_id}", status_code=status.HTTP_204_NO_CONTENT)
 def admin_supprimer(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> None:
     info = _info_ou_404(info_id, user.role)
-    # A sent OR archived information carries per-member delivery history: deleting it
-    # would CASCADE-wipe the read/confirm records. Only an unsent draft is deletable;
-    # a sent one is archived, never destroyed.
-    if info.get("statut") not in ("brouillon", "programme"):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Une information diffusée ne se supprime pas (son suivi de lecture serait perdu): elle s'archive.")
+    statut = info.get("statut")
+    # A draft is deleted silently. Deleting a sent/archived Information CASCADE-wipes its
+    # per-member read/confirm tracking (personal data): the audit entry is the ONLY
+    # remaining record, so it is written in the SAME transaction as the DELETE and carries
+    # the volume erased. If the trace cannot be recorded, the destruction rolls back.
+    if statut in ("envoye", "archive"):
+        with db.connection(role=user.role) as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*) AS total, count(*) FILTER (WHERE statut IN ('lu','confirme')) AS lus, count(*) FILTER (WHERE statut = 'confirme') AS confirmes FROM information_destinataire WHERE information_id = %s", (info_id,))
+            c = cur.fetchone() or {}
+            audit.log_cursor(cur, user.id, user.role, "suppression_information_diffusee", "information", info_id, {"titre": info.get("titre"), "statut": statut, "destinataires": c.get("total"), "lus": c.get("lus"), "confirmes": c.get("confirmes")})
+            cur.execute("DELETE FROM information WHERE id = %s", (info_id,))
+        return
     db.execute("DELETE FROM information WHERE id = %s", (info_id,), role=user.role)
 
 
@@ -324,10 +347,11 @@ def admin_publier(info_id: str, user: Annotated[UserMe, Depends(require_permissi
     """Materialise the deduplicated recipient set, mark the Information as sent, and
     relay it professionally on the selected channels (Telegram)."""
     info = _info_ou_404(info_id, user.role)
-    if info.get("statut") == "archive":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Information archivée.")
-    # Mandatory display duration: an Information can never be published without an
-    # explicit end of its priority window (no indefinitely active Information).
+    # One-shot draft transition: an already sent/archived Information is never re-published
+    # (it would re-notify everyone); "Relancer les non-lus" is the targeted re-notify path.
+    if info.get("statut") in ("archive", "envoye"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Information déjà diffusée : utilisez « Relancer les non-lus » pour re-notifier les destinataires non lus.")
+    # Mandatory display duration: no Information is ever published without an end of window.
     if not info.get("expire_le"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Durée d'affichage obligatoire : définissez une date de fin d'activation avant de publier.")
     cibles = info.get("cibles")
