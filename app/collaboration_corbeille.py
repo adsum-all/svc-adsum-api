@@ -345,20 +345,41 @@ def restaurer_tableau(
 def corbeille(
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
 ) -> dict[str, Any]:
-    """Trashed workspaces and boards with the days left before definitive purge."""
+    """Trashed workspaces and boards the caller belongs to, with the days left before
+    definitive purge. Membership-scoped (a technical super-admin sees everything): a
+    collaborator must never enumerate the trashed spaces/boards of workspaces it never
+    joined, the same cross-space isolation enforced across this module."""
     jours = retention_jours(user.role)
-    espaces = db.fetch_all(
-        "SELECT id, nom, parent_id, supprime_le, "
-        "greatest(0, %s - floor(extract(epoch FROM (now() - supprime_le)) / 86400)::int) AS jours_restants "
-        "FROM collab_espace WHERE supprime_le IS NOT NULL ORDER BY supprime_le DESC",
-        (jours,), role=user.role,
-    )
-    tableaux = db.fetch_all(
-        "SELECT id, nom, espace_id, supprime_le, "
-        "greatest(0, %s - floor(extract(epoch FROM (now() - supprime_le)) / 86400)::int) AS jours_restants "
-        "FROM collab_tableau WHERE supprime_le IS NOT NULL ORDER BY supprime_le DESC",
-        (jours,), role=user.role,
-    )
+    if user.acces_technique_global:
+        espaces = db.fetch_all(
+            "SELECT id, nom, parent_id, supprime_le, "
+            "greatest(0, %s - floor(extract(epoch FROM (now() - supprime_le)) / 86400)::int) AS jours_restants "
+            "FROM collab_espace WHERE supprime_le IS NOT NULL ORDER BY supprime_le DESC",
+            (jours,), role=user.role,
+        )
+        tableaux = db.fetch_all(
+            "SELECT id, nom, espace_id, supprime_le, "
+            "greatest(0, %s - floor(extract(epoch FROM (now() - supprime_le)) / 86400)::int) AS jours_restants "
+            "FROM collab_tableau WHERE supprime_le IS NOT NULL ORDER BY supprime_le DESC",
+            (jours,), role=user.role,
+        )
+    else:
+        espaces = db.fetch_all(
+            "SELECT e.id, e.nom, e.parent_id, e.supprime_le, "
+            "greatest(0, %s - floor(extract(epoch FROM (now() - e.supprime_le)) / 86400)::int) AS jours_restants "
+            "FROM collab_espace e WHERE e.supprime_le IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM collab_espace_membre m WHERE m.espace_id = e.id AND m.utilisateur_id = %s) "
+            "ORDER BY e.supprime_le DESC",
+            (jours, user.id), role=user.role,
+        )
+        tableaux = db.fetch_all(
+            "SELECT t.id, t.nom, t.espace_id, t.supprime_le, "
+            "greatest(0, %s - floor(extract(epoch FROM (now() - t.supprime_le)) / 86400)::int) AS jours_restants "
+            "FROM collab_tableau t WHERE t.supprime_le IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM collab_espace_membre m WHERE m.espace_id = t.espace_id AND m.utilisateur_id = %s) "
+            "ORDER BY t.supprime_le DESC",
+            (jours, user.id), role=user.role,
+        )
     return {
         "retention_jours": jours,
         "espaces": [

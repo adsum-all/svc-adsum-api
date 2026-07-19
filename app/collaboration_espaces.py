@@ -120,10 +120,6 @@ class RolePatch(BaseModel):
     role: ShortStr
 
 
-class DemandeIn(BaseModel):
-    membre_id: ShortStr
-
-
 class AccepterIn(BaseModel):
     role: ShortStr = "membre"
 
@@ -191,7 +187,10 @@ def require_espace_gouvernance(espace_id: str, user: UserMe, allowed: tuple[str,
     return require_espace_role(espace_id, user, allowed)
 
 
-def _espace_out(espace_id: str, role: str) -> EspaceOut:
+def _espace_out(espace_id: str, role: str, gerant: bool = True) -> EspaceOut:
+    # ``gerant`` gates the manager-only fields (the invitation token and the pending
+    # access requests): a plain member or observer of a space must never read its
+    # invitation link nor the list of people who requested access.
     e = db.fetch_one(
         "SELECT id, nom, description, type, couleur, initiale, observateurs_commentent, archive, "
         "invitation_jeton, parent_id, telegram_intake_token, "
@@ -247,15 +246,15 @@ def _espace_out(espace_id: str, role: str) -> EspaceOut:
         ],
         observateurs_commentent=e["observateurs_commentent"],
         archive=e["archive"],
-        invitation_jeton=e["invitation_jeton"],
-        demandes_acces=[
+        invitation_jeton=(e["invitation_jeton"] if gerant else ""),
+        demandes_acces=([
             DemandeAccesOut(
                 id=str(d["id"]),
                 membre_id=str(d["utilisateur_id"]),
                 cree_le=d["cree_le"].isoformat() if d["cree_le"] else "",
             )
             for d in demandes
-        ],
+        ] if gerant else []),
         parent_id=(str(e["parent_id"]) if e.get("parent_id") else None),
         sous_espaces=[
             SousEspaceOut(
@@ -328,7 +327,9 @@ def list_espaces(user: Annotated[UserMe, Depends(require_permission("collaborati
             (user.id, user.id),
             role=user.role,
         )
-    return [_espace_out(str(r["id"]), user.role) for r in rows]
+    # The list never carries the manager-only fields (invitation token, access requests):
+    # those are read from the space detail (get_espace) by a manager only.
+    return [_espace_out(str(r["id"]), user.role, gerant=False) for r in rows]
 
 
 @router.get("/espaces/archives", response_model=list[EspaceOut])
@@ -353,7 +354,7 @@ def list_espaces_archives(
             "ORDER BY e.cree_le DESC",
             (user.id,), role=user.role,
         )
-    return [_espace_out(str(r["id"]), user.role) for r in rows]
+    return [_espace_out(str(r["id"]), user.role, gerant=False) for r in rows]
 
 
 @router.get("/admin/espaces", response_model=list[EspaceOut])
@@ -379,8 +380,9 @@ def list_espaces_gouvernance(
 def get_espace(
     espace_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
 ) -> EspaceOut:
-    require_espace_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
-    return _espace_out(espace_id, user.role)
+    role = require_espace_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
+    gerant = role in GERANTS or user.role in ADMINS or user.acces_technique_global
+    return _espace_out(espace_id, user.role, gerant=gerant)
 
 
 @router.post("/espaces", response_model=EspaceOut, status_code=status.HTTP_201_CREATED)
@@ -472,6 +474,22 @@ def add_membre(
     return _espace_out(espace_id, user.role)
 
 
+def _refuser_si_dernier_proprietaire(espace_id: str, membre_id: str, role: str) -> None:
+    """Never leave a workspace without an owner: refuse (409) to demote or remove the
+    sole ``proprietaire``. Recovery of an owner-less space would otherwise require the
+    admin governance surface."""
+    row = db.fetch_one(
+        "SELECT (SELECT count(*) FROM collab_espace_membre WHERE espace_id = %s AND role = 'proprietaire') AS n, "
+        "(SELECT role FROM collab_espace_membre WHERE espace_id = %s AND utilisateur_id = %s) AS r",
+        (espace_id, espace_id, membre_id), role=role,
+    )
+    if row and row.get("r") == "proprietaire" and int(row.get("n") or 0) <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="le dernier propriétaire ne peut pas être retiré ou rétrogradé",
+        )
+
+
 @router.patch("/espaces/{espace_id}/membres/{membre_id}", response_model=EspaceOut)
 def change_role(
     espace_id: str,
@@ -480,6 +498,8 @@ def change_role(
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EspaceOut:
     require_espace_gouvernance(espace_id, user, GERANTS)
+    if payload.role != "proprietaire":
+        _refuser_si_dernier_proprietaire(espace_id, membre_id, user.role)
     db.execute(
         "UPDATE collab_espace_membre SET role = %s WHERE espace_id = %s AND utilisateur_id = %s",
         (payload.role, espace_id, membre_id),
@@ -497,6 +517,7 @@ def remove_membre(
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> EspaceOut:
     require_espace_gouvernance(espace_id, user, GERANTS)
+    _refuser_si_dernier_proprietaire(espace_id, membre_id, user.role)
     db.execute(
         "DELETE FROM collab_espace_membre WHERE espace_id = %s AND utilisateur_id = %s",
         (espace_id, membre_id),
@@ -540,23 +561,31 @@ def rejoindre(
     return RejoindreOut(espace_id=espace_id, espace_nom=e["nom"], statut="demande")
 
 
-@router.post("/espaces/{espace_id}/demandes", response_model=EspaceOut, status_code=status.HTTP_201_CREATED)
+@router.post("/espaces/{espace_id}/demandes", response_model=RejoindreOut, status_code=status.HTTP_201_CREATED)
 def demander_acces(
     espace_id: str,
-    payload: DemandeIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
-) -> EspaceOut:
+) -> RejoindreOut:
+    """Request access to a workspace for the SIGNED-IN caller only. It never files a
+    request on behalf of an arbitrary user, and never returns the workspace detail to a
+    non-member (that would leak members, the invitation token and pending requests): it
+    answers a minimal acknowledgement, exactly like following an invitation link."""
+    e = db.fetch_one(
+        "SELECT nom FROM collab_espace WHERE id = %s AND supprime_le IS NULL", (espace_id,), role=user.role
+    )
+    if not e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="space not found")
+    if role_in_espace(espace_id, user) is not None:
+        return RejoindreOut(espace_id=espace_id, espace_nom=str(e["nom"]), statut="deja_membre")
     inserted = db.execute(
         "INSERT INTO collab_demande_acces (espace_id, utilisateur_id) VALUES (%s, %s) "
         "ON CONFLICT (espace_id, utilisateur_id) DO NOTHING RETURNING id",
-        (espace_id, payload.membre_id),
+        (espace_id, user.id),
         role=user.role,
     )
     if inserted:
-        collaboration_notif.notifier_demande_acces(
-            espace_id, collaboration_notif.nom_espace(espace_id, user.role), str(payload.membre_id), user.role
-        )
-    return _espace_out(espace_id, user.role)
+        collaboration_notif.notifier_demande_acces(espace_id, str(e["nom"]), user.id, user.role)
+    return RejoindreOut(espace_id=espace_id, espace_nom=str(e["nom"]), statut="demande")
 
 
 @router.post("/espaces/{espace_id}/demandes/{demande_id}/accepter", response_model=EspaceOut)
