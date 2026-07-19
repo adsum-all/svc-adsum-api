@@ -53,6 +53,7 @@ from .information import router as information_router
 from .information_feed import router as information_feed_router
 from .inscription import router as inscription_router
 from .inscription_admin import router as inscription_admin_router
+from .institutionnel import router as institutionnel_router
 from .integrations import router as integrations_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
@@ -121,6 +122,7 @@ app.include_router(ai_tts_router)
 app.include_router(activites_membre_router)
 app.include_router(notifications_centre_router)
 app.include_router(retention_archivage_router)
+app.include_router(institutionnel_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
 app.include_router(pilotage_router)
