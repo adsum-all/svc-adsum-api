@@ -168,11 +168,13 @@ def mes_cartes(
     espaces = _visible_espace_ids(user)
     if not espaces:
         return []
+    # EXISTS (not a JOIN) so a card the user follows AND is assigned to is returned once,
+    # not twice (the member link has one row per role).
     rows = db.fetch_all(
         f"SELECT {_C_CARTE_COLS}, t.espace_id AS _espace "
         "FROM collab_carte c JOIN collab_tableau t ON t.id = c.tableau_id "
-        "JOIN collab_carte_membre cm ON cm.carte_id = c.id "
-        "WHERE cm.utilisateur_id = %s AND NOT c.archive AND t.espace_id = ANY(%s) "
+        "WHERE EXISTS (SELECT 1 FROM collab_carte_membre cm WHERE cm.carte_id = c.id AND cm.utilisateur_id = %s) "
+        "AND NOT c.archive AND t.espace_id = ANY(%s) "
         "ORDER BY c.echeance NULLS LAST",
         (user.id, espaces),
         role=user.role,
@@ -464,17 +466,21 @@ def stats_espace(
     for p in priorites:
         par_priorite[p["priorite"]] = int(p["n"])
         total_cartes += int(p["n"])
+    # count(c.id), not count(ce.carte_id): the archived-card filter is on c, so counting
+    # the link column would keep archived cards in the tally.
     etiq = db.fetch_all(
-        "SELECT e.id, e.nom, e.couleur, count(ce.carte_id) AS n FROM collab_etiquette e "
+        "SELECT e.id, e.nom, e.couleur, count(c.id) AS n FROM collab_etiquette e "
         "LEFT JOIN collab_carte_etiquette ce ON ce.etiquette_id = e.id "
         "LEFT JOIN collab_carte c ON c.id = ce.carte_id AND NOT c.archive "
         "WHERE e.espace_id = %s GROUP BY e.id, e.nom, e.couleur ORDER BY e.position",
         (espace_id,),
         role=user.role,
     )
+    # count(DISTINCT c.id) FILTER (t in this space): counting cm.carte_id would tally the
+    # member's assigned cards in EVERY space (and archived ones), not just this space.
     assignes = db.fetch_all(
         "SELECT em.utilisateur_id, coalesce(m.nom_affiche, u.email) AS nom, "
-        "count(DISTINCT cm.carte_id) AS n FROM collab_espace_membre em "
+        "count(DISTINCT c.id) FILTER (WHERE t.id IS NOT NULL) AS n FROM collab_espace_membre em "
         "JOIN utilisateur u ON u.id = em.utilisateur_id LEFT JOIN membre m ON m.id = u.membre_id "
         "LEFT JOIN collab_carte_membre cm ON cm.utilisateur_id = em.utilisateur_id AND cm.role = 'assigne' "
         "LEFT JOIN collab_carte c ON c.id = cm.carte_id AND NOT c.archive "
