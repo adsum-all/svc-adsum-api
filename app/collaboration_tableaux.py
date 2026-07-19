@@ -446,20 +446,20 @@ def create_tableau_modele(
     if payload.modele in MODELES:
         colonnes = MODELES[payload.modele]["colonnes"]
     else:
-        # Not a built-in key: try a custom template usable in this workspace, else fall
-        # back to the blank one (never leak another space's template through a stray id).
-        colonnes = structure_perso(payload.modele, payload.espace_id, user) or MODELES["vide"]["colonnes"]
+        # Not a built-in key: try a custom template from the global library (shared, or
+        # the caller's own private one), else fall back to the blank one.
+        colonnes = structure_perso(payload.modele, user) or MODELES["vide"]["colonnes"]
     return _create_board(payload.espace_id, payload.nom, "", payload.visibilite, colonnes, user)
 
 
 @router.get("/modeles-catalogue")
 def modeles_catalogue(
     user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
-    espace_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """The board templates the picker offers, with their columns (name, colour, WIP), so
-    the front previews exactly what a template will create. When ``espace_id`` is given,
-    the workspace custom templates are appended after the built-in catalogue."""
+    the front previews exactly what a template will create. Merges the built-in catalogue
+    with the global custom-template library (shared templates + the caller's private ones),
+    so every workspace sees the same custom templates regardless of where they were built."""
     catalogue: list[dict[str, Any]] = [
         {
             "id": key,
@@ -472,9 +472,7 @@ def modeles_catalogue(
         }
         for key, modele in MODELES.items()
     ]
-    if espace_id:
-        require_espace_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
-        catalogue.extend(modeles_perso_visibles(espace_id, user))
+    catalogue.extend(modeles_perso_visibles(user))
     return catalogue
 
 
