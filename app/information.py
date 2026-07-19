@@ -350,11 +350,16 @@ def admin_publier(info_id: str, user: Annotated[UserMe, Depends(require_permissi
     canaux = info.get("canaux")
     if isinstance(canaux, str):
         canaux = json.loads(canaux or "[]")
+    liste = canaux or ["application", "telegram"]
     telegram = {"envoyes": 0, "eligibles": 0, "tronques": 0}
-    if "telegram" in (canaux or ["application", "telegram"]):
+    email = {"envoyes": 0, "eligibles": 0, "tronques": 0}
+    if "telegram" in liste or "email" in liste:
         from . import information_diffusion
-        telegram = information_diffusion.diffuser_telegram(info_id, info, ids, user.role)
-    return {"ok": True, "destinataires": len(ids), "telegram": telegram}
+        if "telegram" in liste:
+            telegram = information_diffusion.diffuser_telegram(info_id, info, ids, user.role)
+        if "email" in liste:
+            email = information_diffusion.diffuser_email(info, ids, user.role)
+    return {"ok": True, "destinataires": len(ids), "telegram": telegram, "email": email}
 
 
 @router.post("/admin/informations/{info_id}/archiver")
