@@ -51,6 +51,7 @@ from .gestion import router as gestion_router
 from .groupes import router as groupes_router
 from .groupes_lecture import router as groupes_lecture_router
 from .information import router as information_router
+from .information_actions import router as information_actions_router
 from .information_feed import router as information_feed_router
 from .inscription import router as inscription_router
 from .inscription_admin import router as inscription_admin_router
@@ -118,6 +119,7 @@ app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(organigramme_router)
 app.include_router(information_feed_router)
+app.include_router(information_actions_router)
 app.include_router(information_router)
 app.include_router(ai_tts_router)
 app.include_router(activites_membre_router)
