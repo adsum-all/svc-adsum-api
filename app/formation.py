@@ -466,13 +466,55 @@ def set_preferences(payload: PreferencesIn, ctx: Annotated[tuple[str, str], Depe
 
 # --- Admin: questionnaire window duration -----------------------------------
 
+def _fenetre_minutes(role: str) -> int:
+    """Global survey window in MINUTES (default 120 = 2 h). Falls back to the legacy
+    hours parameter if only that one exists, so nothing regresses."""
+    row = db.fetch_one("SELECT valeur FROM parametre WHERE cle = 'questionnaire_fenetre_minutes'", (), role=role)
+    if row and row.get("valeur") is not None:
+        try:
+            return max(0, int(row["valeur"]))
+        except (TypeError, ValueError):
+            return 120
+    # No minutes param yet: derive from the legacy hours param, else 120.
+    return _fenetre_heures(role) * 60
+
+
 class FenetreIn(BaseModel):
     heures: int
+
+
+class FenetreMinutesIn(BaseModel):
+    minutes: int
 
 
 @router.get("/admin/parametres/questionnaire-fenetre")
 def get_fenetre(user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> dict[str, int]:
     return {"heures": _fenetre_heures(user.role)}
+
+
+@router.get("/admin/parametres/questionnaire-fenetre-minutes")
+def get_fenetre_minutes(user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> dict[str, int]:
+    """Survey window in minutes: default 120 (2 h), adjustable in 30-minute steps
+    from 0 (0 closes the survey exactly when the activity ends)."""
+    return {"minutes": _fenetre_minutes(user.role)}
+
+
+@router.put("/admin/parametres/questionnaire-fenetre-minutes")
+def set_fenetre_minutes(payload: FenetreMinutesIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, int]:
+    # 0 to 24 hours, in 30-minute steps. 0 means the survey closes at the activity end.
+    minutes = max(0, min(1440, payload.minutes))
+    minutes = round(minutes / 30) * 30
+    db.execute(
+        """
+        INSERT INTO parametre (cle, valeur, categorie, description, maj_par, maj_le)
+        VALUES ('questionnaire_fenetre_minutes', %s::jsonb, 'formation', 'Survey availability window in minutes (0 = closes at activity end)', %s, now())
+        ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur, maj_par = EXCLUDED.maj_par, maj_le = now()
+        """,
+        (str(minutes), user.id),
+        role=user.role,
+    )
+    audit.log(user.id, user.role, "config_questionnaire_fenetre_minutes", "parametre", "questionnaire_fenetre_minutes", {"minutes": minutes})
+    return {"minutes": minutes}
 
 
 @router.put("/admin/parametres/questionnaire-fenetre")

@@ -318,6 +318,8 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'POST /api/v1/admin/retention/executer': 'parametres.gerer',
     'GET /api/v1/admin/retention/journal': 'parametres.consulter',
     'GET /api/v1/admin/parametres/questionnaire-fenetre': 'parametres.consulter',
+    'GET /api/v1/admin/parametres/questionnaire-fenetre-minutes': 'parametres.consulter',
+    'PUT /api/v1/admin/parametres/questionnaire-fenetre-minutes': 'parametres.gerer',
     'GET /api/v1/admin/parametres/semaine-jour-debut': 'parametres.consulter',
     'GET /api/v1/admin/parametres/sondage-pointage': 'parametres.consulter',
     'PUT /api/v1/admin/parametres/sondage-pointage': 'parametres.gerer',
