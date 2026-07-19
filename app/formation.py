@@ -561,3 +561,32 @@ def set_semaine_debut(payload: SemaineDebutIn, user: Annotated[UserMe, Depends(r
     )
     audit.log(user.id, user.role, "config_semaine_jour_debut", "parametre", "semaine_jour_debut", {"jour": payload.jour})
     return {"jour": payload.jour}
+
+
+class HeureHebdoIn(BaseModel):
+    heure: int
+
+
+@router.get("/admin/parametres/hebdo-heure-envoi")
+def get_hebdo_heure(user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> dict[str, int]:
+    """Local hour at which the weekly recap and agenda are delivered, in each
+    member's own timezone (so everyone receives it at the same local hour)."""
+    row = db.fetch_one("SELECT (valeur #>> '{}')::int AS h FROM parametre WHERE cle = 'hebdo_heure_envoi'", (), role=user.role)
+    return {"heure": int(row["h"]) if row and row.get("h") is not None else 8}
+
+
+@router.put("/admin/parametres/hebdo-heure-envoi")
+def set_hebdo_heure(payload: HeureHebdoIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, int]:
+    if not 0 <= payload.heure <= 23:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="heure must be between 0 and 23")
+    db.execute(
+        """
+        INSERT INTO parametre (cle, valeur, categorie, description, maj_par, maj_le)
+        VALUES ('hebdo_heure_envoi', %s::jsonb, 'notifications', 'Local hour for the weekly recap/agenda delivery', %s, now())
+        ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur, maj_par = EXCLUDED.maj_par, maj_le = now()
+        """,
+        (str(payload.heure), user.id),
+        role=user.role,
+    )
+    audit.log(user.id, user.role, "config_hebdo_heure_envoi", "parametre", "hebdo_heure_envoi", {"heure": payload.heure})
+    return {"heure": payload.heure}
