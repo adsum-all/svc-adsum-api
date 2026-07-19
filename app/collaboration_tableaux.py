@@ -220,6 +220,26 @@ def _fetch_tableau(tableau_id: str, user: UserMe) -> TableauOut:
     return _tableau_out(row, user.role)
 
 
+def require_tableau_visible(tableau_id: str, user: UserMe) -> str:
+    """Read guard for a single board and its content: the caller must have a space role,
+    and for a PRIVATE board must be an explicit participant (or a technical super-admin).
+    Enforces board privacy on every read path (the board, its cards, search hits), not
+    only in the board list. Returns the space id."""
+    row = db.fetch_one("SELECT espace_id, visibilite FROM collab_tableau WHERE id = %s", (tableau_id,), role=user.role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="board not found")
+    espace_id = str(row["espace_id"])
+    require_espace_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
+    if row["visibilite"] == "prive" and not user.acces_technique_global:
+        allowed = db.fetch_one(
+            "SELECT 1 FROM collab_tableau_participant WHERE tableau_id = %s AND utilisateur_id = %s",
+            (tableau_id, user.id), role=user.role,
+        )
+        if not allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="private board: not a participant")
+    return espace_id
+
+
 def _visible_boards(espace_id: str, user: UserMe, archived: bool) -> list[TableauOut]:
     rows = db.fetch_all(
         f"SELECT {_TABLEAU_COLS} FROM collab_tableau "
@@ -266,8 +286,7 @@ def list_tableaux_archives(
 def get_tableau(
     tableau_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
 ) -> TableauOut:
-    espace_id = _espace_of_tableau(tableau_id, user.role)
-    require_espace_role(espace_id, user, ("proprietaire", "admin", "membre", "observateur"))
+    require_tableau_visible(tableau_id, user)
     return _fetch_tableau(tableau_id, user)
 
 

@@ -21,6 +21,7 @@ from .collaboration_cartes_read import _CARTE_COLS, CarteProtoOut, assemble_cart
 from .collaboration_cartes_read import CommentaireProtoOut as CommentaireProtoOut  # re-export
 from .collaboration_cartes_read import PieceOut as PieceOut  # re-export
 from .collaboration_espaces import GERANTS, require_espace_role
+from .collaboration_tableaux import require_tableau_visible
 from .fields import LineStr, ShortStr, TextStr, TitleStr
 from .permissions_rbac import require_permission
 from .sanitize import sanitize_html, text_content
@@ -138,8 +139,9 @@ def _fetch_carte(carte_id: str, role: str) -> CarteProtoOut:
 def list_cartes(
     tableau_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
 ) -> list[CarteProtoOut]:
-    espace_id = _espace_of_tableau(tableau_id, user.role)
-    require_espace_role(espace_id, user, LECTEURS)
+    # A private board's cards are readable only by its participants: enforce board
+    # visibility here, not only the space role (space membership alone is not enough).
+    require_tableau_visible(tableau_id, user)
     rows = db.fetch_all(
         f"SELECT {_CARTE_COLS} FROM collab_carte WHERE tableau_id = %s AND NOT archive ORDER BY position",
         (tableau_id,),
@@ -152,8 +154,7 @@ def list_cartes(
 def list_cartes_archivees(
     tableau_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))]
 ) -> list[CarteProtoOut]:
-    espace_id = _espace_of_tableau(tableau_id, user.role)
-    require_espace_role(espace_id, user, LECTEURS)
+    require_tableau_visible(tableau_id, user)
     rows = db.fetch_all(
         f"SELECT {_CARTE_COLS} FROM collab_carte WHERE tableau_id = %s AND archive ORDER BY position",
         (tableau_id,),
