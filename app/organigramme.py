@@ -15,7 +15,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from . import audit, db, fonctions_membre, organigramme_builder, organigramme_stats
+from . import audit, db, fonctions_membre, hierarchie_membre, organigramme_builder, organigramme_stats
 from . import organigramme_core as oc
 from .auth import current_user
 from .permissions_rbac import require_permission
@@ -454,46 +454,10 @@ def organigramme_statistiques(user: Annotated[UserMe, Depends(require_permission
 
 @router.get("/membres/me/hierarchie")
 def ma_hierarchie(user: Annotated[UserMe, Depends(current_user)]) -> dict[str, Any]:
-    """The connected member's own upward hierarchy, derived from the real data:
-    their units and responsibles, the functional apex chain, and their tribe with
-    its patriarch. Never exposes member lists the caller is not allowed to see."""
+    """The connected member's full, FUNCTION-BASED hierarchy: every active function
+    (multi-role), a personalised upward chain N+1..N, titles and particular links kept
+    apart from the functional chain, and the member's units (vacant posts kept as
+    'Poste a pourvoir'). Computation lives in ``hierarchie_membre``."""
     if not user.membre_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="compte non lié à un membre")
-    m = db.fetch_one(
-        "SELECT id, prenoms, nom, nom_affiche, commission_id, coordination_id, intendance_id, tribu_id FROM membre WHERE id = %s",
-        (user.membre_id,), role=user.role,
-    ) or {}
-
-    def unite(table: str, uid: object, fonction: str) -> dict[str, Any] | None:
-        if not uid:
-            return None
-        row = db.fetch_one(f"SELECT id, nom, responsable_id FROM {table} WHERE id = %s", (uid,), role=user.role)
-        if not row:
-            return None
-        resp = db.fetch_one("SELECT prenoms, nom, nom_affiche FROM membre WHERE id = %s", (row.get("responsable_id"),), role=user.role) if row.get("responsable_id") else None
-        nom_resp = None
-        if resp:
-            nom_resp = str(resp.get("nom_affiche") or f"{resp.get('prenoms') or ''} {resp.get('nom') or ''}".strip()) or None
-        return {"nom": row.get("nom"), "responsable": nom_resp, "fonction": fonction}
-
-    tribu = None
-    if m.get("tribu_id"):
-        tr = db.fetch_one("SELECT nom, patriarche, patriarche_membre_id FROM tribu WHERE id = %s", (m["tribu_id"],), role=user.role)
-        if tr:
-            patr = db.fetch_one("SELECT prenoms, nom, nom_affiche FROM membre WHERE id = %s", (tr.get("patriarche_membre_id"),), role=user.role) if tr.get("patriarche_membre_id") else None
-            nom_patr = str(patr.get("nom_affiche") or f"{patr.get('prenoms') or ''} {patr.get('nom') or ''}".strip()) if patr else (tr.get("patriarche") or None)
-            tribu = {"nom": tr.get("nom"), "patriarche": nom_patr}
-
-    chaine = []
-    for fcle in ("intendant_general", "controleur_general", "berger_missions", "moderateur", "fondateur"):
-        h = organigramme_builder._titulaire_fonction(fcle, user.role)
-        libelle = fcle.replace("_", " ").title()
-        chaine.append({"fonction": libelle, "titulaire": organigramme_builder._nom_membre(h)})
-
-    return {
-        "commission": unite("commission", m.get("commission_id"), "Responsable"),
-        "coordination": unite("coordination", m.get("coordination_id"), "Coordinateur"),
-        "intendance": unite("intendance", m.get("intendance_id"), "Intendant"),
-        "tribu": tribu,
-        "chaine_fonctionnelle": chaine,
-    }
+    return hierarchie_membre.calculer(user.membre_id, user.role)
