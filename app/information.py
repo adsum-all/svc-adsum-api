@@ -247,10 +247,8 @@ def admin_detail(info_id: str, user: Annotated[UserMe, Depends(require_permissio
 def admin_modifier(info_id: str, payload: InformationPatch, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> dict[str, Any]:
     info = _info_ou_404(info_id, user.role)
     statut = info.get("statut")
-    # An archived information is frozen. A draft is fully editable. A SENT one may be
-    # corrected (rare: fix a typo, a link) but its AUDIENCE is frozen, so re-targeting
-    # is dropped (a sent message is never re-delivered), and the edit is audited since
-    # members may already have read the previous wording.
+    # Archived is frozen; a draft is fully editable; a SENT one may be corrected (rare)
+    # but its audience is frozen (cibles dropped, never re-delivered).
     if statut == "archive":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Une information archivée est figée: désarchivez-la ou créez-en une nouvelle.")
     cols = _colonnes(payload)
@@ -259,9 +257,15 @@ def admin_modifier(info_id: str, payload: InformationPatch, user: Annotated[User
     if not cols:
         return _info_dict(info)
     sets = ", ".join(f"{k} = %s" for k in cols) + ", maj_le = now()"
-    row = db.execute(f"UPDATE information SET {sets} WHERE id = %s RETURNING *", (*cols.values(), info_id), role=user.role)
     if statut == "envoye":
-        audit.log(user.id, user.role, "modification_information_envoyee", "information", info_id, {"champs": list(cols.keys())})
+        # Members may already have read the previous wording: write the audit trace in
+        # the SAME transaction as the UPDATE (log_cursor), never a best-effort log().
+        with db.connection(role=user.role) as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE information SET {sets} WHERE id = %s RETURNING *", (*cols.values(), info_id))
+            row = cur.fetchone()
+            audit.log_cursor(cur, user.id, user.role, "modification_information_envoyee", "information", info_id, {"champs": list(cols.keys())})
+        return _info_dict(row or {})
+    row = db.execute(f"UPDATE information SET {sets} WHERE id = %s RETURNING *", (*cols.values(), info_id), role=user.role)
     return _info_dict(row or {})
 
 
@@ -313,13 +317,18 @@ def admin_media(info_id: str, payload: MediaIn, user: Annotated[UserMe, Depends(
 @router.delete("/admin/informations/{info_id}", status_code=status.HTTP_204_NO_CONTENT)
 def admin_supprimer(info_id: str, user: Annotated[UserMe, Depends(require_permission("informations.gerer"))]) -> None:
     info = _info_ou_404(info_id, user.role)
-    # A draft is deleted silently. A sent OR archived information carries per-member
-    # delivery history that a delete CASCADE-wipes; removing a mistaken publication is
-    # allowed on purpose, but it is audited first since the read/confirm tracking is
-    # permanently lost. Archiving stays the non-destructive alternative.
     statut = info.get("statut")
+    # A draft is deleted silently. Deleting a sent/archived Information CASCADE-wipes its
+    # per-member read/confirm tracking (personal data): the audit entry is the ONLY
+    # remaining record, so it is written in the SAME transaction as the DELETE and carries
+    # the volume erased. If the trace cannot be recorded, the destruction rolls back.
     if statut in ("envoye", "archive"):
-        audit.log(user.id, user.role, "suppression_information_diffusee", "information", info_id, {"titre": info.get("titre"), "statut": statut})
+        with db.connection(role=user.role) as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*) AS total, count(*) FILTER (WHERE statut IN ('lu','confirme')) AS lus, count(*) FILTER (WHERE statut = 'confirme') AS confirmes FROM information_destinataire WHERE information_id = %s", (info_id,))
+            c = cur.fetchone() or {}
+            audit.log_cursor(cur, user.id, user.role, "suppression_information_diffusee", "information", info_id, {"titre": info.get("titre"), "statut": statut, "destinataires": c.get("total"), "lus": c.get("lus"), "confirmes": c.get("confirmes")})
+            cur.execute("DELETE FROM information WHERE id = %s", (info_id,))
+        return
     db.execute("DELETE FROM information WHERE id = %s", (info_id,), role=user.role)
 
 
@@ -338,10 +347,11 @@ def admin_publier(info_id: str, user: Annotated[UserMe, Depends(require_permissi
     """Materialise the deduplicated recipient set, mark the Information as sent, and
     relay it professionally on the selected channels (Telegram)."""
     info = _info_ou_404(info_id, user.role)
-    if info.get("statut") == "archive":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Information archivée.")
-    # Mandatory display duration: an Information can never be published without an
-    # explicit end of its priority window (no indefinitely active Information).
+    # One-shot draft transition: an already sent/archived Information is never re-published
+    # (it would re-notify everyone); "Relancer les non-lus" is the targeted re-notify path.
+    if info.get("statut") in ("archive", "envoye"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Information déjà diffusée : utilisez « Relancer les non-lus » pour re-notifier les destinataires non lus.")
+    # Mandatory display duration: no Information is ever published without an end of window.
     if not info.get("expire_le"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Durée d'affichage obligatoire : définissez une date de fin d'activation avant de publier.")
     cibles = info.get("cibles")
