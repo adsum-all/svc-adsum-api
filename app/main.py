@@ -58,6 +58,7 @@ from .inscription import router as inscription_router
 from .inscription_admin import router as inscription_admin_router
 from .institutionnel import router as institutionnel_router
 from .integrations import router as integrations_router
+from .interim import router as interim_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
 from .mfa import router as mfa_router
@@ -119,6 +120,7 @@ app.include_router(evenements_series_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(organigramme_router)
+app.include_router(interim_router)
 app.include_router(information_feed_router)
 app.include_router(information_actions_router)
 app.include_router(information_router)
