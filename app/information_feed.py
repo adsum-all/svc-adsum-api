@@ -20,6 +20,27 @@ from .schemas import UserMe
 router = APIRouter(prefix="/api/v1", tags=["informations"])
 
 
+@router.get("/membres/me/informations/prioritaires")
+def informations_prioritaires(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, Any]]:
+    """Active high-priority Informations for the discreet open-app banner: urgent or
+    important, still within their display window, not yet read. At most three,
+    urgent first. The member app shows one at a time (dismissed once per member)."""
+    mid = _membre_ou_403(user)
+    rows = db.fetch_all(
+        _FEED_SELECT
+        + " AND i.priorite IN ('urgente','importante') AND d.statut NOT IN ('lu','confirme')"
+        + " ORDER BY (i.priorite = 'urgente') DESC, (i.epingle_jusqu IS NOT NULL AND i.epingle_jusqu > now()) DESC, i.envoye_le DESC LIMIT 3",
+        (mid,), role=user.role,
+    )
+    out = []
+    for r in rows:
+        out.append({
+            "id": str(r["id"]), "titre": r.get("titre"), "sous_titre": r.get("sous_titre"),
+            "priorite": r.get("priorite"), "expire_le": r["expire_le"].isoformat() if r.get("expire_le") else None,
+        })
+    return out
+
+
 @router.get("/membres/me/informations/feed")
 def feed_membre_pagine(
     user: Annotated[UserMe, Depends(current_user)],
