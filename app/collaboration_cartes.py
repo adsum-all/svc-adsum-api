@@ -219,9 +219,26 @@ def _sync_carte_relations(cid: str, fields: dict[str, Any], user: UserMe) -> Non
                 (cid, eid),
                 role=user.role,
             )
+    membres_espace: set[str] | None = None
     for champ, role_val in (("assignes", "assigne"), ("suiveurs", "suiveur")):
         if champ in fields:
             nouveaux = [str(u) for u in (fields.pop(champ) or [])]
+            # Only real members of the card's space may be assigned or set as followers
+            # (like board participants and checklist assignees), never an arbitrary user.
+            if nouveaux:
+                if membres_espace is None:
+                    _, espace_carte = _espace_of_carte(cid, user.role)
+                    membres_espace = {
+                        str(r["utilisateur_id"]) for r in db.fetch_all(
+                            "SELECT utilisateur_id FROM collab_espace_membre WHERE espace_id = %s",
+                            (espace_carte,), role=user.role,
+                        )
+                    }
+                if any(u not in membres_espace for u in nouveaux):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="assigné ou suiveur non membre de l'espace",
+                    )
             avant = {
                 str(r["utilisateur_id"])
                 for r in db.fetch_all(
@@ -320,10 +337,12 @@ def deplacer_vers_tableau(
     payload: DeplacerIn,
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> CarteProtoOut:
-    _, espace_id = _espace_of_carte(carte_id, user.role)
+    source_tableau, espace_id = _espace_of_carte(carte_id, user.role)
     require_espace_role(espace_id, user, MEMBRES_ACTIFS)
     espace_cible = _espace_of_tableau(payload.tableau_id, user.role)
     require_espace_role(espace_cible, user, MEMBRES_ACTIFS)
+    if source_tableau == payload.tableau_id:
+        return _fetch_carte(carte_id, user.role)
     first_col = db.fetch_one(
         "SELECT id FROM collab_colonne WHERE tableau_id = %s AND NOT archivee ORDER BY position LIMIT 1",
         (payload.tableau_id,),
@@ -331,12 +350,21 @@ def deplacer_vers_tableau(
     )
     if not first_col:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="target board has no column")
+    col_id = str(first_col["id"])
+    # Append at the end of the target column (reset the stale source position), move the
+    # card, then keep both boards' card counters exact: +1 on the target, -1 on the source.
     db.execute(
-        "UPDATE collab_carte SET tableau_id = %s, colonne_id = %s, maj_le = now() WHERE id = %s",
-        (payload.tableau_id, str(first_col["id"]), carte_id),
+        "UPDATE collab_carte SET tableau_id = %s, colonne_id = %s, "
+        "position = (SELECT coalesce(max(position), -1) + 1 FROM collab_carte WHERE colonne_id = %s), "
+        "maj_le = now() WHERE id = %s",
+        (payload.tableau_id, col_id, col_id, carte_id),
         role=user.role,
     )
     db.execute(_INCR_COMPTEUR, (payload.tableau_id,), role=user.role)
+    db.execute(
+        "UPDATE collab_tableau SET compteur_cartes = greatest(compteur_cartes - 1, 0) WHERE id = %s",
+        (source_tableau,), role=user.role,
+    )
     return _fetch_carte(carte_id, user.role)
 
 
