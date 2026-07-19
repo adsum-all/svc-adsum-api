@@ -327,6 +327,8 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/admin/parametres/questionnaire-fenetre': 'parametres.consulter',
     'GET /api/v1/admin/parametres/questionnaire-fenetre-minutes': 'parametres.consulter',
     'PUT /api/v1/admin/parametres/questionnaire-fenetre-minutes': 'parametres.gerer',
+    'GET /api/v1/admin/parametres/hebdo-heure-envoi': 'parametres.consulter',
+    'PUT /api/v1/admin/parametres/hebdo-heure-envoi': 'parametres.gerer',
     'GET /api/v1/admin/parametres/semaine-jour-debut': 'parametres.consulter',
     'GET /api/v1/admin/parametres/sondage-pointage': 'parametres.consulter',
     'PUT /api/v1/admin/parametres/sondage-pointage': 'parametres.gerer',

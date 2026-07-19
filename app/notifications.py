@@ -375,8 +375,18 @@ def _appellation(membre_id: str, role: str | None) -> dict[str, str]:
 
 # --- Weekly digest scheduling (per member, in the member's own timezone) -----
 
-# Local hour at which the weekly recap + agenda are delivered on the week's first day.
+# Default local hour at which the weekly recap + agenda are delivered on the week's
+# first day. Admin-configurable via the parametre ``hebdo_heure_envoi``.
 _HEURE_HEBDO = 8
+
+
+def _heure_hebdo(role: str | None) -> int:
+    try:
+        row = db.fetch_one("SELECT (valeur #>> '{}')::int AS h FROM parametre WHERE cle = 'hebdo_heure_envoi'", (), role=role)
+        h = int(row["h"]) if row and row.get("h") is not None else _HEURE_HEBDO
+        return h if 0 <= h <= 23 else _HEURE_HEBDO
+    except Exception:  # noqa: BLE001 - a bad parameter must never break the cron
+        return _HEURE_HEBDO
 
 
 def _semaine_jour_debut(role: str | None) -> int:
@@ -419,13 +429,14 @@ def _hebdo_par_membre(now: datetime, role: str | None, actifs: list[dict[str, ob
         (),
         role=role,
     )
+    heure_envoi = _heure_hebdo(role)
     for m in actifs:
         fuseau = m.get("fuseau_horaire")
         local = temps.local_datetime(now, fuseau)  # type: ignore[arg-type]
         debut_cette = _debut_semaine_locale(local, jour_debut)
-        cible = debut_cette.replace(hour=_HEURE_HEBDO)
+        cible = debut_cette.replace(hour=heure_envoi)
         if local < cible:
-            continue  # the member's local Monday 08:00 has not arrived yet this week
+            continue  # the member's local send hour has not arrived yet this week
         fin_cette = debut_cette + timedelta(days=7)
         debut_prec = debut_cette - timedelta(days=7)
         semaine_key = debut_cette.strftime("%Y-%m-%d")
