@@ -88,6 +88,10 @@ def nom_affichage(
     return " ".join(part for part in [*prenoms_ok, fam] if part).strip()
 
 
+# Leading consecration title a name must not repeat (case and accent tolerant).
+_re_prefixe_berger = re.compile(r"^\s*berg(?:er|ère|ere)\s+", re.IGNORECASE)
+
+
 def nom_pastoral_affichage(genre: str | None, nom_pastoral: str | None) -> str | None:
     """Gendered pastoral appellation, e.g. ``Berger David`` / ``Bergere Marie``.
 
@@ -95,6 +99,11 @@ def nom_pastoral_affichage(genre: str | None, nom_pastoral: str | None) -> str |
     the civil sex; anything other than homme/femme uses the masculine form.
     """
     pastoral = normaliser_prenoms(nom_pastoral)
+    if not pastoral:
+        return None
+    # Defensive: strip any leading "Berger"/"Bergere"/"Bergere" the member (or old
+    # data) may have typed, so the gendered title is never doubled ("Berger Berger X").
+    pastoral = _re_prefixe_berger.sub("", pastoral).strip()
     if not pastoral:
         return None
     label = "Bergère" if genre == "femme" else "Berger"
