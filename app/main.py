@@ -24,6 +24,7 @@ from .collaboration_cartes_social import router as collaboration_cartes_social_r
 from .collaboration_checklists import router as collaboration_checklists_router
 from .collaboration_corbeille import router as collaboration_corbeille_router
 from .collaboration_espaces import router as collaboration_espaces_router
+from .collaboration_modeles import router as collaboration_modeles_router
 from .collaboration_pieces import router as collaboration_pieces_router
 from .collaboration_presence import router as collaboration_presence_router
 from .collaboration_tableaux import router as collaboration_tableaux_router
@@ -152,6 +153,7 @@ app.include_router(collaboration_canal_config_router)
 app.include_router(collaboration_corbeille_router)
 app.include_router(ai_config_router)
 app.include_router(collaboration_espaces_router)
+app.include_router(collaboration_modeles_router)
 app.include_router(collaboration_tableaux_router)
 app.include_router(collaboration_cartes_router)
 app.include_router(collaboration_cartes_social_router)
