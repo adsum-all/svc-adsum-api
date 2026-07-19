@@ -313,6 +313,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'POST /api/v1/admin/informations/{info_id}/publier': 'informations.gerer',
     'POST /api/v1/admin/informations/{info_id}/archiver': 'informations.gerer',
     'GET /api/v1/admin/informations/{info_id}/statistiques': 'informations.consulter',
+    'GET /api/v1/admin/communication/centre-diffusion': 'informations.consulter',
     'GET /api/v1/admin/parametres/identite-institutionnelle': 'parametres.consulter',
     'PUT /api/v1/admin/parametres/identite-institutionnelle': 'parametres.gerer',
     'GET /api/v1/admin/dates-institutionnelles': 'parametres.consulter',

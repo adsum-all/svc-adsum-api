@@ -29,6 +29,7 @@ from .collaboration_presence import router as collaboration_presence_router
 from .collaboration_tableaux import router as collaboration_tableaux_router
 from .collaboration_telegram_ingest import router as collaboration_telegram_ingest_router
 from .collaboration_transverse import router as collaboration_transverse_router
+from .communication_centre import router as communication_centre_router
 from .comptage import comptage_public_router
 from .comptage import router as comptage_router
 from .config import settings
@@ -123,6 +124,7 @@ app.include_router(activites_membre_router)
 app.include_router(notifications_centre_router)
 app.include_router(retention_archivage_router)
 app.include_router(institutionnel_router)
+app.include_router(communication_centre_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
 app.include_router(pilotage_router)
