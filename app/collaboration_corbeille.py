@@ -281,6 +281,10 @@ def restaurer_espace(
 ) -> dict[str, Any]:
     """Restore a trashed workspace (and its sub-spaces) before it is purged."""
     eid = str(espace_id)
+    # Same governance gate as the deletion that put it here: a collaboration.gerer
+    # holder must actually govern THIS space (owner/admin, or a platform admin), never
+    # restore an arbitrary space by id. Symmetric with supprimer_espace.
+    require_espace_gouvernance(eid, user, GERANTS)
     ids = _espace_ids_a_purger(eid, user.role)
     row = db.execute(
         "UPDATE collab_espace SET supprime_le = NULL, supprime_par = NULL WHERE id = ANY(%s::uuid[]) AND supprime_le IS NOT NULL RETURNING id",
@@ -320,6 +324,13 @@ def restaurer_tableau(
     user: Annotated[UserMe, Depends(require_permission("collaboration.gerer"))],
 ) -> dict[str, Any]:
     tid = str(tableau_id)
+    # Same space-role gate as the deletion (require_espace_role MEMBRES_ACTIFS): the board
+    # is soft-deleted but its espace_id row still exists, so resolve it and check the caller
+    # belongs to that space before restoring, never restore another space's board by id.
+    src = db.fetch_one("SELECT espace_id FROM collab_tableau WHERE id = %s AND supprime_le IS NOT NULL", (tid,), role=user.role)
+    if not src:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tableau absent de la corbeille")
+    require_espace_role(str(src["espace_id"]), user, _MEMBRES_ACTIFS)
     row = db.execute(
         "UPDATE collab_tableau SET supprime_le = NULL, supprime_par = NULL WHERE id = %s AND supprime_le IS NOT NULL RETURNING id",
         (tid,), role=user.role,

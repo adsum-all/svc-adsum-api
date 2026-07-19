@@ -331,6 +331,31 @@ def list_espaces(user: Annotated[UserMe, Depends(require_permission("collaborati
     return [_espace_out(str(r["id"]), user.role) for r in rows]
 
 
+@router.get("/espaces/archives", response_model=list[EspaceOut])
+def list_espaces_archives(
+    user: Annotated[UserMe, Depends(require_permission("collaboration.superviser"))],
+) -> list[EspaceOut]:
+    """Top-level ARCHIVED workspaces the caller belongs to (archive=true, not trashed),
+    so the collaboration app can list them and offer an unarchive action. Same membership
+    scoping as ``list_espaces``; a technical super-admin sees every archived top-level
+    workspace. Route declared before ``/espaces/{espace_id}`` so 'archives' is never read
+    as an id."""
+    if user.acces_technique_global:
+        rows = db.fetch_all(
+            "SELECT id FROM collab_espace WHERE parent_id IS NULL AND archive "
+            "AND supprime_le IS NULL ORDER BY cree_le DESC",
+            (), role=user.role,
+        )
+    else:
+        rows = db.fetch_all(
+            "SELECT e.id FROM collab_espace e JOIN collab_espace_membre m ON m.espace_id = e.id "
+            "WHERE m.utilisateur_id = %s AND e.parent_id IS NULL AND e.archive AND e.supprime_le IS NULL "
+            "ORDER BY e.cree_le DESC",
+            (user.id,), role=user.role,
+        )
+    return [_espace_out(str(r["id"]), user.role) for r in rows]
+
+
 @router.get("/admin/espaces", response_model=list[EspaceOut])
 def list_espaces_gouvernance(
     user: Annotated[UserMe, Depends(require_permission("acces.administrer"))],
