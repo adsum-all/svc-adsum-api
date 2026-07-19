@@ -361,6 +361,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/collaboration/calendrier': 'collaboration.superviser',
     'GET /api/v1/collaboration/cartes/{carte_id}/commentaires': 'collaboration.superviser',
     'GET /api/v1/collaboration/espaces': 'collaboration.superviser',
+    'GET /api/v1/collaboration/espaces/archives': 'collaboration.superviser',
     'GET /api/v1/collaboration/admin/espaces': 'acces.administrer',
     'GET /api/v1/collaboration/espaces/{espace_id}': 'collaboration.superviser',
     'GET /api/v1/collaboration/membres': 'collaboration.superviser',
