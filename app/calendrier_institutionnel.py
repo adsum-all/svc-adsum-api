@@ -11,10 +11,10 @@ calendar-ready list for a given year.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from . import db, liturgie, sanitize
@@ -25,6 +25,7 @@ from .schemas import UserMe
 router = APIRouter(prefix="/api/v1", tags=["calendrier-institutionnel"])
 
 BADGE = "DATE DE RÉFÉRENCE"
+_ANNEE_HORS_LIMITES = "Année hors limites."
 _LIT_COLS = "id, cle, nom, type, mois, jour, cle_mobile, rang, categorie, couleur, description, source, visibilite, actif, ordre"
 
 
@@ -220,6 +221,56 @@ def occurrences(annee: int, role: str | None, membre: bool) -> list[dict[str, An
     return out
 
 
+def _prochaine_occurrence(r: dict[str, Any], today: date) -> date | None:
+    """The next calendar occurrence of a reference date on or after `today`."""
+    if r.get("date_fixe") and not r.get("repetition_annuelle"):
+        df = r["date_fixe"]
+        return df if df >= today else None
+    mois, jour = r.get("mois"), r.get("jour")
+    if r.get("date_fixe") and (not mois or not jour):
+        mois, jour = r["date_fixe"].month, r["date_fixe"].day
+    if not mois or not jour:
+        return None
+    for annee in (today.year, today.year + 1):
+        try:
+            candidate = date(annee, int(mois), int(jour))
+        except ValueError:
+            return None
+        if candidate >= today:
+            return candidate
+    return None
+
+
+def rappels_dates_reference(role: str | None) -> int:
+    """Daily reminder pass: for each published reference date whose next occurrence is
+    exactly ``rappel_jours`` away, notify every active member once (dedup by date and
+    occurrence). Reminders are opt-in (rappel_jours defaults to 0), so this stays quiet
+    unless an admin set one. Called from the daily cron."""
+    from . import notifications  # local import avoids an import cycle
+    today = datetime.now(UTC).date()
+    dates = db.fetch_all(
+        "SELECT id, nom, mois, jour, date_fixe, repetition_annuelle, rappel_jours FROM date_institutionnelle "
+        "WHERE actif AND statut = 'publie' AND afficher_calendrier AND rappel_jours > 0 AND visibilite IN ('membre','interne')",
+        (), role=role,
+    )
+    envois = 0
+    for r in dates:
+        occ = _prochaine_occurrence(r, today)
+        if not occ or (occ - today).days != int(r["rappel_jours"]):
+            continue
+        jour_fmt = occ.strftime("%d/%m/%Y")
+        membres = db.fetch_all("SELECT id FROM membre WHERE statut = 'actif'", (), role=role)
+        for m in membres:
+            used = notifications.notifier(
+                str(m["id"]), role, "date_reference_rappel",
+                {"titre_date": r.get("nom"), "jour": jour_fmt},
+                ref_id=f"{r['id']}:{occ.isoformat()}", dedup=True,
+            )
+            if used:
+                envois += 1
+    return envois
+
+
 def _alertes(occ: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Preview coherence checks: collisions, missing description/colour."""
     alertes: list[dict[str, str]] = []
@@ -243,10 +294,67 @@ def _alertes(occ: list[dict[str, Any]]) -> list[dict[str, str]]:
 def apercu(annee: int, user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> dict[str, Any]:
     """Full preview for a given year: computed occurrences plus coherence alerts."""
     if annee < 1900 or annee > 2200:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Année hors limites.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_ANNEE_HORS_LIMITES)
     occ = occurrences(annee, user.role, membre=False)
     return {"annee": annee, "occurrences": occ, "alertes": _alertes(occ),
             "resume": {"total": len(occ), "institution": sum(1 for o in occ if o["origine"] == "institution"), "liturgie": sum(1 for o in occ if o["origine"] == "liturgie")}}
+
+
+def _ics_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def _ics_fold(line: str) -> str:
+    # RFC 5545: fold lines longer than 75 octets with CRLF + a leading space.
+    if len(line) <= 73:
+        return line
+    out, rest = [line[:73]], line[73:]
+    while rest:
+        out.append(" " + rest[:72])
+        rest = rest[72:]
+    return "\r\n".join(out)
+
+
+def _ics(occ: list[dict[str, Any]], annee: int) -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    lines = [
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//ADSUM//Calendrier institutionnel//FR",
+        "CALSCALE:GREGORIAN", "METHOD:PUBLISH", f"X-WR-CALNAME:Dates de référence {annee}",
+    ]
+    for o in occ:
+        d = str(o["date"]).replace("-", "")
+        uid = f"{o.get('origine')}-{o.get('source_id')}-{annee}@adsum"
+        desc = sanitize.text_content(o.get("description")) or ""
+        lines += ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{stamp}", f"DTSTART;VALUE=DATE:{d}",
+                  _ics_fold(f"SUMMARY:{_ics_escape(str(o.get('titre') or ''))}")]
+        if desc.strip():
+            lines.append(_ics_fold(f"DESCRIPTION:{_ics_escape(desc.strip())}"))
+        lines += ["CATEGORIES:DATE DE REFERENCE", "TRANSP:TRANSPARENT", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _reponse_ics(occ: list[dict[str, Any]], annee: int) -> Response:
+    return Response(
+        content=_ics(occ, annee), media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="dates-reference-{annee}.ics"'},
+    )
+
+
+@router.get("/admin/calendrier-institutionnel/apercu.ics")
+def apercu_ics(annee: int, user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> Response:
+    """Downloadable iCalendar of all reference-date occurrences for a year (admin)."""
+    if annee < 1900 or annee > 2200:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_ANNEE_HORS_LIMITES)
+    return _reponse_ics(occurrences(annee, user.role, membre=False), annee)
+
+
+@router.get("/membres/me/calendrier/dates-reference.ics")
+def dates_reference_ics(annee: int, user: Annotated[UserMe, Depends(current_user)]) -> Response:
+    """Downloadable iCalendar of the member-visible reference dates for a year."""
+    if annee < 1900 or annee > 2200:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_ANNEE_HORS_LIMITES)
+    return _reponse_ics(occurrences(annee, user.role, membre=True), annee)
 
 
 @router.get("/membres/me/calendrier/dates-reference")
@@ -254,5 +362,5 @@ def dates_reference_membre(annee: int, user: Annotated[UserMe, Depends(current_u
     """Member-visible reference-date occurrences for a year (institutional published +
     active liturgical). These never carry attendance, survey or QR."""
     if annee < 1900 or annee > 2200:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Année hors limites.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_ANNEE_HORS_LIMITES)
     return {"annee": annee, "occurrences": occurrences(annee, user.role, membre=True)}
