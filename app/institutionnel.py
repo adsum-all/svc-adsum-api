@@ -11,6 +11,7 @@ liturgical calendar, colour referential and the calendar occurrences feed live i
 """
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -86,7 +87,8 @@ class DateRefIn(BaseModel):
     heure_fin: str | None = None
     lieu: str | None = Field(default=None, max_length=300)
     lien: str | None = Field(default=None, max_length=500)
-    image_url: str | None = Field(default=None, max_length=1000)
+    # Accepts an https URL or an inline data:image (uploaded, client-optimised) banner.
+    image_url: str | None = Field(default=None, max_length=3_500_000)
     message_membre: str | None = Field(default=None, max_length=_MAX_VALEUR)
     source: str | None = Field(default=None, max_length=500)
     note_admin: str | None = Field(default=None, max_length=2000)
@@ -145,8 +147,26 @@ def lister_dates(user: Annotated[UserMe, Depends(require_permission("parametres.
     return [date_dict(r) for r in rows]
 
 
+def _doublon_existant(payload: DateRefIn, role: str | None) -> dict[str, Any] | None:
+    """A comparable, non-archived date with the same type, day and month (and year of
+    origin when set). Used to warn before silently creating a duplicate (spec 18)."""
+    return db.fetch_one(
+        "SELECT id, nom FROM date_institutionnelle WHERE statut <> 'archive' AND lower(type) = lower(%s) "
+        "AND mois IS NOT DISTINCT FROM %s AND jour IS NOT DISTINCT FROM %s "
+        "AND annee_origine IS NOT DISTINCT FROM %s LIMIT 1",
+        (payload.type, payload.mois, payload.jour, payload.annee_origine), role=role,
+    )
+
+
 @router.post("/admin/dates-institutionnelles")
-def creer_date(payload: DateRefIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, Any]:
+def creer_date(payload: DateRefIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))], force: bool = False) -> dict[str, Any]:
+    if not force:
+        doublon = _doublon_existant(payload, user.role)
+        if doublon:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Une date comparable existe déjà : « {doublon.get('nom')} ». Confirmez pour créer tout de même une date distincte.",
+            )
     row = db.execute(
         "INSERT INTO date_institutionnelle "
         "(nom, description, type, date_fixe, mois, jour, annee_origine, repetition_annuelle, afficher_calendrier, couleur, priorite, statut, categorie, toute_journee, heure_debut, heure_fin, lieu, lien, image_url, message_membre, source, note_admin, rappel_jours, visibilite, actif, maj_par, maj_le) "
@@ -157,14 +177,52 @@ def creer_date(payload: DateRefIn, user: Annotated[UserMe, Depends(require_permi
     return date_dict(row or {})
 
 
+_UPDATE_SQL = (
+    "UPDATE date_institutionnelle SET "
+    "nom=%s, description=%s, type=%s, date_fixe=%s, mois=%s, jour=%s, annee_origine=%s, repetition_annuelle=%s, afficher_calendrier=%s, couleur=%s, priorite=%s, statut=%s, categorie=%s, toute_journee=%s, heure_debut=%s, heure_fin=%s, lieu=%s, lien=%s, image_url=%s, message_membre=%s, source=%s, note_admin=%s, rappel_jours=%s, visibilite=%s, actif=%s, maj_par=%s, maj_le=now() "
+    f"WHERE id=%s RETURNING {_DATE_COLS}"
+)
+
+
+def _snapshot(date_id: str, user: UserMe) -> None:
+    """Append a JSONB snapshot of the current reference date before it changes."""
+    cur = db.fetch_one(f"SELECT {_DATE_COLS} FROM date_institutionnelle WHERE id = %s", (date_id,), role=user.role)
+    if not cur:
+        return
+    db.execute(
+        "INSERT INTO date_reference_version (date_id, snapshot, auteur_id, auteur_nom) VALUES (%s, %s::jsonb, %s, %s)",
+        (date_id, json.dumps(date_dict(cur), default=str), user.id, user.email), role=user.role,
+    )
+
+
 @router.patch("/admin/dates-institutionnelles/{date_id}")
 def maj_date(date_id: str, payload: DateRefIn, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, Any]:
-    row = db.execute(
-        "UPDATE date_institutionnelle SET "
-        "nom=%s, description=%s, type=%s, date_fixe=%s, mois=%s, jour=%s, annee_origine=%s, repetition_annuelle=%s, afficher_calendrier=%s, couleur=%s, priorite=%s, statut=%s, categorie=%s, toute_journee=%s, heure_debut=%s, heure_fin=%s, lieu=%s, lien=%s, image_url=%s, message_membre=%s, source=%s, note_admin=%s, rappel_jours=%s, visibilite=%s, actif=%s, maj_par=%s, maj_le=now() "
-        f"WHERE id=%s RETURNING {_DATE_COLS}",
-        (*_params(payload), user.id, date_id), role=user.role,
+    _snapshot(date_id, user)
+    row = db.execute(_UPDATE_SQL, (*_params(payload), user.id, date_id), role=user.role)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Date introuvable.")
+    return date_dict(row)
+
+
+@router.get("/admin/dates-institutionnelles/{date_id}/versions")
+def lister_versions(date_id: str, user: Annotated[UserMe, Depends(require_permission("parametres.consulter"))]) -> list[dict[str, Any]]:
+    rows = db.fetch_all(
+        "SELECT id, snapshot, auteur_nom, cree_le FROM date_reference_version WHERE date_id = %s ORDER BY cree_le DESC LIMIT 50",
+        (date_id,), role=user.role,
     )
+    return [{"id": str(r["id"]), "snapshot": r.get("snapshot"), "auteur": r.get("auteur_nom"),
+             "cree_le": r["cree_le"].isoformat() if r.get("cree_le") else None} for r in rows]
+
+
+@router.post("/admin/dates-institutionnelles/{date_id}/restaurer/{version_id}")
+def restaurer_version(date_id: str, version_id: str, user: Annotated[UserMe, Depends(require_permission("parametres.gerer"))]) -> dict[str, Any]:
+    v = db.fetch_one("SELECT snapshot FROM date_reference_version WHERE id = %s AND date_id = %s", (version_id, date_id), role=user.role)
+    if not v:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version introuvable.")
+    snap = dict(v["snapshot"] or {})
+    _snapshot(date_id, user)  # keep the current state before restoring
+    payload = DateRefIn(**{k: snap.get(k) for k in DateRefIn.model_fields if k in snap})
+    row = db.execute(_UPDATE_SQL, (*_params(payload), user.id, date_id), role=user.role)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Date introuvable.")
     return date_dict(row)
