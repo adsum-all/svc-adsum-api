@@ -457,7 +457,7 @@ def organigramme_publie(user: Annotated[UserMe, Depends(current_user)]) -> dict[
     pub = db.fetch_one("SELECT id, libelle, statut, note, cree_le, publie_le FROM organisation_version WHERE statut = 'publie'", (), role=user.role)
     if not pub:
         return {"version": None, "noeuds": [], "liens": []}
-    return {"version": oc.version_dict(pub), **oc.contenu(str(pub["id"]), user.role)}
+    return {"version": oc.version_dict(pub), **oc.contenu(str(pub["id"]), user.role, masquer_photo_non_affichee=True)}
 
 
 @router.get("/organigramme/statistiques")

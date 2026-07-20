@@ -12,8 +12,11 @@ from typing import Any
 
 from . import db, interim, organigramme_builder
 
-# Apex chain, function-based, from the highest operational level up to the founder.
-_APEX = ("controleur_general", "intendant_general", "berger_missions", "moderateur", "fondateur")
+# Apex chain, function-based, ordered from the member upward (lowest authority first).
+# The Controleur General is ALWAYS above the Intendant General: the Intendant General
+# is therefore the closer (lower N) apex level, the Controleur General the next one up.
+# This matches the published back-office chart and niveau_hierarchique (IG=5 below CG=4).
+_APEX = ("intendant_general", "controleur_general", "berger_missions", "moderateur", "fondateur")
 # Display precedence between categories (lower wins), so the primary position is the
 # member's highest-authority active function.
 _CAT_RANG = {"fonction_speciale": 0, "titre": 1, "fonction": 2, "fonction_particuliere": 3}
@@ -240,10 +243,57 @@ def _construire_titres(m: dict[str, Any], role: str | None, genre: object) -> li
     return titres
 
 
+def _porteurs(fcle: str, nom_unite: object, role: str | None, exclure: set[str]) -> list[str]:
+    """Names of members actively holding a function on a unit (perimeter LIKE the unit
+    name), excluding the names already listed. Used to surface co-responsables and
+    vice-functions on a member's attachments."""
+    if not fcle or not nom_unite:
+        return []
+    rows = db.fetch_all(
+        "SELECT DISTINCT mf.membre_id FROM membre_fonction mf WHERE mf.actif = true AND mf.confirmee = true "
+        "AND lower(mf.fonction_cle) = %s AND mf.perimetre IS NOT NULL AND lower(mf.perimetre) LIKE %s",
+        (fcle, f"%{str(nom_unite).lower()}%"), role=role,
+    )
+    ids = [r["membre_id"] for r in rows]
+    if not ids:
+        return []
+    membres = db.fetch_all("SELECT id, prenoms, nom, nom_affiche FROM membre WHERE id = ANY(%s)", (ids,), role=role)
+    by = {str(r["id"]): r for r in membres}
+    out: list[str] = []
+    for i in ids:
+        n = _hnom(by.get(str(i)))
+        if n and n not in exclure and n not in out:
+            out.append(n)
+    return out
+
+
+def _bloc_unite(type_label: str, unite: dict[str, Any], base_fcle: str, base_label: str,
+                vice_fcle: str | None, vice_label: str | None, mon_role: str, role: str | None,
+                principal: bool) -> dict[str, Any]:
+    """A rich attachment block: the unit, the member's role, the named responsible(s)
+    (principal + co-responsables) and any support (vice functions)."""
+    nom = unite.get("nom")
+    principal_nom = unite.get("responsable")
+    responsables: list[dict[str, Any]] = []
+    if principal_nom:
+        responsables.append({"nom": principal_nom, "role": base_label})
+    else:
+        responsables.append({"nom": "Poste à pourvoir", "role": base_label, "vacant": True})
+    for n in _porteurs(base_fcle, nom, role, {str(principal_nom or "")}):
+        responsables.append({"nom": n, "role": base_label})
+    appui: list[dict[str, Any]] = []
+    if vice_fcle and vice_label:
+        for n in _porteurs(vice_fcle, nom, role, set()):
+            appui.append({"nom": n, "role": vice_label})
+    return {"type": type_label, "nom": nom, "mon_role": mon_role, "responsables": responsables,
+            "appui": appui, "titulaire": principal_nom, "principal": principal}
+
+
 def _construire_rattachements(com: dict[str, Any] | None, coord: dict[str, Any] | None,
                               inten: dict[str, Any] | None, tribu: dict[str, Any] | None,
-                              fonctions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Units the member belongs to, with their role resolved from their functions' perimeter."""
+                              fonctions: list[dict[str, Any]], role: str | None) -> list[dict[str, Any]]:
+    """Units the member belongs to, enriched with named responsibles, co-responsables
+    and vice-functions, so a member never sees a bare 'Mon role : Membre'."""
     def mon_role(unite_nom: object, defaut: str) -> str:
         if not unite_nom:
             return defaut
@@ -254,13 +304,17 @@ def _construire_rattachements(com: dict[str, Any] | None, coord: dict[str, Any] 
 
     rattachements: list[dict[str, Any]] = []
     if com:
-        rattachements.append({"type": "Commission / Mission", "nom": com["nom"], "mon_role": mon_role(com["nom"], "Membre"), "titulaire": com["responsable"], "principal": True})
+        rattachements.append(_bloc_unite("Commission / Mission", com, "responsable", "Responsable", "sous_responsable", "Sous-responsable", mon_role(com["nom"], "Membre"), role, True))
     if coord:
-        rattachements.append({"type": "Coordination", "nom": coord["nom"], "mon_role": mon_role(coord["nom"], "Membre"), "titulaire": coord["responsable"], "principal": False})
+        rattachements.append(_bloc_unite("Coordination", coord, "coordinateur", "Coordinateur", "vice_coordinateur", "Vice-coordinateur", mon_role(coord["nom"], "Membre"), role, False))
     if inten:
-        rattachements.append({"type": "Intendance", "nom": inten["nom"], "mon_role": mon_role(inten["nom"], "Membre"), "titulaire": inten["responsable"], "principal": False})
+        rattachements.append(_bloc_unite("Intendance", inten, "intendant", "Intendant", "vice_intendant", "Vice-intendant", mon_role(inten["nom"], "Membre"), role, False))
     if tribu:
-        rattachements.append({"type": "Tribu", "nom": tribu["nom"], "mon_role": "Membre", "titulaire": (f"Patriarche : {tribu['patriarche']}" if tribu.get("patriarche") else None), "principal": False})
+        patr = tribu.get("patriarche")
+        rattachements.append({"type": "Tribu", "nom": tribu["nom"], "mon_role": "Membre",
+                              "responsables": [{"nom": patr or "Poste à pourvoir", "role": "Patriarche", "vacant": not patr}],
+                              "appui": [], "titulaire": (f"Patriarche : {patr}" if patr else None),
+                              "patriarche": patr, "principal": False})
     return rattachements
 
 
@@ -309,7 +363,7 @@ def calculer(membre_id: str, role: str | None) -> dict[str, Any]:
     appui_suppleance = _construire_appui(vice_fonctions, membre_id, role, genre, catalogue)
 
     # 5) Rattachements (units), with the member's role in each.
-    rattachements = _construire_rattachements(com, coord, inten, tribu, fonctions)
+    rattachements = _construire_rattachements(com, coord, inten, tribu, fonctions, role)
 
     # Backward-compatible apex chain (unchanged shape) for the previous member client.
     chaine_compat = []
