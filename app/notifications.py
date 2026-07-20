@@ -41,6 +41,7 @@ _CATEGORY_PREF = {
     "document_demande": "demandes",
     "activite_rappel_j1": "rappels",
     "activite_rappel_start": "rappels",
+    "date_reference_rappel": "rappels",
     "agenda_hebdo": "rappels",
     "recap_hebdo": "rappels",
     "activite_demarree": "evenements",
@@ -684,6 +685,15 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
         result["purges"] = purger_suppressions(role)
     except Exception:  # noqa: BLE001 - the purge must never break the daily job
         result["purges"] = {}
+
+    # Reference-date reminders (opt-in): notify members of an upcoming institutional
+    # or catholic date when the admin set a reminder on it.
+    try:
+        from .calendrier_institutionnel import rappels_dates_reference
+
+        result["rappels_dates_reference"] = rappels_dates_reference(role)
+    except Exception:  # noqa: BLE001 - a reminder failure must never break the daily job
+        result["rappels_dates_reference"] = 0
 
     return {"ok": True, **result}
 
