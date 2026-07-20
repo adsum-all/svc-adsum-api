@@ -17,7 +17,15 @@ TYPES_LIEN = {"hierarchique", "coordination", "supervision", "suivi_transversal"
 STATUTS_NOEUD = {"actif", "vacant", "attente", "archive"}
 
 
-def node_dict(r: dict[str, Any]) -> dict[str, Any]:
+def node_dict(r: dict[str, Any], masquer_photo_non_affichee: bool = False) -> dict[str, Any]:
+    # When afficher_photo is false, the direction explicitly chose NOT to show the
+    # person's photo. On the published/consultation read (served to every authenticated
+    # member and collaborator), drop the photo URL entirely so it cannot leak; the
+    # back-office editor keeps it (default False) to preview the toggle.
+    afficher_photo = bool(r.get("afficher_photo"))
+    photo_url = r.get("photo_url")
+    if masquer_photo_non_affichee and not afficher_photo:
+        photo_url = None
     return {
         "id": str(r["id"]), "cle": r.get("cle"), "type_noeud": r.get("type_noeud"),
         "nom": r.get("nom"), "sous_titre": r.get("sous_titre"),
@@ -27,8 +35,8 @@ def node_dict(r: dict[str, Any]) -> dict[str, Any]:
         "unite_type": r.get("unite_type"), "unite_id": str(r["unite_id"]) if r.get("unite_id") else None,
         "effectif": r.get("effectif"), "statut": r.get("statut"),
         "pos_x": r.get("pos_x"), "pos_y": r.get("pos_y"), "ordre": r.get("ordre"),
-        "couleur": r.get("couleur"), "afficher_photo": bool(r.get("afficher_photo")),
-        "photo_url": r.get("photo_url"), "largeur": r.get("largeur"), "hauteur": r.get("hauteur"),
+        "couleur": r.get("couleur"), "afficher_photo": afficher_photo,
+        "photo_url": photo_url, "largeur": r.get("largeur"), "hauteur": r.get("hauteur"),
     }
 
 
@@ -46,7 +54,7 @@ def version_dict(r: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def contenu(version_id: str, role: str | None) -> dict[str, Any]:
+def contenu(version_id: str, role: str | None, masquer_photo_non_affichee: bool = False) -> dict[str, Any]:
     nodes = db.fetch_all(
         "SELECT n.id, n.cle, n.type_noeud, n.nom, n.sous_titre, n.membre_id, n.fonction_cle, n.categorie, n.unite_type, n.unite_id, "
         "n.effectif, n.statut, n.pos_x, n.pos_y, n.ordre, n.couleur, n.afficher_photo, n.largeur, n.hauteur, "
@@ -63,7 +71,7 @@ def contenu(version_id: str, role: str | None) -> dict[str, Any]:
         "SELECT id, source_id, cible_id, type_lien, libelle FROM organisation_link WHERE version_id = %s AND actif = true",
         (version_id,), role=role,
     )
-    return {"noeuds": [node_dict(n) for n in nodes], "liens": [link_dict(le) for le in links]}
+    return {"noeuds": [node_dict(n, masquer_photo_non_affichee) for n in nodes], "liens": [link_dict(le) for le in links]}
 
 
 def aretes_hierarchiques(version_id: str, role: str | None, extra: tuple[str, str] | None = None, exclure_lien: str | None = None) -> dict[str, list[str]]:
