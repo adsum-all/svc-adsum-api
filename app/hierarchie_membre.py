@@ -353,11 +353,10 @@ def calculer(membre_id: str, role: str | None) -> dict[str, Any]:
     chaine_principale = {"titre": position_principale["fonction"] if position_principale else "Ma chaîne de responsabilité", "niveaux": niveaux}
 
     # 4) Titles and particular links (kept apart from the functional chain).
+    # The tribu is NOT listed here: it already appears in "Mes rattachements" (with
+    # its patriarch), so repeating it as a "particular link" would be a duplicate.
     titres = _construire_titres(m, role, genre)
     liens_particuliers: list[dict[str, Any]] = []
-    if tribu:
-        liens_particuliers.append({"type": "tribu", "libelle": f"Tribu {tribu['nom']}" if tribu.get("nom") else "Tribu",
-                                    "detail": (f"Patriarche : {tribu['patriarche']}" if tribu.get("patriarche") else None)})
 
     # 4b) Support and relief: the member's own vice-functions and any interim they cover.
     appui_suppleance = _construire_appui(vice_fonctions, membre_id, role, genre, catalogue)
