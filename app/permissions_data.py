@@ -254,6 +254,8 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/admin/equipes-speciales/{item_id}/membres': 'organisation.equipes',
     'POST /api/v1/admin/equipes-speciales/{item_id}/membres': 'organisation.equipes',
     'DELETE /api/v1/admin/equipes-speciales/{item_id}/membres/{membre_id}': 'organisation.equipes',
+    'GET /api/v1/admin/organigramme/reglages': 'organisation.administrer',
+    'PUT /api/v1/admin/organigramme/reglages': 'organisation.administrer',
     'GET /api/v1/admin/organigramme/versions': 'organisation.consulter',
     'POST /api/v1/admin/organigramme/versions': 'organisation.administrer',
     'GET /api/v1/admin/organigramme/versions/{version_id}': 'organisation.consulter',
