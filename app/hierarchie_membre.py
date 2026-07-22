@@ -353,10 +353,24 @@ def calculer(membre_id: str, role: str | None) -> dict[str, Any]:
     chaine_principale = {"titre": position_principale["fonction"] if position_principale else "Ma chaîne de responsabilité", "niveaux": niveaux}
 
     # 4) Titles and particular links (kept apart from the functional chain).
-    # The tribu is NOT listed here: it already appears in "Mes rattachements" (with
-    # its patriarch), so repeating it as a "particular link" would be a duplicate.
+    # "Titres et liens" is reserved for TITLES and SPECIAL-TEAM membership. The tribu is
+    # NOT listed here: it already appears in "Mes rattachements" (with its patriarch), so
+    # repeating it here would be a duplicate. The particular links show the special teams
+    # the member belongs to (leadership team, shepherds' college, etc.), nothing else.
     titres = _construire_titres(m, role, genre)
     liens_particuliers: list[dict[str, Any]] = []
+    for eq in db.fetch_all(
+        "SELECT e.nom, mes.role FROM membre_equipe_speciale mes "
+        "JOIN equipe_speciale e ON e.id = mes.equipe_id "
+        "WHERE mes.membre_id = %s AND mes.actif = true AND e.active = true ORDER BY e.ordre, e.nom",
+        (membre_id,), role=role,
+    ):
+        role_eq = "Responsable" if eq.get("role") == "responsable" else "Membre"
+        liens_particuliers.append({
+            "type": "equipe_speciale",
+            "libelle": eq["nom"],
+            "detail": f"{role_eq} de cette équipe spéciale",
+        })
 
     # 4b) Support and relief: the member's own vice-functions and any interim they cover.
     appui_suppleance = _construire_appui(vice_fonctions, membre_id, role, genre, catalogue)

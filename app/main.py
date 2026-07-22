@@ -74,6 +74,7 @@ from .niveaux import router as niveaux_router
 from .notifications import router as notifications_router
 from .notifications_centre import router as notifications_centre_router
 from .organigramme import router as organigramme_router
+from .organigramme_reglages import router as organigramme_reglages_router
 from .organisation import router as organisation_router
 from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
@@ -123,6 +124,7 @@ app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(equipes_speciales_router)
 app.include_router(organigramme_router)
+app.include_router(organigramme_reglages_router)
 app.include_router(interim_router)
 app.include_router(information_feed_router)
 app.include_router(information_actions_router)
