@@ -283,6 +283,7 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
         "SELECT m.id, m.matricule, m.code_membre, m.prenoms, m.nom, m.nom_affiche, m.email, "
         "m.telephone, m.indicatif_telephone, m.date_naissance, m.genre, m.pays, m.ville, m.region, "
         "m.adresse, m.profession, m.date_entree, m.promotion, m.berger_declare, m.berger_nom_declare, "
+        "m.equipe_dirigeante_declaree, "
         "m.statut, m.statut_inscription, m.verifie, m.type_membre, "
         "m.photo_url, m.cree_le, m.groupe, ne.libelle AS niveau_libelle, "
         "c.nom AS commission, co.nom AS coordination, i.nom AS intendance, t.nom AS tribu "
@@ -402,6 +403,7 @@ def dossier_inscription(membre_id: str, user: Annotated[UserMe, Depends(require_
             # administration can grant (or not) the real est_berger flag.
             "berger_declare": bool(membre.get("berger_declare")),
             "berger_nom_declare": membre.get("berger_nom_declare"),
+            "equipe_dirigeante_declaree": bool(membre.get("equipe_dirigeante_declaree")),
             "commission": membre.get("commission"),
             "sous_commission": membre.get("groupe"),
             "coordination": membre.get("coordination"),
@@ -481,6 +483,10 @@ class ProfilUpdate(BaseModel):
     # itself; the administration reviews the dossier and grants the real flag.
     berger_declare: bool | None = None
     berger_nom_declare: LineStr | None = None
+    # Leadership-team SELF-DECLARATION (to be confirmed): the person declares being
+    # part of the leadership team; an administrator confirms it by adding a real
+    # membership in the special-teams page. The flag alone never grants anything.
+    equipe_dirigeante_declaree: bool | None = None
     # Civil identity completeness (mostly for married women): birth name, marital
     # name and which one is displayed. nom_affiche selects the shown family name.
     nom_naissance: LineStr | None = None

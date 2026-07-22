@@ -14,6 +14,9 @@ ELEMENTS: dict[str, dict[str, str]] = {
     # Identity fields
     "nom": {"libelle": "Nom", "type": "champ", "sensibilite": "haute"},
     "prenoms": {"libelle": "Prénoms", "type": "champ", "sensibilite": "haute"},
+    "nom_naissance": {"libelle": "Nom de naissance", "type": "champ", "sensibilite": "haute"},
+    "nom_marital": {"libelle": "Nom marital", "type": "champ", "sensibilite": "haute"},
+    "nom_affiche": {"libelle": "Nom de famille affiché", "type": "champ", "sensibilite": "normale"},
     "date_naissance": {"libelle": "Date de naissance", "type": "champ", "sensibilite": "haute"},
     "naissance_annee_visible": {"libelle": "Afficher l'année de naissance", "type": "champ", "sensibilite": "normale"},
     "genre": {"libelle": "Genre", "type": "champ", "sensibilite": "haute"},
@@ -22,6 +25,7 @@ ELEMENTS: dict[str, dict[str, str]] = {
     # Contact and administrative fields
     "telephone": {"libelle": "Téléphone", "type": "champ", "sensibilite": "normale"},
     "indicatif_telephone": {"libelle": "Indicatif téléphonique", "type": "champ", "sensibilite": "normale"},
+    "whatsapp_numero": {"libelle": "Numéro WhatsApp", "type": "champ", "sensibilite": "normale"},
     "ville": {"libelle": "Ville", "type": "champ", "sensibilite": "normale"},
     "region": {"libelle": "Région / État", "type": "champ", "sensibilite": "normale"},
     "pays": {"libelle": "Pays", "type": "champ", "sensibilite": "normale"},
@@ -36,12 +40,17 @@ ELEMENTS: dict[str, dict[str, str]] = {
     # Personal life and pastoral path
     "situation_matrimoniale": {"libelle": "Situation matrimoniale", "type": "champ", "sensibilite": "normale"},
     "type_mariage": {"libelle": "Type de mariage", "type": "champ", "sensibilite": "normale"},
+    "en_cheminement": {"libelle": "En cheminement vers le mariage", "type": "champ", "sensibilite": "normale"},
     "type_membre": {"libelle": "Statut de membre", "type": "champ", "sensibilite": "normale"},
+    "date_entree": {"libelle": "Date d'entrée", "type": "champ", "sensibilite": "normale"},
+    "promotion": {"libelle": "Promotion", "type": "champ", "sensibilite": "normale"},
     "profession": {"libelle": "Profession", "type": "champ", "sensibilite": "normale"},
     "niveau_etudes": {"libelle": "Niveau d'études", "type": "champ", "sensibilite": "normale"},
     "baptise": {"libelle": "Baptisé", "type": "champ", "sensibilite": "normale"},
     "confirme": {"libelle": "Confirmé", "type": "champ", "sensibilite": "normale"},
     "premiere_communion": {"libelle": "Première communion", "type": "champ", "sensibilite": "normale"},
+    "berger_declare": {"libelle": "Déclaration berger/bergère", "type": "champ", "sensibilite": "normale"},
+    "berger_nom_declare": {"libelle": "Nom pastoral déclaré", "type": "champ", "sensibilite": "normale"},
     # Identity artifacts
     "photo_identite": {"libelle": "Photo d'identité", "type": "photo", "sensibilite": "haute"},
     "piece_identite": {"libelle": "Pièce d'identité officielle", "type": "document", "sensibilite": "haute"},
