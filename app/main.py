@@ -44,6 +44,7 @@ from .emargement import router as emargement_router
 from .engagement import public_router as engagement_public_router
 from .engagement import router as engagement_router
 from .engagement_import import router as engagement_import_router
+from .equipes_speciales import router as equipes_speciales_router
 from .evenements_series import router as evenements_series_router
 from .fichiers import admin_router as fichiers_admin_router
 from .fichiers import router as fichiers_router
@@ -120,6 +121,7 @@ app.include_router(admin_router)
 app.include_router(evenements_series_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
+app.include_router(equipes_speciales_router)
 app.include_router(organigramme_router)
 app.include_router(interim_router)
 app.include_router(information_feed_router)

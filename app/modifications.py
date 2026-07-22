@@ -42,7 +42,7 @@ _EDITABLE_FIELDS = {
     "baptise", "confirme", "premiere_communion", "type_membre",
     "date_entree", "promotion", "berger_declare", "berger_nom_declare",
     "nom_naissance", "nom_marital", "nom_affiche", "whatsapp_numero",
-    "langue", "anniversaire_visible_annuaire",
+    "langue", "anniversaire_visible_annuaire", "equipe_dirigeante_declaree",
 }
 
 # Defense-in-depth whitelist: only these member columns can be committed from a
