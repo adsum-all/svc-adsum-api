@@ -9,196 +9,35 @@ account, so a member never loses their own member-app login. Managed by admins.
 # ruff: noqa: E501
 from __future__ import annotations
 
-import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
 
 from . import audit, db
-from .fields import ShortStr
+from .groupes_modeles import (
+    GroupeIn,
+    GroupeOut,
+    MembreGroupeIn,
+    UpdateGroupeIn,
+)
+from .groupes_modeles import (
+    champs_documentation as _champs_documentation,
+)
+from .groupes_roles import (
+    _GLOBAL_ONLY_ROLES,
+    _PORTEE_TABLES,
+    _ROLE_RANK,
+    _assert_peut_gerer,
+    _assert_super_admin_preserve,
+    _effective_role,
+    _sync_account_role,
+    resync_membres_du_groupe,
+)
 from .permissions_rbac import require_permission, require_permission_ecriture
 from .schemas import UserMe
-from .security import hash_password
 
 router = APIRouter(prefix="/api/v1/admin", tags=["groupes"])
 
-
-# Platform role hierarchy, to pick the highest role a member's groups grant.
-_ROLE_RANK = {"membre": 0, "controleur": 1, "gestionnaire": 2, "direction": 3, "admin": 4, "super_admin": 5}
-
-# Roles that only make sense globally: they govern the whole base, so a group
-# granting them can never be scoped to a single organisational unit.
-_GLOBAL_ONLY_ROLES = frozenset({"super_admin", "admin"})
-
-# Scopable perimeter types and the organisation table each ``portee_id`` points to.
-_PORTEE_TABLES = {
-    "coordination": "coordination",
-    "intendance": "intendance",
-    "commission": "commission",
-    "tribu": "tribu",
-}
-
-
-def _super_admins_actifs(role: str) -> int:
-    """Count active super_admin login accounts (the availability floor)."""
-    r = db.fetch_one("SELECT count(*) AS n FROM utilisateur WHERE role = 'super_admin' AND actif = true", (), role=role)
-    return int((r or {}).get("n", 0))
-
-
-def _assert_super_admin_preserve(membre_id: str, role_accorde: str, actor: UserMe) -> None:
-    """Never let the system lose its last super_admin, nor let one self-demote.
-
-    Removing a super_administration membership is refused when it would drop this
-    member from super_admin AND either the actor is removing their own access, or
-    this is the last active super_admin account (availability floor, M1).
-    """
-    if role_accorde != "super_admin":
-        return
-    # Does the member keep super_admin via another active super_admin group?
-    autres = db.fetch_one(
-        "SELECT count(*) AS n FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true AND g.role_accorde = 'super_admin'",
-        (membre_id,),
-        role=actor.role,
-    )
-    if int((autres or {}).get("n", 0)) > 1:
-        return  # they stay super_admin through another group
-    if actor.membre_id and actor.membre_id == membre_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="vous ne pouvez pas retirer votre propre accès super-administration")
-    if _super_admins_actifs(actor.role) <= 1:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="impossible de retirer le dernier super-administrateur actif")
-
-
-def _assert_peut_gerer(actor: UserMe, role_accorde: str, membre_cible_id: str) -> None:
-    """Guard against privilege escalation when granting or revoking a group.
-
-    Rules (deny-by-default):
-    - A super_admin may manage any group (including the ones granting super_admin).
-    - Anyone else may only manage a group whose granted role is STRICTLY below
-      their own rank; in particular no admin can touch a group granting admin or
-      super_admin, closing the self-promotion path.
-    - No one below super_admin may manage their own access (no self-elevation).
-    """
-    if actor.role != "super_admin":
-        if actor.membre_id and membre_cible_id == actor.membre_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="vous ne pouvez pas modifier vos propres accès")
-        if _ROLE_RANK.get(actor.role, 0) <= _ROLE_RANK.get(role_accorde, 99):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="vous ne pouvez pas gérer un groupe accordant un rôle égal ou supérieur au vôtre")
-
-
-def _effective_role(membre_id: str, actor_role: str) -> str:
-    """The highest GLOBAL platform role granted by the member's active groups, or 'membre'.
-
-    Only GLOBAL memberships elevate the account role (and thus back-office reach).
-    A scoped membership (coordination/intendance/commission/tribu) grants a bounded
-    pilotage access through :func:`app.perimetre.resolve_scope`, never a global
-    back-office role, so the account role stays 'membre' and no data leaks outside
-    the perimeter.
-    """
-    rows = db.fetch_all(
-        "SELECT g.role_accorde FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true AND mg.portee_type = 'global'",
-        (membre_id,),
-        role=actor_role,
-    )
-    roles = [str(r["role_accorde"]) for r in rows]
-    if not roles:
-        return "membre"
-    return max(roles, key=lambda r: _ROLE_RANK.get(r, 0))
-
-
-def _sync_account_role(membre_id: str, actor: UserMe) -> tuple[str, str | None]:
-    """Recompute the member's role from their groups and sync the login account.
-
-    Returns (effective_role, temp_password). A member who gains platform access
-    but has no login account yet gets one created on their member e-mail with a
-    temporary password (returned once). The account is never deleted.
-    """
-    eff = _effective_role(membre_id, actor.role)
-    existing = db.fetch_one("SELECT id FROM utilisateur WHERE membre_id = %s", (membre_id,), role=actor.role)
-    if existing:
-        db.execute("UPDATE utilisateur SET role = %s WHERE membre_id = %s", (eff, membre_id), role=actor.role)
-        return eff, None
-    # No login account yet: create one on the member's own e-mail so the person
-    # keeps a single account. Only needed the first time access is granted.
-    membre = db.fetch_one("SELECT email FROM membre WHERE id = %s", (membre_id,), role=actor.role)
-    email = (membre or {}).get("email")
-    if not email:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="le membre n'a pas d'e-mail pour créer un accès")
-    # Never silently re-point an existing account bound to a different member:
-    # only adopt an account whose e-mail is free or already this member's, else
-    # refuse (F2: no account hijack, no false audit attribution).
-    par_email = db.fetch_one("SELECT id, membre_id FROM utilisateur WHERE email = %s", (str(email),), role=actor.role)
-    if par_email:
-        if par_email.get("membre_id") not in (None, membre_id):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="un compte existe déjà pour cet e-mail, rattaché à un autre membre")
-        db.execute(
-            "UPDATE utilisateur SET role = %s, membre_id = %s WHERE id = %s",
-            (eff, membre_id, str(par_email["id"])),
-            role=actor.role,
-        )
-        return eff, None
-    # No account at all: create one with a temporary password that expires, like
-    # the inscription path (F4: no non-expiring temporary credential).
-    temp = secrets.token_urlsafe(9)
-    db.execute(
-        "INSERT INTO utilisateur (email, hash_mdp, role, membre_id, actif, mdp_temporaire, mdp_expire_le, doit_changer_mdp) "
-        "VALUES (%s, %s, %s, %s, true, true, now() + interval '7 days', true)",
-        (str(email), hash_password(temp), eff, membre_id),
-        role=actor.role,
-    )
-    return eff, temp
-
-
-def resync_membres_du_groupe(groupe_id: str, actor: UserMe) -> None:
-    """Recompute the cached account role of every member of a group. Called when the
-    group's active state flips, so entitlements never outlive the group state."""
-    membres = db.fetch_all(
-        "SELECT DISTINCT membre_id FROM membre_groupe WHERE groupe_id = %s AND actif = true",
-        (groupe_id,),
-        role=actor.role,
-    )
-    for m in membres:
-        _sync_account_role(str(m["membre_id"]), actor)
-
-
-class GroupeOut(BaseModel):
-    id: str
-    cle: str
-    libelle: str
-    description: str | None = None
-    role_accorde: str
-    mode: str = "role"
-    permissions: list[str] = []
-    membres_count: int = 0
-    systeme: bool = False
-    actif: bool = True
-    # Optional application this group serves (application.code), so the governance UI
-    # can organise groups per application instead of one mixed list.
-    application_code: str | None = None
-
-
-class GroupeIn(BaseModel):
-    cle: ShortStr
-    libelle: ShortStr
-    description: str | None = None
-    # 'role': the group grants a platform role; 'permissions': it grants a set of
-    # atomic permissions (the account role stays 'membre'). Default keeps the
-    # historical behaviour for callers that only send role_accorde.
-    mode: str = "role"
-    role_accorde: str | None = None
-    permissions: list[str] = []
-    application_code: str | None = None
-
-
-class UpdateGroupeIn(BaseModel):
-    libelle: ShortStr | None = None
-    description: str | None = None
-    actif: bool | None = None
-    # For a 'permissions' group, replace the whole granted permission set.
-    permissions: list[str] | None = None
-    application_code: str | None = None
 
 
 def _valider_application_code(code: str | None, role: str) -> str | None:
@@ -211,12 +50,6 @@ def _valider_application_code(code: str | None, role: str) -> str | None:
     if not db.fetch_one("SELECT code FROM application WHERE code = %s", (code,), role=role):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="application inconnue")
     return code
-
-
-class MembreGroupeIn(BaseModel):
-    groupe_id: ShortStr
-    portee_type: str = "global"
-    portee_id: str | None = None
 
 
 def _permissions_du_groupe(groupe_id: str, role: str) -> list[str]:
@@ -344,18 +177,34 @@ def create_groupe(payload: GroupeIn, user: Annotated[UserMe, Depends(require_per
         # An admin cannot mint a group that grants a role above their own rank.
         _assert_peut_gerer(user, role_accorde, "")
     application_code = _valider_application_code(payload.application_code, user.role)
-    created = db.execute(
-        "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme, mode, application_code) VALUES (%s, %s, %s, %s, false, %s, %s) "
-        "ON CONFLICT (cle) DO NOTHING RETURNING id",
-        (payload.cle.strip().lower(), payload.libelle, payload.description, role_accorde, mode, application_code),
-        role=user.role,
-    )
-    if not created:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="clé déjà utilisée")
-    gid = str(created["id"])
-    if mode == "permissions":
-        _remplacer_permissions_groupe(gid, payload.permissions, user.role)
-    audit.log(user.id, user.role, "creation_groupe_acces", "groupe_acces", gid, {"cle": payload.cle, "mode": mode, "role_accorde": role_accorde, "application_code": application_code, "permissions": payload.permissions if mode == "permissions" else None})
+    doc = _champs_documentation(payload)
+    # The group and its permissions are written in ONE transaction: writing them
+    # apart would leave a permission group with no permission behind as soon as a
+    # single key is refused by the referential.
+    colonnes = ["cle", "libelle", "description", "role_accorde", "systeme", "mode", "application_code", "cree_par", *doc]
+    valeurs = [payload.cle.strip().lower(), payload.libelle, payload.description, role_accorde,
+               False, mode, application_code, user.id, *doc.values()]
+    with db.connection(user.role) as conn, conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO groupe_acces ({', '.join(colonnes)}) VALUES ({', '.join(['%s'] * len(colonnes))}) "
+            "ON CONFLICT (cle) DO NOTHING RETURNING id",
+            valeurs,
+        )
+        created = cur.fetchone()
+        if not created:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="clé déjà utilisée")
+        gid = str(created["id"])
+        if mode == "permissions":
+            paires = sorted(set(payload.permissions))
+            plat: list[object] = []
+            for p in paires:
+                plat.extend([gid, p])
+            cur.execute(
+                "INSERT INTO groupe_permission (groupe_id, permission) VALUES "
+                + ", ".join(["(%s, %s)"] * len(paires)) + " ON CONFLICT DO NOTHING",
+                plat,
+            )
+    audit.log(user.id, user.role, "creation_groupe_acces", "groupe_acces", gid, {"cle": payload.cle, "mode": mode, "role_accorde": role_accorde, "application_code": application_code, "permissions": payload.permissions if mode == "permissions" else None, "documentation": list(doc)})
     return GroupeOut(id=gid, cle=payload.cle.strip().lower(), libelle=payload.libelle, description=payload.description, role_accorde=role_accorde, mode=mode, permissions=sorted(set(payload.permissions)) if mode == "permissions" else [], membres_count=0, systeme=False, actif=True, application_code=application_code)
 
 
@@ -369,6 +218,18 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="groupe introuvable")
     if bool(g["systeme"]):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="un groupe système ne peut pas être modifié")
+    # EVERYTHING is validated before ANYTHING is written. The previous order applied
+    # the label, the active state and the role resynchronisation first, then checked
+    # the permission set: a refused permission left the group already deactivated,
+    # its members already stripped of their rights, and no audit line at all, since
+    # the exception escaped before the journal was written.
+    if payload.permissions is not None:
+        if str(g["mode"]) != "permissions":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="seul un groupe de permissions porte des permissions")
+        if not payload.permissions:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un groupe de permissions doit accorder au moins une permission")
+        _assert_peut_accorder_permissions(payload.permissions, user)
+
     fields: dict[str, object] = {}
     if payload.libelle is not None:
         fields["libelle"] = payload.libelle
@@ -380,24 +241,39 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
     # while omitting the field leaves the tag untouched.
     if "application_code" in payload.model_fields_set:
         fields["application_code"] = _valider_application_code(payload.application_code, user.role)
+    fields.update(_champs_documentation(payload))
     if fields:
-        cols = ", ".join(f"{k} = %s" for k in fields)
-        db.execute(f"UPDATE groupe_acces SET {cols} WHERE id = %s", (*fields.values(), groupe_id), role=user.role)
+        fields["maj_le"] = "now()"
+        fields["maj_par"] = user.id
+
+    # One transaction for the whole change: the group's own columns and its permission
+    # set never land half applied.
+    with db.connection(user.role) as conn, conn.cursor() as cur:
+        if fields:
+            assignations = ", ".join("maj_le = now()" if k == "maj_le" else f"{k} = %s" for k in fields)
+            params = [v for k, v in fields.items() if k != "maj_le"]
+            cur.execute(f"UPDATE groupe_acces SET {assignations} WHERE id = %s", (*params, groupe_id))
+        if payload.permissions is not None:
+            cur.execute("DELETE FROM groupe_permission WHERE groupe_id = %s", (groupe_id,))
+            voulues = sorted(set(payload.permissions))
+            plat: list[object] = []
+            for p in voulues:
+                plat.extend([groupe_id, p])
+            cur.execute(
+                "INSERT INTO groupe_permission (groupe_id, permission) VALUES "
+                + ", ".join(["(%s, %s)"] * len(voulues)) + " ON CONFLICT DO NOTHING",
+                plat,
+            )
+
     # Deactivating (or reactivating) a group changes what its members are entitled to,
     # and the enforcement path starts from the CACHED utilisateur.role. Resync every
     # member of the group so a deactivated Administration group really withdraws the
     # admin permissions instead of leaving a stale elevated cache behind (and the
-    # review surfaces then tell the truth).
+    # review surfaces then tell the truth). Done after the write, never before.
     if payload.actif is not None and payload.actif != bool(g["actif"]):
         resync_membres_du_groupe(groupe_id, user)
-    if payload.permissions is not None:
-        if str(g["mode"]) != "permissions":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="seul un groupe de permissions porte des permissions")
-        if not payload.permissions:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="un groupe de permissions doit accorder au moins une permission")
-        _assert_peut_accorder_permissions(payload.permissions, user)
-        _remplacer_permissions_groupe(groupe_id, payload.permissions, user.role)
-    audit.log(user.id, user.role, "modification_groupe_acces", "groupe_acces", groupe_id, {"champs": list(fields), "permissions": payload.permissions})
+    audit.log(user.id, user.role, "modification_groupe_acces", "groupe_acces", groupe_id,
+              {"champs": [k for k in fields if k not in ("maj_le", "maj_par")], "permissions": payload.permissions})
     row = db.fetch_one(
         "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
         "g.application_code, "

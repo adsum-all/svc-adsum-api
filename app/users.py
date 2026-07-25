@@ -32,7 +32,8 @@ _SELECT = (
     # Active GLOBAL memberships: the roster of platform access derives from the real
     # groups too, so a permission-mode group holder (cached role 'membre') is listed.
     "(SELECT count(*) FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-    " WHERE mg.membre_id = u.membre_id AND mg.actif = true AND g.actif = true AND mg.portee_type = 'global') AS groupes_globaux "
+    " WHERE mg.membre_id = u.membre_id AND mg.actif = true AND g.actif = true "
+    "   AND mg.portee_type = 'global') AS groupes_globaux "
     "FROM utilisateur u LEFT JOIN membre m ON m.id = u.membre_id"
 )
 
