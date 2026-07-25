@@ -235,14 +235,19 @@ def historique_groupe(
     reads it rather than keeping a second history that could drift from it.
     """
     _groupe_ou_404(groupe_id, user.role)
+    # Two families of events concern a group: those logged against the group itself
+    # (creation, modification, duplication) and the membership movements, which are
+    # logged against the MEMBER and carry the group in their details. Both are read
+    # so the sheet shows arrivals and departures next to the group's own life.
+    filtre = "(objet_type = 'groupe_acces' AND objet_id = %s) OR (details ->> 'groupe_id' = %s)"
     total = int((db.fetch_one(
-        "SELECT COUNT(*) AS n FROM audit WHERE objet_type = 'groupe_acces' AND objet_id = %s",
-        (groupe_id,), role=user.role,
+        f"SELECT COUNT(*) AS n FROM audit WHERE {filtre}",
+        (groupe_id, groupe_id), role=user.role,
     ) or {}).get("n") or 0)
     rows = db.fetch_all(
-        "SELECT id, action, acteur_id, acteur_role, details, horodatage FROM audit "
-        "WHERE objet_type = 'groupe_acces' AND objet_id = %s ORDER BY horodatage DESC LIMIT %s OFFSET %s",
-        (groupe_id, taille, (page - 1) * taille), role=user.role,
+        "SELECT id, action, acteur_id, acteur_role, details, horodatage, objet_type, objet_id FROM audit "
+        f"WHERE {filtre} ORDER BY horodatage DESC LIMIT %s OFFSET %s",
+        (groupe_id, groupe_id, taille, (page - 1) * taille), role=user.role,
     )
     items = [{
         "id": int(r["id"]),

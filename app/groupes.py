@@ -58,7 +58,7 @@ def _assert_super_admin_preserve(membre_id: str, role_accorde: str, actor: UserM
     # Does the member keep super_admin via another active super_admin group?
     autres = db.fetch_one(
         "SELECT count(*) AS n FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = %s AND g.actif = true AND g.role_accorde = 'super_admin'",
+        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true AND g.role_accorde = 'super_admin'",
         (membre_id,),
         role=actor.role,
     )
@@ -98,7 +98,7 @@ def _effective_role(membre_id: str, actor_role: str) -> str:
     """
     rows = db.fetch_all(
         "SELECT g.role_accorde FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = %s AND g.actif = true AND mg.portee_type = 'global'",
+        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true AND mg.portee_type = 'global'",
         (membre_id,),
         role=actor_role,
     )
@@ -155,7 +155,7 @@ def resync_membres_du_groupe(groupe_id: str, actor: UserMe) -> None:
     """Recompute the cached account role of every member of a group. Called when the
     group's active state flips, so entitlements never outlive the group state."""
     membres = db.fetch_all(
-        "SELECT DISTINCT membre_id FROM membre_groupe WHERE groupe_id = %s",
+        "SELECT DISTINCT membre_id FROM membre_groupe WHERE groupe_id = %s AND actif = true",
         (groupe_id,),
         role=actor.role,
     )
@@ -303,7 +303,7 @@ def list_groupes(
     rows = db.fetch_all(
         "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
         "g.application_code, "
-        "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id) AS membres_count "
+        "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id AND mg.actif = true) AS membres_count "
         f"FROM groupe_acces g {where} ORDER BY g.systeme DESC, g.libelle ASC",
         (),
         role=user.role,
@@ -401,7 +401,7 @@ def update_groupe(groupe_id: str, payload: UpdateGroupeIn, user: Annotated[UserM
     row = db.fetch_one(
         "SELECT g.id, g.cle, g.libelle, g.description, g.role_accorde, g.mode, g.systeme, g.actif, "
         "g.application_code, "
-        "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id) AS membres_count "
+        "(SELECT count(*) FROM membre_groupe mg WHERE mg.groupe_id = g.id AND mg.actif = true) AS membres_count "
         "FROM groupe_acces g WHERE g.id = %s",
         (groupe_id,),
         role=user.role,
@@ -419,7 +419,7 @@ def delete_groupe(groupe_id: str, user: Annotated[UserMe, Depends(require_permis
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="groupe introuvable")
     if bool(g["systeme"]):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="un groupe système ne peut pas être supprimé")
-    n = db.fetch_one("SELECT count(*) AS n FROM membre_groupe WHERE groupe_id = %s", (groupe_id,), role=user.role)
+    n = db.fetch_one("SELECT count(*) AS n FROM membre_groupe WHERE groupe_id = %s AND actif = true", (groupe_id,), role=user.role)
     if int((n or {}).get("n", 0)) > 0:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="retirez d'abord les membres de ce groupe avant de le supprimer")
     db.execute("DELETE FROM groupe_permission WHERE groupe_id = %s", (groupe_id,), role=user.role)
@@ -445,7 +445,7 @@ def membre_groupes(membre_id: str, user: Annotated[UserMe, Depends(require_permi
         "LEFT JOIN tribu pt ON mg.portee_type = 'tribu' AND pt.id = mg.portee_id "
         "LEFT JOIN utilisateur ua ON ua.id = mg.ajoute_par "
         "LEFT JOIN membre am ON am.id = ua.membre_id "
-        "WHERE mg.membre_id = %s ORDER BY g.libelle ASC, mg.portee_type ASC",
+        "WHERE mg.membre_id = %s AND mg.actif = true ORDER BY g.libelle ASC, mg.portee_type ASC",
         (membre_id,),
         role=user.role,
     )
@@ -499,12 +499,25 @@ def ajouter_au_groupe(membre_id: str, payload: MembreGroupeIn, user: Annotated[U
         # do not hold themselves, closing the puppet-account escalation path.
         _assert_peut_accorder_permissions(_permissions_du_groupe(str(groupe["id"]), user.role), user)
     _valider_portee(str(groupe["role_accorde"]), payload.portee_type, payload.portee_id, user.role)
-    db.execute(
-        "INSERT INTO membre_groupe (membre_id, groupe_id, portee_type, portee_id, ajoute_par) "
-        "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-        (membre_id, payload.groupe_id, payload.portee_type, payload.portee_id, user.id),
+    # A membership is closed rather than erased, so the row of a previous stay is
+    # still there and the unique index would swallow a plain insert: the member would
+    # be "added" without ever regaining access. Reopen it first, and only insert when
+    # there is nothing to reopen.
+    rouvert = db.execute(
+        "UPDATE membre_groupe SET actif = true, retire_le = NULL, retire_par = NULL, "
+        "ajoute_par = %s, ajoute_le = now() "
+        "WHERE membre_id = %s AND groupe_id = %s AND portee_type = %s "
+        "AND portee_id IS NOT DISTINCT FROM %s AND actif = false RETURNING id",
+        (user.id, membre_id, payload.groupe_id, payload.portee_type, payload.portee_id),
         role=user.role,
     )
+    if not rouvert:
+        db.execute(
+            "INSERT INTO membre_groupe (membre_id, groupe_id, portee_type, portee_id, ajoute_par) "
+            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            (membre_id, payload.groupe_id, payload.portee_type, payload.portee_id, user.id),
+            role=user.role,
+        )
     eff, temp = _sync_account_role(membre_id, user)
     audit.log(
         user.id, user.role, "ajout_groupe_acces", "membre", membre_id,
@@ -521,17 +534,29 @@ def retirer_du_groupe(membre_id: str, appartenance_id: str, user: Annotated[User
     account is never deleted: a member with no membership left falls back to
     'membre' and keeps their own login."""
     row = db.fetch_one(
-        "SELECT mg.id, g.role_accorde FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.id = %s AND mg.membre_id = %s",
+        "SELECT mg.id, mg.groupe_id, g.cle, g.role_accorde FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        "WHERE mg.id = %s AND mg.membre_id = %s AND mg.actif = true",
         (appartenance_id, membre_id),
         role=user.role,
     )
+    groupe_id = str(row["groupe_id"]) if row else None
     if row:
         # Same hierarchy guard as granting: an admin cannot demote a super_admin by
         # pulling them out of the super_administration group (F1 reverse path).
         _assert_peut_gerer(user, str(row["role_accorde"]), membre_id)
         _assert_super_admin_preserve(membre_id, str(row["role_accorde"]), user)
-        db.execute("DELETE FROM membre_groupe WHERE id = %s AND membre_id = %s", (appartenance_id, membre_id), role=user.role)
+        # Closed rather than erased: the membership keeps a dated trace of who was in
+        # the group and until when. Every read path filters on mg.actif, so the access
+        # itself is revoked as surely as by a delete.
+        db.execute(
+            "UPDATE membre_groupe SET actif = false, retire_le = now(), retire_par = %s "
+            "WHERE id = %s AND membre_id = %s",
+            (user.id, appartenance_id, membre_id), role=user.role,
+        )
     eff, _ = _sync_account_role(membre_id, user)
-    audit.log(user.id, user.role, "retrait_groupe_acces", "membre", membre_id, {"appartenance_id": appartenance_id, "effective_role": eff})
+    # The group id travels with the event so the group sheet can show its own history
+    # of arrivals and departures, which an appartenance_id alone could not resolve.
+    audit.log(user.id, user.role, "retrait_groupe_acces", "membre", membre_id,
+              {"appartenance_id": appartenance_id, "groupe_id": groupe_id,
+               "groupe_cle": row["cle"] if row else None, "effective_role": eff})
     return {"membre_id": membre_id, "effective_role": eff}
