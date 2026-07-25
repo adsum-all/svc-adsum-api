@@ -338,23 +338,36 @@ def dupliquer_groupe(
     if application_code and not db.fetch_one("SELECT code FROM application WHERE code = %s", (application_code,), role=user.role):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="application inconnue")
 
-    row = db.execute(
-        "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme, mode, application_code, "
-        "finalite, usage_recommande, usage_deconseille, portee_texte, sensibilite, avertissement_securite, "
-        "source_standard_group_id, derived_from_standard, source_version, inheritance_mode, custom_scope, "
-        "cree_par, maj_le, maj_par) "
-        "VALUES (%s, %s, %s, 'membre', false, 'permissions', %s, %s, %s, %s, %s, %s, %s, %s, true, %s, 'copie', %s, %s, now(), %s) "
-        "RETURNING id",
-        (cle, payload.libelle.strip(), payload.description.strip(), application_code,
-         src.get("finalite"), src.get("usage_recommande"), src.get("usage_deconseille"),
-         src.get("portee_texte"), src.get("sensibilite") or "moyen", src.get("avertissement_securite"),
-         str(src["id"]), src.get("version") or 1, payload.custom_scope, user.id, user.id),
-        role=user.role,
-    )
-    nouveau_id = str(row["id"])
-    for p in perms:
-        db.execute("INSERT INTO groupe_permission (groupe_id, permission) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                   (nouveau_id, p), role=user.role)
+    # The group and its permissions are written in ONE transaction. Writing them
+    # separately would leave a permission-mode group with no permission behind as soon
+    # as a single key is refused, which is exactly what happened while two catalogue
+    # keys were missing from the permission table the foreign key points at.
+    # A single multi-row insert is used rather than one statement per permission: over
+    # the Supabase transaction pooler a repeated statement can collide with a prepared
+    # statement left on a reused backend.
+    with db.connection(user.role) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO groupe_acces (cle, libelle, description, role_accorde, systeme, mode, application_code, "
+            "finalite, usage_recommande, usage_deconseille, portee_texte, sensibilite, avertissement_securite, "
+            "source_standard_group_id, derived_from_standard, source_version, inheritance_mode, custom_scope, "
+            "cree_par, maj_le, maj_par) "
+            "VALUES (%s, %s, %s, 'membre', false, 'permissions', %s, %s, %s, %s, %s, %s, %s, %s, true, %s, 'copie', %s, %s, now(), %s) "
+            "RETURNING id",
+            (cle, payload.libelle.strip(), payload.description.strip(), application_code,
+             src.get("finalite"), src.get("usage_recommande"), src.get("usage_deconseille"),
+             src.get("portee_texte"), src.get("sensibilite") or "moyen", src.get("avertissement_securite"),
+             str(src["id"]), src.get("version") or 1, payload.custom_scope, user.id, user.id),
+        )
+        nouveau_id = str(cur.fetchone()["id"])
+        if perms:
+            valeurs = ", ".join(["(%s, %s)"] * len(perms))
+            plat: list[Any] = []
+            for p in perms:
+                plat.extend([nouveau_id, p])
+            cur.execute(
+                f"INSERT INTO groupe_permission (groupe_id, permission) VALUES {valeurs} ON CONFLICT DO NOTHING",
+                plat,
+            )
 
     audit.log(user.id, user.role, "duplication_groupe_acces", "groupe_acces", nouveau_id,
               {"source_id": str(src["id"]), "source_cle": src["cle"], "source_version": src.get("version"),
