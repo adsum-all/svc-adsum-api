@@ -52,6 +52,7 @@ from .fonctions import router as fonctions_router
 from .formation import router as formation_router
 from .gestion import router as gestion_router
 from .groupes import router as groupes_router
+from .groupes_fiche import router as groupes_fiche_router
 from .groupes_lecture import router as groupes_lecture_router
 from .information import router as information_router
 from .information_actions import router as information_actions_router
@@ -192,6 +193,7 @@ app.include_router(niveaux_router)
 app.include_router(gestion_router)
 app.include_router(technical_admin_router)
 app.include_router(groupes_router)
+app.include_router(groupes_fiche_router)
 app.include_router(groupes_lecture_router)
 app.include_router(emargement_router)
 app.include_router(engagement_public_router)
