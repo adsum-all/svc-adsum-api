@@ -297,6 +297,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'POST /api/v1/admin/fonctions/{cle}/reaffecter': 'fonctions.gerer',
     'GET /api/v1/admin/groupes': 'acces.administrer',
     'GET /api/v1/admin/groupes/{groupe_id}/fiche': 'acces.administrer',
+    'GET /api/v1/admin/gouvernance/reconciliation': 'acces.administrer',
     'GET /api/v1/admin/groupes/{groupe_id}/membres': 'acces.administrer',
     'GET /api/v1/admin/groupes/{groupe_id}/historique': 'acces.administrer',
     'GET /api/v1/admin/groupes/{groupe_id}/comparaison': 'acces.administrer',

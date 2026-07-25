@@ -294,6 +294,68 @@ def comparer_au_modele(groupe_id: str, user: Annotated[UserMe, Depends(require_p
     }
 
 
+@router.get("/gouvernance/reconciliation")
+def reconciliation_acces(user: Annotated[UserMe, Depends(require_permission("acces.administrer"))]) -> dict[str, Any]:
+    """Where the account role and the access groups disagree.
+
+    The platform states that platform access is granted only by putting a member in
+    a group, but enforcement starts from the role cached on the account, which can be
+    set on its own. Both sources must therefore be comparable, and the gap visible
+    rather than assumed away.
+
+    Two very different situations come out of it, and they must not be confused. An
+    account bound to a member can be aligned by granting the group that carries its
+    role, which takes nothing away since the role is already held. A technical account
+    with no member cannot belong to any group at all, membership being keyed on the
+    member: it is a recognised category, listed here so it stays under review, never
+    something to strip silently.
+    """
+    rows = db.fetch_all(
+        "SELECT u.id, u.email, u.role, u.membre_id, m.nom_affiche, m.prenoms, m.nom, "
+        "(SELECT COUNT(*) FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
+        " WHERE mg.membre_id = u.membre_id AND mg.actif = true AND g.actif = true) AS n_groupes "
+        "FROM utilisateur u LEFT JOIN membre m ON m.id = u.membre_id "
+        "WHERE u.role <> 'membre' AND u.actif = true ORDER BY u.role, u.email",
+        (), role=user.role,
+    )
+    groupes_par_role = {
+        str(g["role_accorde"]): {"id": str(g["id"]), "cle": g["cle"], "libelle": g["libelle"]}
+        for g in db.fetch_all(
+            "SELECT id, cle, libelle, role_accorde FROM groupe_acces WHERE systeme = true AND mode = 'role'",
+            (), role=user.role,
+        )
+    }
+
+    alignables, techniques, coherents = [], [], 0
+    for r in rows:
+        if int(r.get("n_groupes") or 0) > 0:
+            coherents += 1
+            continue
+        entree = {
+            "utilisateur_id": str(r["id"]), "email": r["email"], "role": r["role"],
+            "membre_id": str(r["membre_id"]) if r.get("membre_id") else None,
+            "nom": r.get("nom_affiche") or f"{r.get('prenoms') or ''} {r.get('nom') or ''}".strip() or None,
+            "groupe_suggere": groupes_par_role.get(str(r["role"])),
+        }
+        (alignables if r.get("membre_id") else techniques).append(entree)
+
+    return {
+        "resume": {
+            "comptes_privilegies_actifs": len(rows),
+            "adosses_a_un_groupe": coherents,
+            "alignables": len(alignables),
+            "comptes_techniques_sans_membre": len(techniques),
+        },
+        "alignables": alignables,
+        "comptes_techniques": techniques,
+        "explication": (
+            "Un compte alignable détient déjà son rôle : lui accorder le groupe correspondant ne lui "
+            "ajoute aucun droit, cela rend seulement les deux sources cohérentes. Un compte technique "
+            "sans membre ne peut appartenir à aucun groupe ; il reste listé ici pour rester sous revue."
+        ),
+    }
+
+
 class DuplicationIn(BaseModel):
     libelle: ShortStr
     description: str = Field(min_length=1)
