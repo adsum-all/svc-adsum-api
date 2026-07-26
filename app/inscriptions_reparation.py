@@ -56,12 +56,15 @@ def _diagnostic(r: dict[str, Any]) -> dict[str, Any]:
     if statut_envoi == "echoue":
         return {"gravite": "bloquant", "cause": "l'envoi a échoué chez le fournisseur",
                 "action": "Renvoyer l'invitation."}
-    if statut_envoi is None:
-        return {"gravite": "bloquant", "cause": "aucune invitation tracée pour ce membre",
-                "action": "Renvoyer l'invitation pour repartir sur une trace fiable."}
     if not r.get("compte_id"):
         return {"gravite": "bloquant", "cause": "aucun compte de connexion",
                 "action": "Renvoyer l'invitation, ce qui crée l'accès."}
+    # Someone already logged in got in, whatever the ledger holds. Reporting a missing
+    # trace as blocking for them would send an administrator chasing a problem that is
+    # not there, and bury the ones that are.
+    if statut_envoi is None and not connecte:
+        return {"gravite": "bloquant", "cause": "aucune invitation tracée pour ce membre",
+                "action": "Renvoyer l'invitation pour repartir sur une trace fiable."}
     if not connecte:
         return {"gravite": "attention", "cause": "invitation partie, jamais utilisée",
                 "action": "Relancer le membre, ou renvoyer un nouvel accès si le délai est dépassé."}
