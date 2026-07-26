@@ -40,6 +40,7 @@ from .consultations import router as consultations_router
 from .controle import router as controle_router
 from .demandes import router as demandes_router
 from .doublons import router as doublons_router
+from .email_webhook import router as email_webhook_router
 from .emargement import router as emargement_router
 from .engagement import public_router as engagement_public_router
 from .engagement import router as engagement_router
@@ -201,6 +202,7 @@ app.include_router(groupes_fiche_router)
 app.include_router(groupes_lecture_router)
 app.include_router(emargement_router)
 app.include_router(engagement_public_router)
+app.include_router(email_webhook_router)
 app.include_router(engagement_router)
 app.include_router(engagement_import_router)
 app.include_router(sondage_router)
