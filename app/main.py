@@ -60,6 +60,7 @@ from .information_feed import router as information_feed_router
 from .information_membre import router as information_membre_router
 from .inscription import router as inscription_router
 from .inscription_admin import router as inscription_admin_router
+from .inscriptions_reparation import router as inscriptions_reparation_router
 from .institutionnel import router as institutionnel_router
 from .integrations import router as integrations_router
 from .interim import router as interim_router
@@ -177,6 +178,7 @@ app.include_router(doublons_router)
 app.include_router(fichiers_router)
 app.include_router(fichiers_admin_router)
 app.include_router(formation_router)
+app.include_router(inscriptions_reparation_router)
 app.include_router(inscription_router)
 app.include_router(inscription_admin_router)
 app.include_router(modifications_router)
