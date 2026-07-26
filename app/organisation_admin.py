@@ -120,16 +120,29 @@ class RenameIn(BaseModel):
     # sous-commission. A field left unset is not touched; description = "" clears it.
     description: str | None = None
     commission_id: str | None = None
+    # The MEMBER holding the post on this unit. Sending null vacates the post; leaving
+    # the field unset does not touch it. A unit and its holder stay distinct: vacating
+    # a post never affects the unit itself, which keeps its name and its place.
+    responsable_id: str | None = None
 
 
 # Per-table columns that the edit endpoint may write, beyond the always-allowed nom.
 # The column names are fixed internal constants, never user input: no injection.
 _EDITABLE: dict[str, set[str]] = {
-    "coordination": {"description"},
-    "intendance": {"description"},
-    "commission": {"description"},
-    "sous_commission": {"commission_id"},
-    "tribu": {"description"},
+    "coordination": {"description", "responsable_id"},
+    "intendance": {"description", "responsable_id"},
+    "commission": {"description", "responsable_id"},
+    "sous_commission": {"commission_id", "responsable_id"},
+    "tribu": {"description", "responsable_id"},
+}
+
+# Column carrying the holder, per table. A tribe names it after the office it holds.
+_COLONNE_TITULAIRE = {
+    "coordination": "responsable_id",
+    "intendance": "responsable_id",
+    "commission": "responsable_id",
+    "sous_commission": "responsable_id",
+    "tribu": "patriarche_membre_id",
 }
 
 
@@ -166,6 +179,16 @@ def _edit_sets(table: str, payload: RenameIn, fields: dict[str, object], role: s
             )
         sets.append("commission_id = %s")
         params.append(cible)
+    if "responsable_id" in fields and "responsable_id" in editable:
+        # The holder of a post is a MEMBER of the organisation, never an application
+        # account: someone can lead an intendance without ever logging in. Sending
+        # null vacates the post and leaves the unit untouched.
+        titulaire = (payload.responsable_id or "").strip() or None
+        if titulaire and not db.fetch_one("SELECT id FROM membre WHERE id = %s", (titulaire,), role=role):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="membre introuvable")
+        colonne = _COLONNE_TITULAIRE.get(table, "responsable_id")
+        sets.append(f"{colonne} = %s")
+        params.append(titulaire)
     return sets, params
 
 
@@ -184,6 +207,13 @@ def rename(
     sets, params = _edit_sets(table, payload, fields, user.role)
     if not sets:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no field to update")
+    # Designating or vacating a post is a governance act: the journal must say who
+    # held it and who holds it now, not merely that a field changed.
+    titulaire_avant = None
+    if "responsable_id" in fields and "responsable_id" in _EDITABLE.get(table, set()):
+        colonne = _COLONNE_TITULAIRE.get(table, "responsable_id")
+        precedent = db.fetch_one(f"SELECT {colonne} AS t FROM {table} WHERE id = %s", (item_id,), role=user.role)
+        titulaire_avant = str(precedent["t"]) if precedent and precedent.get("t") else None
     params.append(item_id)
     try:
         row = db.execute(
@@ -193,7 +223,15 @@ def rename(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="ce nom est deja utilise") from exc
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
-    audit.log(user.id, user.role, "modification_organisation", entity, item_id, {"champs": sorted(fields)})
+    details: dict[str, object] = {"champs": sorted(fields)}
+    if "responsable_id" in fields and "responsable_id" in _EDITABLE.get(table, set()):
+        apres = (payload.responsable_id or "").strip() or None
+        details["titulaire_avant"] = titulaire_avant
+        details["titulaire_apres"] = apres
+        audit.log(user.id, user.role,
+                  "designation_titulaire" if apres else "vacance_titulaire",
+                  entity, item_id, {"titulaire_avant": titulaire_avant, "titulaire_apres": apres})
+    audit.log(user.id, user.role, "modification_organisation", entity, item_id, details)
     return {"id": str(row["id"]), "nom": row["nom"]}
 
 
@@ -332,3 +370,61 @@ def reaffecter(
     audit.log(user.id, user.role, "reaffectation_organisation", entity, item_id,
               {"cible_id": cible, "reaffectes": reaffectes, "detail": detail})
     return {"reaffectes": reaffectes, "cible_id": cible, "detail": detail}
+
+
+@router.get("/{entity}/{item_id}/titulaires")
+def historique_titulaires(
+    entity: str,
+    item_id: str,
+    user: Annotated[UserMe, Depends(require_permission("organisation.consulter"))],
+) -> dict[str, object]:
+    """Who has held the post on this unit, and who holds it now.
+
+    Read back from the audit journal, which is the single record of designations and
+    vacancies. Keeping a second history here would let the two drift apart, and the
+    journal is the one a compliance review actually trusts.
+    """
+    table = _table(entity)
+    colonne = _COLONNE_TITULAIRE.get(table, "responsable_id")
+    unite = db.fetch_one(
+        f"SELECT id, nom, {colonne} AS titulaire_id FROM {table} WHERE id = %s", (item_id,), role=user.role
+    )
+    if not unite:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+
+    def _nom_membre(membre_id: object) -> str | None:
+        if not membre_id:
+            return None
+        m = db.fetch_one(
+            "SELECT nom_affiche, prenoms, nom FROM membre WHERE id = %s", (str(membre_id),), role=user.role
+        )
+        if not m:
+            return None
+        return m.get("nom_affiche") or f"{m.get('prenoms') or ''} {m.get('nom') or ''}".strip() or None
+
+    lignes = db.fetch_all(
+        "SELECT id, action, acteur_id, acteur_role, details, horodatage FROM audit "
+        "WHERE objet_type = %s AND objet_id = %s AND action IN ('designation_titulaire', 'vacance_titulaire') "
+        "ORDER BY horodatage DESC LIMIT 100",
+        (entity, item_id), role=user.role,
+    )
+    historique = []
+    for ligne in lignes:
+        d = ligne.get("details") or {}
+        historique.append({
+            "horodatage": ligne.get("horodatage"),
+            "action": ligne.get("action"),
+            "libelle": "Désignation" if ligne.get("action") == "designation_titulaire" else "Poste rendu vacant",
+            "titulaire_avant": _nom_membre(d.get("titulaire_avant")),
+            "titulaire_apres": _nom_membre(d.get("titulaire_apres")),
+            "acteur_role": ligne.get("acteur_role"),
+        })
+    return {
+        "unite": {"id": str(unite["id"]), "nom": unite["nom"], "type": entity},
+        "titulaire_actuel": {
+            "membre_id": str(unite["titulaire_id"]) if unite.get("titulaire_id") else None,
+            "nom": _nom_membre(unite.get("titulaire_id")),
+        },
+        "poste_pourvu": bool(unite.get("titulaire_id")),
+        "historique": historique,
+    }

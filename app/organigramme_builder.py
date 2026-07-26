@@ -59,10 +59,26 @@ def _label_fonction(catalogue: dict[str, dict[str, Any]], cle: str) -> str:
     return str(row["libelle_n"]) if row and row.get("libelle_n") else cle.replace("_", " ").title()
 
 
+def _label_poste(catalogue: dict[str, dict[str, Any]], cle: str, holder: dict[str, Any] | None = None) -> str:
+    """Label of the FUNCTION exercised on a post, agreed with its holder.
+
+    The neutral label is deliberately not used here: for some functions it names the
+    unit rather than the office (``coordinateur`` carries the neutral label
+    "Coordination"), and writing it on the post would confuse the coordination with
+    the coordinator. The gendered label always names the office itself.
+    """
+    row = catalogue.get(cle)
+    if not row:
+        return cle.replace("_", " ").title()
+    feminin = str((holder or {}).get("genre") or "").lower().startswith("f")
+    libelle = row.get("libelle_f") if feminin else row.get("libelle_h")
+    return str(libelle or row.get("libelle_h") or row.get("libelle_n") or cle.replace("_", " ").title())
+
+
 def _titulaire_fonction(cle: str, role: str | None) -> dict[str, Any] | None:
     """First confirmed, active holder of a catalogue function (by principal then order)."""
     return db.fetch_one(
-        "SELECT m.id, m.prenoms, m.nom, m.nom_affiche AS nom_affiche_calc "
+        "SELECT m.id, m.prenoms, m.nom, m.genre, m.nom_affiche AS nom_affiche_calc "
         "FROM membre_fonction mf JOIN membre m ON m.id = mf.membre_id "
         "WHERE lower(mf.fonction_cle) = %s AND mf.actif = true AND mf.confirmee = true "
         "ORDER BY mf.principale DESC, mf.ordre ASC, mf.cree_le ASC LIMIT 1",
@@ -105,7 +121,7 @@ def _membres_par_ids(ids: set[object], role: str | None) -> dict[str, dict[str, 
     if not clean:
         return {}
     rows = db.fetch_all(
-        "SELECT id, prenoms, nom, nom_affiche AS nom_affiche_calc FROM membre WHERE id = ANY(%s)",
+        "SELECT id, prenoms, nom, genre, nom_affiche AS nom_affiche_calc FROM membre WHERE id = ANY(%s)",
         (clean,), role=role,
     )
     return {str(r["id"]): r for r in rows}
@@ -120,7 +136,7 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
     catalogue = {
         str(r["cle"]): r
         for r in db.fetch_all(
-            "SELECT cle, libelle_n, categorie, abreviation FROM fonction_honorifique", (), role=role
+            "SELECT cle, libelle_h, libelle_f, libelle_n, categorie, abreviation FROM fonction_honorifique", (), role=role
         )
     }
     eff_int = _effectifs("intendance_id", role)
@@ -188,7 +204,7 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
         nom = _nom_membre(holder) or _label_fonction(catalogue, fcle)
         add_node(
             cle, nom, type_noeud="personne" if holder else "structure",
-            sous_titre=_label_fonction(catalogue, fcle),
+            sous_titre=_label_poste(catalogue, fcle, holder),
             membre_id=holder["id"] if holder else None, fonction_cle=fcle,
             categorie=(catalogue.get(fcle) or {}).get("categorie"),
             statut="actif" if holder else "vacant",
@@ -226,7 +242,10 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
             nom_unite = str(cm["nom"]).replace("Commission ", "").replace("Mission ", "").strip()
             eff = eff_pairs.get((cm_id, uid), 0)
             c_cle = f"commission:{unite_type}:{uid}:{cm_id}"
-            add_node(c_cle, f"Responsable {nom_unite}", sous_titre=_nom_membre(resp) or "Poste vacant",
+            # The unit keeps its own name; the function goes in the subtitle and the
+            # holder stays in membre_id. A vacant post is carried by statut alone and
+            # never overwrites the name of the unit.
+            add_node(c_cle, nom_unite, sous_titre=_label_poste(catalogue, "responsable", resp),
                      membre_id=resp["id"] if resp else None, fonction_cle="responsable", categorie="fonction",
                      unite_type="commission", unite_id=cm["id"], effectif=eff, statut="actif" if resp else "vacant")
             add_link(grp_cle, c_cle, "hierarchique")
@@ -249,7 +268,7 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
     for it in intendances:
         cle = f"intendance:{it['id']}"
         resp = membres.get(str(it.get("responsable_id"))) if it.get("responsable_id") else None
-        add_node(cle, str(it["nom"]), sous_titre=_nom_membre(resp) or "Intendant à désigner", membre_id=resp["id"] if resp else None,
+        add_node(cle, str(it["nom"]), sous_titre=_label_poste(catalogue, "intendant", resp), membre_id=resp["id"] if resp else None,
                  fonction_cle="intendant", categorie="fonction", unite_type="intendance", unite_id=it["id"],
                  effectif=eff_int.get(str(it["id"])), statut="actif" if resp else "vacant")
         add_link("bloc_intendances", cle, "hierarchique")
@@ -257,7 +276,7 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
     for co in coordinations:
         cle = f"coordination:{co['id']}"
         resp = membres.get(str(co.get("responsable_id"))) if co.get("responsable_id") else None
-        add_node(cle, str(co["nom"]), sous_titre=_nom_membre(resp) or "Coordinateur à désigner", membre_id=resp["id"] if resp else None,
+        add_node(cle, str(co["nom"]), sous_titre=_label_poste(catalogue, "coordinateur", resp), membre_id=resp["id"] if resp else None,
                  fonction_cle="coordinateur", categorie="fonction", unite_type="coordination", unite_id=co["id"],
                  effectif=eff_coord.get(str(co["id"])), statut="actif" if resp else "vacant")
         add_link("bloc_coordinations", cle, "hierarchique")
@@ -283,11 +302,13 @@ def construire(version_id: str, role: str | None) -> dict[str, int]:
     for tr in tribus:
         cle = f"tribu:{tr['id']}"
         patr = membres.get(str(tr.get("patriarche_membre_id"))) if tr.get("patriarche_membre_id") else None
-        sous = _nom_membre(patr) or (str(tr["patriarche"]) if tr.get("patriarche") else "Patriarche à désigner")
         eff_tr = eff_tribu.get(str(tr["id"]))
-        add_node(cle, str(tr["nom"]), sous_titre=sous, membre_id=patr["id"] if patr else None,
+        # tribu.patriarche holds the biblical origin of the tribe ("Aser, fils de
+        # Jacob et Zilpa"), not the name of a person: it must never be presented as
+        # the holder, and it must not make the post look filled.
+        add_node(cle, str(tr["nom"]), sous_titre=_label_poste(catalogue, "patriarche", patr), membre_id=patr["id"] if patr else None,
                  fonction_cle="patriarche", categorie="fonction_particuliere", unite_type="tribu", unite_id=tr["id"],
-                 effectif=eff_tr, statut="actif" if patr or tr.get("patriarche") else "vacant")
+                 effectif=eff_tr, statut="actif" if patr else "vacant")
         add_link("groupe_patriarches", cle, "responsabilite_tribu")
         tm_cle = f"tribu_membres:{tr['id']}"
         add_node(tm_cle, "Membres", type_noeud="structure", sous_titre=eff_label(eff_tr or 0), unite_type="tribu", unite_id=tr["id"], effectif=eff_tr)

@@ -35,7 +35,7 @@ def permissions_effectives(user: UserMe) -> frozenset[str]:
         "SELECT g.mode, g.role_accorde, gp.permission "
         "FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
         "LEFT JOIN groupe_permission gp ON gp.groupe_id = g.id AND g.mode = 'permissions' "
-        "WHERE mg.membre_id = %s AND g.actif = true AND mg.portee_type = 'global'",
+        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true AND mg.portee_type = 'global'",
         (user.membre_id,),
         role=user.role,
     )

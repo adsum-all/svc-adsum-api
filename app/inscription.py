@@ -45,11 +45,19 @@ def _temp_password() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(10))
 
 
-def _send_temp_password(email: str, temp: str) -> tuple[bool, str]:
-    """Send the temporary password. Returns (sent, provider) so the caller can
-    surface a delivery failure instead of assuming success."""
+def _send_temp_password(email: str, temp: str, membre_id: str | None = None, role: str | None = None) -> tuple[bool, str]:
+    """Send the temporary password, and write the attempt down.
+
+    Returning (sent, provider) was never enough: it reports that the provider
+    accepted the request, not that anyone received anything. One registrant carries
+    ``email_envoye: true`` in the journal and has no trace at all in the provider's
+    log. The outbox row is what makes that case visible, and what lets an
+    administrator resend without wondering whether the first one ever left.
+    """
+    from . import email_registre
     from .email_templates import render_temp_password_email
 
+    sujet = "ADSUM, votre accès et mot de passe temporaire"
     text = (
         f"Bonjour,\n\nVotre compte ADSUM a été créé. Mot de passe temporaire : {temp}\n"
         f"Il est valable {TEMP_VALID_HOURS} heures. Connectez-vous à l'espace membre, "
@@ -57,7 +65,19 @@ def _send_temp_password(email: str, temp: str) -> tuple[bool, str]:
         f"Passé ce délai, contactez l'administration pour un nouveau mot de passe."
     )
     html = render_temp_password_email(temp, validity=f"{TEMP_VALID_HOURS} heures")
-    return send_email(email, "ADSUM, votre accès et mot de passe temporaire", text, html)
+    # The credential itself is NEVER written to the ledger: the context records what
+    # the message was about, never what it contained.
+    outbox_id = email_registre.enregistrer(
+        email, "invitation_mot_de_passe_temporaire", sujet,
+        membre_id=membre_id, priorite="critique",
+        contexte={"validite_heures": TEMP_VALID_HOURS}, reference=membre_id or "", role=role,
+    )
+    sent, provider = send_email(email, sujet, text, html)
+    email_registre.marquer_resultat(
+        outbox_id, sent, provider,
+        None if sent else "aucun fournisseur n'a accepté le message", role=role,
+    )
+    return sent, provider
 
 
 def _temp_password_via_telegram(membre_id: str, role: str, temp: str) -> bool:
@@ -137,7 +157,7 @@ def creer_membre_inscription(email: str, prenoms: str | None, nom: str | None, a
         )
     except psycopg.errors.UniqueViolation as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="account already exists") from exc
-    sent, provider = _send_temp_password(email, temp)
+    sent, provider = _send_temp_password(email, temp, membre_id, actor.role)
     telegram_envoye = _temp_password_via_telegram(membre_id, actor.role, temp)
     if not sent and not telegram_envoye:
         # The member received their access on no channel: record it in the delivery
@@ -171,7 +191,7 @@ def relancer_mdp(membre_id: str, user: Annotated[UserMe, Depends(require_permiss
         (hash_password(temp), expire, membre_id),
         role=user.role,
     )
-    sent, provider = _send_temp_password(str(row["email"]), temp)
+    sent, provider = _send_temp_password(str(row["email"]), temp, membre_id, user.role)
     telegram_envoye = _temp_password_via_telegram(membre_id, user.role, temp)
     if not sent and not telegram_envoye:
         from . import channels

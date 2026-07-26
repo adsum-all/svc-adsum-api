@@ -56,7 +56,7 @@ def mes_applications(user: Annotated[UserMe, Depends(current_user)]) -> list[App
         # other needs at least one access group tied to it. The card can then say
         # honestly "waiting for rights" instead of "active access" the gate refuses.
         "(a.est_defaut OR EXISTS (SELECT 1 FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        " WHERE mg.membre_id = %s AND mg.application_code = a.code AND g.actif = true)) AS ouvrable "
+        " WHERE mg.membre_id = %s AND mg.actif = true AND mg.application_code = a.code AND g.actif = true)) AS ouvrable "
         "FROM application a WHERE a.actif = true AND ("
         "  a.est_defaut = true "
         "  OR EXISTS (SELECT 1 FROM membre_application_acces m WHERE m.application_code = a.code AND m.membre_id = %s AND m.actif = true)"
@@ -98,7 +98,7 @@ def mon_acces_application(code: str, user: Annotated[UserMe, Depends(current_use
         # The linked group must itself be ACTIVE: a deactivated group no longer
         # opens the door (it would grant a connection that carries no permission).
         "AND EXISTS (SELECT 1 FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = m.membre_id AND mg.application_code = m.application_code AND g.actif = true)",
+        "WHERE mg.membre_id = m.membre_id AND mg.actif = true AND mg.application_code = m.application_code AND g.actif = true)",
         (user.membre_id, code),
         role=user.role,
     )
@@ -336,7 +336,7 @@ def groupes_membre_application(
     rows = db.fetch_all(
         "SELECT mg.id AS membre_groupe_id, g.id AS groupe_id, g.cle, g.libelle, g.role_accorde, g.actif AS groupe_actif "
         "FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = %s AND mg.application_code = %s ORDER BY g.libelle",
+        "WHERE mg.membre_id = %s AND mg.actif = true AND mg.application_code = %s ORDER BY g.libelle",
         (membre_id, code), role=user.role,
     )
     return [

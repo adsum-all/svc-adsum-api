@@ -16,12 +16,11 @@ import json
 import re
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from . import audit, db
 from . import cibles_activite as ca
-from .auth import current_user
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -124,6 +123,30 @@ def _info_dict(r: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Media are stored inline as base64 data URLs, so a single information can weigh
+# several megabytes. A list must therefore never select them: it returns only whether
+# each medium exists, and the detail endpoint serves the payload itself. Without this,
+# four rows already produced a response close to the serverless body limit.
+_COLONNES_LISTE = (
+    "id, titre, sous_titre, contenu, priorite, auteur, statut, requiert_accuse, signature, "
+    "protege, institutionnelle, affiche_entete, canaux, lecture_vocale_auto, lien_url, "
+    "action_label, action_url, publier_le, expire_le, epingle_jusqu, cibles, cree_le, envoye_le, "
+    "(audio_url IS NOT NULL) AS a_audio, (image_url IS NOT NULL) AS a_image, "
+    "(document_url IS NOT NULL) AS a_document, (signature_url IS NOT NULL) AS a_signature"
+)
+
+
+def _info_dict_liste(r: dict[str, Any]) -> dict[str, Any]:
+    """Same shape as the detail, minus the media payloads: the caller gets a flag per
+    medium and fetches the information itself when it actually needs the content."""
+    d = _info_dict({**r, "audio_url": None, "image_url": None, "document_url": None, "signature_url": None})
+    d["medias"] = {
+        "audio": bool(r.get("a_audio")), "image": bool(r.get("a_image")),
+        "document": bool(r.get("a_document")), "signature": bool(r.get("a_signature")),
+    }
+    return d
+
+
 def _colonnes(payload: InformationIn | InformationPatch) -> dict[str, Any]:
     champs = payload.model_dump(exclude_unset=True)
     out: dict[str, Any] = {}
@@ -219,12 +242,21 @@ def _resoudre_destinataires(cibles: list[dict[str, Any]], role: str | None) -> l
 # --- Admin: CRUD ------------------------------------------------------------
 
 @router.get("/admin/informations")
-def admin_liste(statut: str | None = None, user: Annotated[UserMe, Depends(require_permission("informations.consulter"))] = ...) -> list[dict[str, Any]]:
-    if statut:
-        rows = db.fetch_all("SELECT * FROM information WHERE statut = %s ORDER BY cree_le DESC", (statut,), role=user.role)
-    else:
-        rows = db.fetch_all("SELECT * FROM information ORDER BY cree_le DESC", (), role=user.role)
-    return [_info_dict(r) for r in rows]
+def admin_liste(
+    user: Annotated[UserMe, Depends(require_permission("informations.consulter"))],
+    statut: str | None = None,
+    page: int = Query(default=1, ge=1),
+    taille: int = Query(default=10, ge=1, le=100),
+) -> dict[str, Any]:
+    """Paginated, and without the media payloads: see _COLONNES_LISTE."""
+    where, params = ("WHERE statut = %s", [statut]) if statut else ("", [])
+    total = int((db.fetch_one(f"SELECT COUNT(*) AS n FROM information {where}", tuple(params), role=user.role) or {}).get("n") or 0)
+    rows = db.fetch_all(
+        f"SELECT {_COLONNES_LISTE} FROM information {where} ORDER BY cree_le DESC LIMIT %s OFFSET %s",
+        tuple([*params, taille, (page - 1) * taille]), role=user.role,
+    )
+    return {"items": [_info_dict_liste(r) for r in rows], "total": total, "page": page,
+            "taille": taille, "pages": max(1, (total + taille - 1) // taille)}
 
 
 @router.post("/admin/informations", status_code=status.HTTP_201_CREATED)
@@ -410,90 +442,3 @@ def admin_stats(info_id: str, user: Annotated[UserMe, Depends(require_permission
         "taux_lecture": round(lus / total * 100, 1) if total else 0.0,
         "taux_confirmation": round(confirmes / total * 100, 1) if total else 0.0,
     }
-
-
-# --- Member: feed -----------------------------------------------------------
-
-def _membre_ou_403(user: UserMe) -> str:
-    if not user.membre_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="compte non lié à un membre")
-    return user.membre_id
-
-
-_FEED_SELECT = (
-    "SELECT i.id, i.titre, i.sous_titre, i.contenu, i.priorite, i.auteur, i.statut, i.requiert_accuse, "
-    "i.lecture_vocale_auto, i.lien_url, i.action_label, i.action_url, i.audio_url, i.image_url, i.document_url, "
-    "i.publier_le, i.expire_le, i.epingle_jusqu, i.cibles, i.cree_le, i.envoye_le, i.signature, i.signature_url, i.canaux, "
-    "d.statut AS d_statut, d.lu_le, d.confirme_le "
-    "FROM information_destinataire d JOIN information i ON i.id = d.information_id "
-    "WHERE d.membre_id = %s AND i.statut = 'envoye' AND (i.expire_le IS NULL OR i.expire_le > now())"
-)
-
-
-@router.get("/membres/me/informations")
-def feed_membre(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, Any]]:
-    mid = _membre_ou_403(user)
-    rows = db.fetch_all(
-        _FEED_SELECT + " ORDER BY (i.priorite = 'urgente') DESC, "
-        "(i.epingle_jusqu IS NOT NULL AND i.epingle_jusqu > now()) DESC, "
-        "(i.priorite = 'importante') DESC, i.envoye_le DESC",
-        (mid,), role=user.role,
-    )
-    out = []
-    for r in rows:
-        d = _info_dict(r)
-        d.pop("cibles", None)  # the targeting is internal; a member never sees who else was targeted.
-        d.update({"lu": r.get("d_statut") in ("lu", "confirme"), "confirme": r.get("d_statut") == "confirme",
-                  "lu_le": r.get("lu_le"), "confirme_le": r.get("confirme_le")})
-        out.append(d)
-    return out
-
-
-@router.get("/membres/me/informations/compteur")
-def compteur_non_lus(user: Annotated[UserMe, Depends(current_user)]) -> dict[str, int]:
-    mid = _membre_ou_403(user)
-    r = db.fetch_one(
-        "SELECT count(*) AS n FROM information_destinataire d JOIN information i ON i.id = d.information_id "
-        "WHERE d.membre_id = %s AND i.statut = 'envoye' AND (i.expire_le IS NULL OR i.expire_le > now()) "
-        "AND d.statut NOT IN ('lu', 'confirme')",
-        (mid,), role=user.role,
-    ) or {}
-    return {"non_lus": int(r.get("n") or 0)}
-
-
-@router.get("/membres/me/informations/{info_id}")
-def detail_membre(info_id: str, user: Annotated[UserMe, Depends(current_user)]) -> dict[str, Any]:
-    mid = _membre_ou_403(user)
-    rows = db.fetch_all(_FEED_SELECT + " AND i.id = %s", (mid, info_id), role=user.role)
-    if not rows:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="information indisponible")
-    # Opening the detail records the read (never a push or a list view). Never
-    # downgrades an existing confirmation.
-    db.execute(
-        "UPDATE information_destinataire SET statut = 'lu', lu_le = coalesce(lu_le, now()) "
-        "WHERE information_id = %s AND membre_id = %s AND statut NOT IN ('lu', 'confirme')",
-        (info_id, mid), role=user.role,
-    )
-    r = rows[0]
-    d = _info_dict(r)
-    d.pop("cibles", None)
-    d.update({"lu": True, "confirme": r.get("d_statut") == "confirme", "confirme_le": r.get("confirme_le")})
-    return d
-
-
-@router.post("/membres/me/informations/{info_id}/confirmer")
-def confirmer_membre(info_id: str, user: Annotated[UserMe, Depends(current_user)]) -> dict[str, Any]:
-    mid = _membre_ou_403(user)
-    # Confirm only an information the member actually receives, that is still sent and
-    # not expired (same scope as the feed), so a confirmation can never be recorded on
-    # a withdrawn or out-of-scope message.
-    upd = db.execute(
-        "UPDATE information_destinataire d SET statut = 'confirme', confirme_le = coalesce(d.confirme_le, now()), "
-        "lu_le = coalesce(d.lu_le, now()) FROM information i "
-        "WHERE d.information_id = i.id AND d.information_id = %s AND d.membre_id = %s "
-        "AND i.statut = 'envoye' AND (i.expire_le IS NULL OR i.expire_le > now()) RETURNING d.confirme_le",
-        (info_id, mid), role=user.role,
-    )
-    if not upd:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="information indisponible")
-    return {"ok": True, "confirme_le": upd.get("confirme_le")}
