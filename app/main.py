@@ -57,6 +57,7 @@ from .groupes_lecture import router as groupes_lecture_router
 from .information import router as information_router
 from .information_actions import router as information_actions_router
 from .information_feed import router as information_feed_router
+from .information_membre import router as information_membre_router
 from .inscription import router as inscription_router
 from .inscription_admin import router as inscription_admin_router
 from .institutionnel import router as institutionnel_router
@@ -128,6 +129,7 @@ app.include_router(organigramme_router)
 app.include_router(organigramme_reglages_router)
 app.include_router(interim_router)
 app.include_router(information_feed_router)
+app.include_router(information_membre_router)
 app.include_router(information_actions_router)
 app.include_router(information_router)
 app.include_router(ai_tts_router)
