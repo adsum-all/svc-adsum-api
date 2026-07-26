@@ -186,8 +186,8 @@ def _send_telegram_code(chat_id: str, code: str) -> bool:
         titre="ADSUM - liaison Telegram",
         corps_text=(
             f"Votre code de liaison est : {code}\n\n"
-            "Saisissez-le dans l'application pour confirmer que ce compte Telegram est bien le votre. "
-            "Ce code expire dans 10 minutes. Si vous n'etes pas a l'origine de cette demande, ignorez ce message."
+            "Saisissez-le dans l'application pour confirmer que ce compte Telegram est bien le vôtre. "
+            "Ce code expire dans 10 minutes. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message."
         ),
         corps_html="",
         type_notif="telegram_liaison",
@@ -208,13 +208,13 @@ def telegram_verifier(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict
     row = db.fetch_one("SELECT telegram_link_token FROM membre WHERE id = %s", (membre_id,), role=role)
     token = row["telegram_link_token"] if row else None
     if not token:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="aucune liaison en cours; demandez d'abord un lien")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="aucune liaison en cours, demandez d'abord un lien")
     chat_id = _find_chat_id_for_token(str(token))
     if not chat_id:
         return {"pending_confirmation": False, "message": "Ouvrez le lien et appuyez sur Démarrer, puis réessayez."}
     code = f"{secrets.randbelow(1000000):06d}"
     if not _send_telegram_code(chat_id, code):
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="envoi du code Telegram non abouti; reessayez")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="envoi du code Telegram non abouti, réessayez")
     # Store the pending candidate and code; do NOT bind telegram_chat_id yet.
     db.execute(
         "UPDATE membre SET telegram_pending_chat_id = %s, telegram_confirm_code = %s, "
@@ -222,7 +222,7 @@ def telegram_verifier(ctx: Annotated[tuple[str, str], Depends(_membre)]) -> dict
         (chat_id, code, membre_id),
         role=role,
     )
-    return {"pending_confirmation": True, "message": "Un code vient d'etre envoye sur votre Telegram. Saisissez-le pour confirmer la liaison."}
+    return {"pending_confirmation": True, "message": "Un code vient d'être envoyé sur votre Telegram. Saisissez-le pour confirmer la liaison."}
 
 
 class TelegramConfirmIn(BaseModel):
@@ -249,10 +249,10 @@ def telegram_confirmer(payload: TelegramConfirmIn, user: Annotated[UserMe, Depen
         row = cur.fetchone() or {}
         pending = row.get("telegram_pending_chat_id")
         if not pending or not row.get("valide"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="aucune liaison en attente ou code expire; redemandez un lien")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="aucune liaison en attente ou code expiré, redemandez un lien")
         if int(row.get("telegram_confirm_essais") or 0) >= 5:
             cur.execute("UPDATE membre SET telegram_pending_chat_id = NULL, telegram_confirm_code = NULL, telegram_confirm_expire = NULL WHERE id = %s", (membre_id,))
-            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="trop de tentatives; redemandez un lien")
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="trop de tentatives, redemandez un lien")
         if not code or code != str(row.get("telegram_confirm_code")):
             cur.execute("UPDATE membre SET telegram_confirm_essais = telegram_confirm_essais + 1 WHERE id = %s", (membre_id,))
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="code incorrect")
