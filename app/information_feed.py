@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends
 
 from . import db
 from .auth import current_user
-from .information import _FEED_SELECT, _info_dict, _membre_ou_403
+from .information import _info_dict
+from .information_membre import _FEED_SELECT, _membre_ou_403
 from .schemas import UserMe
 
 router = APIRouter(prefix="/api/v1", tags=["informations"])

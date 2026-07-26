@@ -33,6 +33,14 @@ _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 _MODERATEURS = ("super_admin", "admin")
 
 
+class PublicationIn(BaseModel):
+    publie: bool
+
+
+class ArchivageIn(BaseModel):
+    archive: bool
+
+
 class ModeleColonneIn(BaseModel):
     nom: LineStr
     couleur: str | None = None
@@ -146,7 +154,7 @@ def list_modeles_perso(
 
 @router.post("/modeles-perso", status_code=status.HTTP_201_CREATED)
 def create_modele_perso(
-    payload: ModelePersoIn, user: Annotated[UserMe, Depends(require_permission("collaboration.modeles"))],
+    payload: ModelePersoIn, user: Annotated[UserMe, Depends(require_permission("collaboration.template.create"))],
 ) -> dict[str, Any]:
     row = db.execute(
         "INSERT INTO collab_modele_perso (espace_id, nom, description, structure, visibilite, cree_par) "
@@ -160,7 +168,7 @@ def create_modele_perso(
 
 @router.patch("/modeles-perso/{modele_id}")
 def update_modele_perso(
-    modele_id: str, payload: ModelePersoPatch, user: Annotated[UserMe, Depends(require_permission("collaboration.modeles"))],
+    modele_id: str, payload: ModelePersoPatch, user: Annotated[UserMe, Depends(require_permission("collaboration.template.update"))],
 ) -> dict[str, Any]:
     modele = _modele_ou_404(modele_id, user)
     _garde_gestion(modele, user)
@@ -189,10 +197,61 @@ def update_modele_perso(
 
 @router.delete("/modeles-perso/{modele_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_modele_perso(
-    modele_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.modeles"))],
+    modele_id: str, user: Annotated[UserMe, Depends(require_permission("collaboration.template.delete"))],
 ) -> None:
     modele = _modele_ou_404(modele_id, user)
     _garde_gestion(modele, user)
     # Soft-delete: boards already created from this template keep their (copied) columns.
     db.execute("UPDATE collab_modele_perso SET supprime_le = now() WHERE id = %s", (modele_id,), role=user.role)
     audit.log(user.id, user.role, "collab_modele_perso_suppression", "collab_modele_perso", modele_id, {"nom": modele.get("nom")})
+
+
+@router.post("/modeles-perso/{modele_id}/publication")
+def publier_modele(
+    modele_id: str,
+    payload: PublicationIn,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.template.publish"))],
+) -> dict[str, Any]:
+    """Offer a template to the teams, or take it back to draft.
+
+    Publishing is deliberately a separate right from creating: preparing a template
+    and standing behind it are two different acts, and an organisation usually wants
+    them held by different people.
+    """
+    modele = _modele_ou_404(modele_id, user)
+    if modele.get("statut") == "archive":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="un modèle archivé doit être réactivé avant d'être publié")
+    cible = "publie" if payload.publie else "brouillon"
+    row = db.execute(
+        "UPDATE collab_modele_perso SET statut = %s, publie_le = CASE WHEN %s THEN now() ELSE publie_le END, "
+        "publie_par = CASE WHEN %s THEN %s ELSE publie_par END, maj_le = now() WHERE id = %s RETURNING *",
+        (cible, payload.publie, payload.publie, user.id, modele_id), role=user.role,
+    )
+    audit.log(user.id, user.role, "collab_modele_publication", "collab_modele_perso", modele_id,
+              {"statut": cible, "nom": modele.get("nom")})
+    return _out(row or {})
+
+
+@router.post("/modeles-perso/{modele_id}/archivage")
+def archiver_modele(
+    modele_id: str,
+    payload: ArchivageIn,
+    user: Annotated[UserMe, Depends(require_permission("collaboration.template.archive"))],
+) -> dict[str, Any]:
+    """Take a template out of the catalogue without destroying it.
+
+    Boards already created from it keep working: their columns were copied at
+    creation and never referenced afterwards. Archiving is therefore reversible and
+    safe, which is why it is a lighter right than deleting.
+    """
+    modele = _modele_ou_404(modele_id, user)
+    cible = "archive" if payload.archive else "brouillon"
+    row = db.execute(
+        "UPDATE collab_modele_perso SET statut = %s, archive_le = CASE WHEN %s THEN now() ELSE NULL END, "
+        "archive_par = CASE WHEN %s THEN %s ELSE NULL END, maj_le = now() WHERE id = %s RETURNING *",
+        (cible, payload.archive, payload.archive, user.id, modele_id), role=user.role,
+    )
+    audit.log(user.id, user.role, "collab_modele_archivage", "collab_modele_perso", modele_id,
+              {"statut": cible, "nom": modele.get("nom")})
+    return _out(row or {})

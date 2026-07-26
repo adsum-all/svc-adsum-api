@@ -13,7 +13,7 @@ import uuid
 from typing import Annotated
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from . import activites, audit, db, evenement_pieces, identifiants, identite
@@ -163,6 +163,7 @@ def list_membres(
     tri: str = Query(default="nom"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    reponse: Response = None,  # type: ignore[assignment]
 ) -> list[MembreProfile]:
     params: list[object] = []
     # A technical/applicative user never appears in the member directory.
@@ -197,6 +198,18 @@ def list_membres(
             params.append(value)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     order_by = _TRIS.get(tri, _TRIS["nom"])
+    # The directory is bounded, but without a total the caller could not say how many
+    # members match, nor how many pages remain: it had no choice but to guess. The
+    # count travels in headers so the response shape stays a plain list.
+    if reponse is not None:
+        compte = db.fetch_one(
+            f"SELECT count(*) AS n FROM membre m {where}", tuple(params), role=user.role
+        )
+        total = int((compte or {}).get("n") or 0)
+        reponse.headers["X-Total-Count"] = str(total)
+        reponse.headers["X-Limit"] = str(limit)
+        reponse.headers["X-Offset"] = str(offset)
+        reponse.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Limit, X-Offset"
     params.extend([limit, offset])
     rows = db.fetch_all(
         f"""

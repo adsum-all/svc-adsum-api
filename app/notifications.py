@@ -261,6 +261,33 @@ def _render(type_cle: str, lang: str, ctx: dict[str, object], role: str | None) 
     return _subst(str(titre), ctx), _subst(str(corps or ""), ctx)
 
 
+def _gate_eligibilite(membre_id: str, type_cle: str, role: str | None) -> bool:
+    """Decide whether this member may receive this kind of message, and record why not.
+
+    Kept apart from :func:`notifier` so the gate stays readable, and so its own failure
+    can never be mistaken for a refusal: if the ledger write fails, the message still
+    goes out. Blocking someone because a log line could not be written would turn an
+    observability problem into a delivery outage.
+    """
+    from . import eligibilite
+
+    try:
+        permis, motif = eligibilite.autorise(membre_id, type_cle, role)
+    except Exception:  # noqa: BLE001 - never let the gate itself silence a message
+        return True
+    if permis:
+        return True
+    try:
+        db.execute(
+            "INSERT INTO notification_echec (membre_id, type_cle, canal, detail) VALUES (%s, %s, %s, %s)",
+            (membre_id, type_cle, "eligibilite", f"notification bloquée : {motif}"),
+            role=role,
+        )
+    except Exception:  # noqa: BLE001 - the refusal stands even if it could not be logged
+        pass
+    return False
+
+
 def notifier(
     membre_id: str,
     role: str | None,
@@ -273,6 +300,16 @@ def notifier(
     """Send one notification honouring admin toggle, member prefs and language."""
     ctx = ctx or {}
     try:
+        # THE eligibility gate. It sits here, in the single funnel every notification
+        # goes through, precisely so no caller can forget it: recipient-selection
+        # queries filtered on membre.statut alone, which is 'actif' from the moment an
+        # administrator registers someone, so people were invited to confirm their
+        # attendance at activities before they could even log in. A refusal is recorded
+        # with its reason, because a message that silently vanishes is
+        # indistinguishable from a bug.
+        if not _gate_eligibilite(membre_id, type_cle, role):
+            return []
+
         active = db.fetch_one("SELECT actif, sensibilite FROM type_notification WHERE cle = %s", (type_cle,), role=role)
         sensibilite = (active or {}).get("sensibilite") or "operationnel"
         critique = sensibilite == "critique"

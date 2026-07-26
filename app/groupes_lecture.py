@@ -200,7 +200,7 @@ def acces_effectif(membre_id: str, user: Annotated[UserMe, Depends(require_permi
         "LEFT JOIN intendance pin ON mg.portee_type = 'intendance' AND pin.id = mg.portee_id "
         "LEFT JOIN commission pk ON mg.portee_type = 'commission' AND pk.id = mg.portee_id "
         "LEFT JOIN tribu pt ON mg.portee_type = 'tribu' AND pt.id = mg.portee_id "
-        "WHERE mg.membre_id = %s AND g.actif = true ORDER BY g.role_accorde DESC",
+        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true ORDER BY g.role_accorde DESC",
         (membre_id,),
         role=user.role,
     )
