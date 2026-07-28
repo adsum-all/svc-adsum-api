@@ -86,10 +86,12 @@ from .pilotage import router as pilotage_router
 from .reference import router as reference_router
 from .retention_archivage import router as retention_archivage_router
 from .rgpd import router as rgpd_router
+from .sessions_membre import router as sessions_membre_router
 from .sondage import cron_router as sondage_cron_router
 from .sondage import router as sondage_router
 from .tags import router as tags_router
 from .technical_admin import router as technical_admin_router
+from .telegram_liaison import router as telegram_liaison_router
 from .terminaux import router as terminaux_router
 from .type_evenement import router as type_evenement_router
 from .users import router as users_router
@@ -203,6 +205,8 @@ app.include_router(groupes_lecture_router)
 app.include_router(emargement_router)
 app.include_router(engagement_public_router)
 app.include_router(email_webhook_router)
+app.include_router(sessions_membre_router)
+app.include_router(telegram_liaison_router)
 app.include_router(engagement_router)
 app.include_router(engagement_import_router)
 app.include_router(sondage_router)
