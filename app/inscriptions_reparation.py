@@ -88,8 +88,7 @@ def inscriptions_a_reparer(
 ) -> dict[str, Any]:
     """Registrations that have not reached a usable account, with the reason for each."""
     where = "m.statut_inscription <> 'approuve' AND m.statut = 'actif'"
-    total = int((db.fetch_one(f"SELECT COUNT(*) AS n FROM membre m WHERE {where}", (), role=user.role) or {}).get("n") or 0)
-    rows = db.fetch_all(
+    colonnes = (
         "SELECT m.id, m.matricule, m.email, m.prenoms, m.nom, m.statut_inscription, m.verifie, m.cree_le, "
         "u.id AS compte_id, u.dernier_login, u.mdp_temporaire, u.mdp_expire_le, "
         "(SELECT o.statut FROM email_outbox o WHERE o.membre_id = m.id "
@@ -97,9 +96,23 @@ def inscriptions_a_reparer(
         "(SELECT o.cree_le FROM email_outbox o WHERE o.membre_id = m.id "
         "  ORDER BY o.cree_le DESC LIMIT 1) AS dernier_envoi_le "
         f"FROM membre m LEFT JOIN utilisateur u ON u.membre_id = m.id WHERE {where} "
-        "ORDER BY m.cree_le DESC LIMIT %s OFFSET %s",
+    )
+    total = int((db.fetch_one(f"SELECT COUNT(*) AS n FROM membre m WHERE {where}", (), role=user.role) or {}).get("n") or 0)
+    rows = db.fetch_all(
+        colonnes + "ORDER BY m.cree_le DESC LIMIT %s OFFSET %s",
         (taille, (page - 1) * taille), role=user.role,
     )
+    # The summary counts the whole set, never the page. A badge reading "5 to chase"
+    # above a list of 10 is worse than no badge: it says the problem is half its real
+    # size, and an administrator stops at the first page believing they are done.
+    # The diagnosis is Python logic, so the rows are re-read under a hard ceiling;
+    # ``resume_complet`` says plainly when that ceiling truncated the count.
+    _PLAFOND = 1000
+    toutes = db.fetch_all(colonnes + "ORDER BY m.cree_le DESC LIMIT %s", (_PLAFOND,), role=user.role)
+    par_gravite: dict[str, int] = {}
+    for r in toutes:
+        g = _diagnostic(r)["gravite"]
+        par_gravite[g] = par_gravite.get(g, 0) + 1
     items = []
     for r in rows:
         diag = _diagnostic(r)
@@ -116,11 +129,9 @@ def inscriptions_a_reparer(
             "dernier_envoi_le": r.get("dernier_envoi_le"),
             **diag,
         })
-    par_gravite: dict[str, int] = {}
-    for it in items:
-        par_gravite[it["gravite"]] = par_gravite.get(it["gravite"], 0) + 1
     return {"items": items, "total": total, "page": page, "taille": taille,
-            "pages": max(1, (total + taille - 1) // taille), "resume": par_gravite}
+            "pages": max(1, (total + taille - 1) // taille), "resume": par_gravite,
+            "resume_complet": len(toutes) < _PLAFOND}
 
 
 @router.get("/membres/{membre_id}/envois-email")
