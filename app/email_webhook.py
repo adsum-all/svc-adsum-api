@@ -105,6 +105,44 @@ async def recevoir_evenement_email(
     return {"recu": True, "evenement": evenement, "rattache": bool(outbox_id)}
 
 
+@router.get("/admin/email/adresse-rappel")
+def adresse_rappel(
+    request: Request,
+    user: Annotated[UserMe, Depends(require_permission("integrations.administrer"))],
+) -> dict[str, Any]:
+    """The exact address to paste into the provider's webhook configuration.
+
+    Assembling it by hand is where this goes wrong: the secret has to travel in the
+    query string, and one wrong character means the provider's calls are refused with
+    no visible symptom other than bounces staying invisible, which is the very problem
+    the callback exists to solve. So the platform composes it.
+
+    It carries the secret in clear, which is why it is gated on the administration
+    permission rather than the supervision one: whoever can read this is whoever set
+    the value in the first place.
+    """
+    secret = _secret_attendu()
+    base = str(request.base_url).rstrip("/")
+    if not secret:
+        return {
+            "configuree": False,
+            "adresse": None,
+            "message": (
+                "Renseignez d'abord la clé du retour de livraison dans les réglages, "
+                "puis revenez copier l'adresse. Sans clé, l'adresse serait ouverte à tous."
+            ),
+        }
+    return {
+        "configuree": True,
+        "adresse": f"{base}/api/v1/webhooks/email?cle={secret}",
+        "evenements": sorted(_EVENEMENTS_MESSAGE),
+        "message": (
+            "Collez cette adresse chez le fournisseur d'e-mail, rubrique Transactionnel "
+            "puis Webhooks, en cochant les événements de livraison et de rejet."
+        ),
+    }
+
+
 @router.get("/admin/email/sante")
 def sante_delivrabilite(
     user: Annotated[UserMe, Depends(require_permission("integrations.superviser"))],
