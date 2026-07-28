@@ -24,6 +24,11 @@ router = APIRouter(prefix="/api/v1/admin/integrations", tags=["integrations"])
 
 # Guidance shown next to each setting (rendered behind info icons in the UI).
 _GUIDE = {
+    "email_webhook_secret": {
+        "titre": "Clé du retour de livraison des e-mails",
+        "aide": "Elle authentifie les retours du fournisseur d'e-mail (livré, ouvert, rejeté). Sans elle, la plateforme ne sait pas ce que devient un message une fois parti.",
+        "obtenir": "Générez une valeur longue et aléatoire, puis collez l'adresse de rappel affichée ci-dessous dans Brevo, rubrique Transactionnel puis Paramètres puis Webhooks.",
+    },
     "telegram_bot_token": {
         "titre": "Jeton du bot Telegram",
         "aide": "Jeton d'accès du bot @adsum_sr_bot. Il autorise l'envoi des notifications Telegram.",

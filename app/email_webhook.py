@@ -20,7 +20,7 @@ from __future__ import annotations
 import hmac
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from . import channels, db, email_registre
 from .permissions_rbac import require_permission
@@ -54,15 +54,23 @@ def _secret_attendu() -> str:
 async def recevoir_evenement_email(
     request: Request,
     x_adsum_webhook: Annotated[str | None, Header()] = None,
+    cle: str = Query(default=""),
 ) -> dict[str, Any]:
     """Record one delivery event reported by the mail provider.
 
     Always answers 202 once authenticated: a provider that receives an error retries,
     and a retry storm over a row that could not be written helps nobody. What could not
     be recorded is reported in the body instead.
+
+    The shared secret is accepted from a header or from the query string, because the
+    provider's webhook configuration offers no custom headers. A URL-borne secret is
+    weaker (it can land in an access log), so it is a high-entropy value used for this
+    one purpose and rotatable from the integrations screen. Without it the endpoint
+    would be open to anyone willing to post fabricated delivery events.
     """
     secret = _secret_attendu()
-    if secret and not hmac.compare_digest(secret, x_adsum_webhook or ""):
+    presente = x_adsum_webhook or cle or ""
+    if secret and not hmac.compare_digest(secret, presente):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="signature de webhook invalide")
 
     try:
