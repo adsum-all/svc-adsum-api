@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from . import audit, db
 from .auth import current_user
+from .groupes_roles import _assert_peut_gerer
 from .permissions_rbac import require_permission, require_permission_ecriture
 from .schemas import UserMe
 
@@ -375,9 +376,25 @@ def definir_groupe_application(
             )
             if not cur.fetchone():
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="accordez d'abord la visibilite de l'application, puis les droits")
-            cur.execute("SELECT id FROM groupe_acces WHERE id = %s AND actif = true", (groupe_id,))
-            if not cur.fetchone():
+            cur.execute(
+                "SELECT id, mode, role_accorde FROM groupe_acces WHERE id = %s AND actif = true",
+                (groupe_id,),
+            )
+            groupe = cur.fetchone()
+            if not groupe:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="groupe inconnu")
+            # Same least-privilege guard as the direct route. Without it this tab was
+            # a way round it: an administrator could hand themselves the group that
+            # grants super_admin, and since a tagged membership no longer raises the
+            # account role, they would exercise that set without even showing up as
+            # platform staff. Granting a group is granting a group, whichever screen
+            # it is done from.
+            _assert_peut_gerer(user, str(groupe.get("role_accorde") or "membre"), membre_id)
+            if str(groupe.get("mode")) == "permissions":
+                cur.execute("SELECT permission FROM groupe_permission WHERE groupe_id = %s", (groupe_id,))
+                from .groupes import _assert_peut_accorder_permissions
+
+                _assert_peut_accorder_permissions([str(p["permission"]) for p in cur.fetchall()], user)
             cur.execute("SELECT 1 FROM membre_groupe WHERE membre_id = %s AND groupe_id = %s AND application_code = %s", (membre_id, groupe_id, code))
             if not cur.fetchone():
                 cur.execute(

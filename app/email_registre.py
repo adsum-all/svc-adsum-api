@@ -64,12 +64,24 @@ def enregistrer(
     cree_par: str | None = None,
     role: str | None = None,
 ) -> str | None:
-    """Write down the intent to send, before it leaves. Returns the outbox id."""
+    """Write down the intent to send, before it leaves. Returns the outbox id.
+
+    A repeat of the same intent reopens the existing row instead of failing. The key
+    is stable per recipient, template and reference, and a unique index enforces it,
+    so a deliberate resend of a stuck invitation used to violate that index, be
+    swallowed here, and leave the ledger with no trace of the very send an
+    administrator had just ordered. The row now carries the whole story: how many
+    attempts, and how the last one ended.
+    """
     try:
         row = db.execute(
             "INSERT INTO email_outbox (membre_id, destinataire, template_code, langue, sujet, "
             "contexte, priorite, statut, cle_idempotence, cree_par) "
-            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, 'en_cours', %s, %s) RETURNING id",
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, 'en_cours', %s, %s) "
+            "ON CONFLICT (cle_idempotence) DO UPDATE SET "
+            "  statut = 'en_cours', sujet = EXCLUDED.sujet, contexte = EXCLUDED.contexte, "
+            "  erreur = NULL, echoue_le = NULL, cree_le = now() "
+            "RETURNING id",
             (membre_id, destinataire, template_code, langue, sujet,
              json.dumps(contexte or {}), priorite,
              cle_idempotence(destinataire, template_code, reference), cree_par),

@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from . import audit, db
+from .config import settings
 from .permissions_rbac import require_permission, require_permission_ecriture
 from .schemas import UserMe
 
@@ -199,6 +200,30 @@ class VersionIn(BaseModel):
     publier: bool = False
 
 
+def _valider_piece(payload: VersionIn, document_id: str) -> tuple[str | None, str | None]:
+    """Confine an attached file to this document's own folder in the documents bucket.
+
+    Both fields used to be free text, written down as given and later handed to the
+    signing helper. Whoever could write a version could therefore point one at any
+    object in any bucket, publish it, and read back a signed link to it: the members'
+    identity pieces live in those buckets. The path is rebuilt here from the document
+    identifier and a sanitised file name, so a version can only ever name a file that
+    belongs to it.
+    """
+    if not payload.chemin and not payload.nom_fichier:
+        return None, None
+    if not payload.nom_fichier:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="une pièce jointe doit porter un nom de fichier")
+    # Keep the leaf only, and only characters that cannot walk out of the folder.
+    brut = payload.nom_fichier.replace("\\", "/").rsplit("/", 1)[-1]
+    net = "".join(c for c in brut if c.isalnum() or c in "-_. ").strip()
+    if not net or net.startswith("."):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="nom de fichier invalide")
+    return settings.storage_bucket_documents, f"bibliotheque/{document_id}/{net}"
+
+
 @router.post("/{document_id}/versions", status_code=status.HTTP_201_CREATED)
 def nouvelle_version(
     document_id: str,
@@ -214,6 +239,7 @@ def nouvelle_version(
     if not payload.contenu and not payload.chemin:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="une version porte un texte, un fichier, ou les deux")
+    bucket, chemin = _valider_piece(payload, document_id)
     with db.connection(role=user.role) as conn, conn.cursor() as cur:
         cur.execute("SELECT id, cle, statut FROM document_institutionnel WHERE id = %s FOR UPDATE", (document_id,))
         doc = cur.fetchone()
@@ -229,9 +255,9 @@ def nouvelle_version(
             "bucket, chemin, nom_fichier, mime, taille, empreinte, notes, publie_le, publie_par) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
             "CASE WHEN %s THEN now() ELSE NULL END, CASE WHEN %s THEN %s::uuid ELSE NULL END) RETURNING id",
-            (document_id, version, payload.contenu, payload.contenu_en, payload.bucket, payload.chemin,
+            (document_id, version, payload.contenu, payload.contenu_en, bucket, chemin,
              payload.nom_fichier, payload.mime, payload.taille,
-             _empreinte(payload.contenu, payload.contenu_en, payload.chemin), payload.notes,
+             _empreinte(payload.contenu, payload.contenu_en, chemin), payload.notes,
              payload.publier, payload.publier, user.id),
         )
         vid = str((cur.fetchone() or {}).get("id"))

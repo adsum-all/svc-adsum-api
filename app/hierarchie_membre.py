@@ -362,7 +362,7 @@ def calculer(membre_id: str, role: str | None) -> dict[str, Any]:
     for eq in db.fetch_all(
         "SELECT e.nom, mes.role FROM membre_equipe_speciale mes "
         "JOIN equipe_speciale e ON e.id = mes.equipe_id "
-        "WHERE mes.membre_id = %s AND mes.actif = true AND e.active = true ORDER BY e.ordre, e.nom",
+        "WHERE mes.membre_id = %s AND mes.actif = true AND mes.fin IS NULL AND e.active = true ORDER BY e.ordre, e.nom",
         (membre_id,), role=role,
     ):
         role_eq = "Responsable" if eq.get("role") == "responsable" else "Membre"

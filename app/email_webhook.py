@@ -46,7 +46,7 @@ _ALIAS = {
 
 
 def _secret_attendu() -> str:
-    """Shared secret the provider must present. Empty means the check is off."""
+    """Shared secret the provider must present. Empty means nothing is accepted."""
     return (channels.integration_value("email_webhook_secret") or "").strip()
 
 
@@ -65,12 +65,22 @@ async def recevoir_evenement_email(
     The shared secret is accepted from a header or from the query string, because the
     provider's webhook configuration offers no custom headers. A URL-borne secret is
     weaker (it can land in an access log), so it is a high-entropy value used for this
-    one purpose and rotatable from the integrations screen. Without it the endpoint
-    would be open to anyone willing to post fabricated delivery events.
+    one purpose and rotatable from the integrations screen.
+
+    An unconfigured secret refuses everything. Treating "no secret" as "no check" was
+    the same as publishing the endpoint: anybody could post fabricated delivery events,
+    mark real deliveries as bounced, and read back from the response whether a given
+    address exists on the platform. A callback nobody has configured has no legitimate
+    caller, so refusing costs nothing and closes that.
     """
     secret = _secret_attendu()
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="retour de livraison non configuré",
+        )
     presente = x_adsum_webhook or cle or ""
-    if secret and not hmac.compare_digest(secret, presente):
+    if not hmac.compare_digest(secret, presente):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="signature de webhook invalide")
 
     try:

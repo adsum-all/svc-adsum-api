@@ -221,6 +221,14 @@ def reparer_en_masse(
         except HTTPException as exc:
             resultats.append({"membre_id": str(r["id"]), "email": r.get("email"),
                               "envoye": False, "erreur": exc.detail})
+        except Exception as exc:  # noqa: BLE001 - one bad recipient must not sink the batch
+            # Only HTTPException was caught before, so a driver error on the fiftieth
+            # recipient aborted the run: the forty-nine already sent were never
+            # reported, and the caller could not tell which of the two hundred had
+            # gone out. The batch continues and names what failed.
+            resultats.append({"membre_id": str(r["id"]), "email": r.get("email"),
+                              "envoye": False,
+                              "erreur": f"erreur inattendue : {type(exc).__name__}"})
     envoyes = sum(1 for x in resultats if x.get("envoye"))
     audit.log(user.id, user.role, "reparation_inscriptions_masse", "membre", None,
               {"demandes": len(membre_ids), "traites": len(resultats), "envoyes": envoyes,
