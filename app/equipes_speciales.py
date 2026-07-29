@@ -62,7 +62,7 @@ def _equipe_dict(r: dict[str, object]) -> dict[str, object]:
 
 _SELECT = (
     "SELECT e.id, e.code, e.nom, e.description, e.officielle, e.active, e.ordre, "
-    "(SELECT count(*) FROM membre_equipe_speciale m WHERE m.equipe_id = e.id AND m.actif = true) AS effectif "
+    "(SELECT count(*) FROM membre_equipe_speciale m WHERE m.equipe_id = e.id AND m.actif = true AND m.fin IS NULL) AS effectif "
     "FROM equipe_speciale e "
 )
 
@@ -132,7 +132,7 @@ def delete_equipe(item_id: str, user: Annotated[UserMe, Depends(require_permissi
     exists = db.fetch_one("SELECT code FROM equipe_speciale WHERE id = %s", (item_id,), role=user.role)
     if not exists:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="équipe introuvable")
-    count = db.fetch_one("SELECT count(*) AS n FROM membre_equipe_speciale WHERE equipe_id = %s AND actif = true", (item_id,), role=user.role)
+    count = db.fetch_one("SELECT count(*) AS n FROM membre_equipe_speciale WHERE equipe_id = %s AND actif = true AND fin IS NULL", (item_id,), role=user.role)
     if count and int(count["n"]) > 0:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="cette équipe a encore des membres : retirez-les ou désactivez l'équipe")
     db.execute("DELETE FROM equipe_speciale WHERE id = %s", (item_id,), role=user.role)
@@ -146,7 +146,7 @@ def list_membres(item_id: str, user: Annotated[UserMe, Depends(require_permissio
         "SELECT mes.id, mes.membre_id, mes.role, m.matricule, "
         "TRIM(COALESCE(m.prenoms, '') || ' ' || COALESCE(m.nom, '')) AS nom "
         "FROM membre_equipe_speciale mes JOIN membre m ON m.id = mes.membre_id "
-        "WHERE mes.equipe_id = %s AND mes.actif = true ORDER BY m.nom ASC",
+        "WHERE mes.equipe_id = %s AND mes.actif = true AND mes.fin IS NULL ORDER BY m.nom ASC",
         (item_id,),
         role=user.role,
     )
@@ -163,10 +163,18 @@ def add_membre(item_id: str, payload: MembreEquipeIn, user: Annotated[UserMe, De
     if not db.fetch_one("SELECT 1 FROM membre WHERE id = %s", (payload.membre_id,), role=user.role):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="membre introuvable")
     # Idempotent: re-adding an existing membership reactivates it and updates the role.
+    # A closed one opens a NEW period rather than pretending the old one never ended,
+    # and an already-open one keeps its start date: only the role changes.
     db.execute(
-        "INSERT INTO membre_equipe_speciale (equipe_id, membre_id, role, actif) VALUES (%s, %s, %s, true) "
-        "ON CONFLICT (equipe_id, membre_id) DO UPDATE SET actif = true, role = EXCLUDED.role",
-        (item_id, payload.membre_id, payload.role),
+        "INSERT INTO membre_equipe_speciale (equipe_id, membre_id, role, actif, debut, attribue_par) "
+        "VALUES (%s, %s, %s, true, now(), %s) "
+        "ON CONFLICT (equipe_id, membre_id) DO UPDATE SET "
+        "  actif = true, role = EXCLUDED.role, "
+        "  debut = CASE WHEN membre_equipe_speciale.actif THEN membre_equipe_speciale.debut ELSE now() END, "
+        "  fin = NULL, "
+        "  attribue_par = CASE WHEN membre_equipe_speciale.actif "
+        "                      THEN membre_equipe_speciale.attribue_par ELSE EXCLUDED.attribue_par END",
+        (item_id, payload.membre_id, payload.role, user.id),
         role=user.role,
     )
     audit.log(user.id, user.role, "ajout_membre_equipe_speciale", "equipe_speciale", item_id, {"membre_id": payload.membre_id, "role": payload.role})
@@ -175,8 +183,16 @@ def add_membre(item_id: str, payload: MembreEquipeIn, user: Annotated[UserMe, De
 
 @router.delete("/{item_id}/membres/{membre_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_membre(item_id: str, membre_id: str, user: Annotated[UserMe, Depends(require_permission(_PERM))]) -> None:
+    """End somebody's membership of a special team, keeping the period it covered.
+
+    The row used to be deleted outright, so who sat on a body last year was
+    unanswerable: for a governance organ, that is the one question worth recording.
+    The membership is closed instead, which is what the debut/fin columns are for.
+    """
     removed = db.execute(
-        "DELETE FROM membre_equipe_speciale WHERE equipe_id = %s AND membre_id = %s RETURNING id",
+        "UPDATE membre_equipe_speciale SET actif = false, fin = now() "
+        "WHERE equipe_id = %s AND membre_id = %s AND actif = true AND fin IS NULL "
+        "RETURNING id",
         (item_id, membre_id),
         role=user.role,
     )

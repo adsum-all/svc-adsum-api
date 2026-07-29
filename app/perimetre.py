@@ -90,9 +90,15 @@ def resolve_scope(user: UserMe) -> Scope:
     # admin can delegate a coordination / intendance / commission / tribu to a
     # helper through a scoped group, without giving them any global role. This is
     # unioned with the function-derived scope.
+    # mg.actif is filtered here for the same reason it is filtered when resolving
+    # permissions and the account role: removing somebody from a group is a soft
+    # delete, so without it a revoked delegate kept reading the whole coordination
+    # and everything under it, for ever, and no act in the back office could take
+    # that back short of deactivating the group for everybody.
     scoped = db.fetch_all(
         "SELECT mg.portee_type, mg.portee_id FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = %s AND g.actif = true AND mg.portee_type <> 'global' AND mg.portee_id IS NOT NULL",
+        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true "
+        "AND mg.portee_type <> 'global' AND mg.portee_id IS NOT NULL",
         (user.membre_id,),
         role=user.role,
     )
