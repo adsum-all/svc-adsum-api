@@ -142,6 +142,13 @@ def adresse_rappel(
                 "puis revenez copier l'adresse. Sans clé, l'adresse serait ouverte à tous."
             ),
         }
+    # Reading this hands over the shared secret in clear, so it leaves a trace: a
+    # secret that can be read without anybody knowing is a secret nobody can decide
+    # to rotate, because nothing says it ever left.
+    from . import audit
+
+    audit.log(user.id, user.role, "lecture_adresse_rappel_email", "integration_config",
+              "email_webhook_secret", {})
     return {
         "configuree": True,
         "adresse": f"{base}/api/v1/webhooks/email?cle={secret}",
