@@ -32,20 +32,58 @@ def permissions_effectives(user: UserMe) -> frozenset[str]:
     if not user.membre_id:
         return frozenset(perms)
     rows = db.fetch_all(
-        "SELECT g.mode, g.role_accorde, gp.permission "
+        "SELECT g.mode, g.role_accorde, gp.permission, mg.application_code "
         "FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
         "LEFT JOIN groupe_permission gp ON gp.groupe_id = g.id AND g.mode = 'permissions' "
         "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true AND mg.portee_type = 'global'",
         (user.membre_id,),
         role=user.role,
     )
+    # A membership tagged with an application contributes only what that application
+    # is allowed to exercise. Without this the tag bounded nothing: a right handed out
+    # inside the collaboration workspace applied to the back office too, which is how
+    # an Administration grant made from an application tab became platform-wide.
+    etiquetees = {str(r["application_code"]) for r in rows if r.get("application_code")}
+    autorisees_par_app = _permissions_par_application(etiquetees, user.role) if etiquetees else {}
+
     for r in rows:
+        app = str(r["application_code"]) if r.get("application_code") else None
+        permises = autorisees_par_app.get(app) if app else None
         if r["mode"] == "permissions":
-            if r.get("permission"):
-                perms.add(str(r["permission"]))
+            cle = r.get("permission")
+            if cle and (permises is None or str(cle) in permises):
+                perms.add(str(cle))
         else:
-            perms |= set(permissions_du_role(str(r["role_accorde"])))
+            accordees = set(permissions_du_role(str(r["role_accorde"])))
+            perms |= accordees if permises is None else (accordees & permises)
     return frozenset(perms)
+
+
+def _permissions_par_application(codes: set[str], role: str) -> dict[str, set[str]]:
+    """What each named application is allowed to exercise, from the referential.
+
+    Fails closed on purpose: an application absent from the referential grants
+    nothing, rather than everything. A tag naming an application nobody has described
+    yet is a configuration gap, and reading it as "no restriction" would reinstate
+    exactly the hole this closes.
+
+    The same answer covers the referential being unreachable, which is what happens
+    if this code ships ahead of its migration. Letting the error travel would turn
+    every permission check into a 500 for anybody holding a tagged membership, and a
+    platform that answers 500 is worse than one that answers 403.
+    """
+    par_app: dict[str, set[str]] = {c: set() for c in codes}
+    try:
+        lignes = db.fetch_all(
+            "SELECT application_code, permission FROM permission_application "
+            "WHERE application_code = ANY(%s)",
+            (list(codes),), role=role,
+        )
+    except Exception:  # noqa: BLE001 - referential not deployed yet: grant nothing
+        return par_app
+    for ligne in lignes:
+        par_app.setdefault(str(ligne["application_code"]), set()).add(str(ligne["permission"]))
+    return par_app
 
 
 def require_permission(permission: str):

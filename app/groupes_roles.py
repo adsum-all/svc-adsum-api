@@ -87,10 +87,19 @@ def _effective_role(membre_id: str, actor_role: str) -> str:
     pilotage access through :func:`app.perimetre.resolve_scope`, never a global
     back-office role, so the account role stays 'membre' and no data leaks outside
     the perimeter.
+
+    A membership carrying an application tag is excluded for the same reason. The tag
+    exists to bound a right to one application, and a right handed out inside the
+    collaboration workspace must not turn the account into a back-office
+    administrator. It did: the tag was written but never read, so granting
+    Administration from an application tab raised the platform role. Migration 0179
+    turned the accesses that already depended on that into explicit untagged
+    memberships, so closing this takes nobody's access away.
     """
     rows = db.fetch_all(
         "SELECT g.role_accorde FROM membre_groupe mg JOIN groupe_acces g ON g.id = mg.groupe_id "
-        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true AND mg.portee_type = 'global'",
+        "WHERE mg.membre_id = %s AND mg.actif = true AND g.actif = true "
+        "AND mg.portee_type = 'global' AND mg.application_code IS NULL",
         (membre_id,),
         role=actor_role,
     )

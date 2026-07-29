@@ -317,6 +317,8 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/admin/inscriptions/a-reparer': 'inscriptions.gerer',
     'GET /api/v1/admin/email/sante': 'integrations.superviser',
     'GET /api/v1/admin/email/adresse-rappel': 'integrations.administrer',
+    'GET /api/v1/admin/permissions-applications': 'acces.administrer',
+    'PUT /api/v1/admin/permissions-applications': 'acces.administrer',
     'GET /api/v1/membres/me/connexions': 'membres.self',
     'POST /api/v1/membres/me/connexions/fermer-autres': 'membres.self',
     'GET /api/v1/membres/me/telegram': 'membres.self',
