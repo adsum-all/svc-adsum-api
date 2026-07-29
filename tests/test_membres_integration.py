@@ -14,6 +14,8 @@ import pathlib
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from tests.auth_reelle import connexion
+
 ACCOUNTS = pathlib.Path(__file__).resolve().parents[4] / ".secret" / "adsum-accounts.json"
 
 pytestmark = pytest.mark.skipif(
@@ -32,9 +34,8 @@ def _client():
 
 def _member_headers(client) -> dict[str, str]:
     login = json.loads(ACCOUNTS.read_text(encoding="utf-8"))["membre_login"]
-    ok = client.post("/api/v1/auth/login", json={"email": login["email"], "password": login["password"]})
-    assert ok.status_code == 200, ok.text
-    return {"Authorization": f"Bearer {ok.json()['access_token']}"}
+    token = connexion(client, login["email"], login["password"])
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_member_profile_is_returned() -> None:

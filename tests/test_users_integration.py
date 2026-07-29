@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from tests.auth_reelle import entetes
+
 ACCOUNTS = pathlib.Path(__file__).resolve().parents[4] / ".secret" / "adsum-accounts.json"
 
 pytestmark = pytest.mark.skipif(
@@ -30,9 +32,9 @@ def _client():
 
 
 def _headers(client, email: str, password: str) -> dict[str, str]:
-    ok = client.post("/api/v1/auth/login", json={"email": email, "password": password})
-    assert ok.status_code == 200, ok.text
-    return {"Authorization": f"Bearer {ok.json()['access_token']}"}
+    # Two-factor is mandatory for staff, so the plain login answers with a code
+    # request and an empty token. The shared helper completes that step.
+    return entetes(client, email, password)
 
 
 def _delete_user(user_id: str) -> None:
