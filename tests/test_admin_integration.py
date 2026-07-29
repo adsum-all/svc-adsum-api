@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from tests.auth_reelle import connexion
+
 ACCOUNTS = pathlib.Path(__file__).resolve().parents[4] / ".secret" / "adsum-accounts.json"
 
 pytestmark = pytest.mark.skipif(
@@ -31,8 +33,7 @@ def _client():
 
 def _staff_headers(client, role: str) -> dict[str, str]:
     login = json.loads(ACCOUNTS.read_text(encoding="utf-8"))["staff"][role]
-    ok = client.post("/api/v1/auth/login", json={"email": login["email"], "password": login["password"]})
-    assert ok.status_code == 200, ok.text
+    token = connexion(client, login["email"], login["password"])
     return {"Authorization": f"Bearer {ok.json()['access_token']}"}
 
 
