@@ -130,15 +130,29 @@ def decider(
             ("confirmee" if payload.confirmee else "refusee", user.id, payload.commentaire, declaration_id),
         )
         if payload.confirmee and equipe:
-            # Reopen a closed membership rather than inserting a twin: the row may
+            # Reopen a CLOSED membership rather than inserting a twin: the row may
             # already exist from a previous period, and a plain insert would collide.
+            # An already-open one is left exactly as it is: overwriting its start
+            # date, who granted it and why would erase the record of a membership
+            # that has been running, and replace it with today's decision, which is
+            # the opposite of what the traceability columns exist for.
             cur.execute(
                 "UPDATE membre_equipe_speciale SET actif = true, fin = NULL, debut = now(), "
                 "attribue_par = %s, motif = %s "
-                "WHERE membre_id = %s AND equipe_id = %s RETURNING id",
+                "WHERE membre_id = %s AND equipe_id = %s "
+                "  AND (actif = false OR fin IS NOT NULL) RETURNING id",
                 (user.id, payload.commentaire, membre_id, str(equipe["id"])),
             )
             if not cur.fetchone():
+                cur.execute(
+                    "SELECT id FROM membre_equipe_speciale "
+                    "WHERE membre_id = %s AND equipe_id = %s AND actif = true AND fin IS NULL",
+                    (membre_id, str(equipe["id"])),
+                )
+                deja_ouverte = cur.fetchone() is not None
+            else:
+                deja_ouverte = True
+            if not deja_ouverte:
                 cur.execute(
                     "INSERT INTO membre_equipe_speciale (membre_id, equipe_id, role, actif, attribue_par, motif) "
                     "VALUES (%s, %s, 'membre', true, %s, %s)",
