@@ -35,7 +35,7 @@ def _client():
 def _member_headers(client) -> dict[str, str]:
     login = json.loads(ACCOUNTS.read_text(encoding="utf-8"))["membre_login"]
     token = connexion(client, login["email"], login["password"])
-    return {"Authorization": f"Bearer {ok.json()['access_token']}"}
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_member_profile_is_returned() -> None:

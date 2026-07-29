@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -109,36 +110,46 @@ def _record_session(user_id: str, role: str, request: Request) -> str:
     password reset. The non-critical tracking side effects (last-login stamp, unusual
     device alert) are best-effort and never block issuance once the session row exists,
     so a hiccup on THEM can no longer downgrade the token to sid-less.
+
+    The write is attempted twice. On a two-factor login the one-time code has already
+    been burned by the time this runs, so a single transient failure on the connection
+    pool costs the member their code and sends them back to ask for another one. One
+    retry turns a hiccup into a delay of a few milliseconds instead.
     """
-    try:
-        ip = _client_ip(request)
-        ua = (request.headers.get("user-agent") or "")[:300]
-        pays, ville, region = _geo(request)
-        # Detect a login from a device we have never seen for this account, but
-        # only once the account already has a history (never on the first login).
-        seen = db.fetch_one(
-            "SELECT count(*) AS total, count(*) FILTER (WHERE appareil = %s) AS meme "
-            "FROM session WHERE utilisateur_id = %s",
-            (ua, user_id),
-            role=role,
-        ) or {"total": 0, "meme": 0}
-        nouvel_appareil = int(seen.get("total") or 0) > 0 and int(seen.get("meme") or 0) == 0
-        created = db.execute(
-            "INSERT INTO session (utilisateur_id, ip, appareil, pays, ville, region, cree_le) "
-            "VALUES (%s, %s::inet, %s, %s, %s, %s, now()) RETURNING id",
-            (user_id, ip, ua, pays, ville, region),
-            role=role,
-        )
-    except Exception as exc:  # noqa: BLE001 - convert a session-write failure into a fail-closed refusal
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="session non etablie, reessayez dans un instant",
-        ) from exc
+    ip = _client_ip(request)
+    ua = (request.headers.get("user-agent") or "")[:300]
+    created = None
+    nouvel_appareil = False
+    derniere: Exception | None = None
+    for tentative in range(2):
+        try:
+            pays, ville, region = _geo(request)
+            # Detect a login from a device we have never seen for this account, but
+            # only once the account already has a history (never on the first login).
+            seen = db.fetch_one(
+                "SELECT count(*) AS total, count(*) FILTER (WHERE appareil = %s) AS meme "
+                "FROM session WHERE utilisateur_id = %s",
+                (ua, user_id),
+                role=role,
+            ) or {"total": 0, "meme": 0}
+            nouvel_appareil = int(seen.get("total") or 0) > 0 and int(seen.get("meme") or 0) == 0
+            created = db.execute(
+                "INSERT INTO session (utilisateur_id, ip, appareil, pays, ville, region, cree_le) "
+                "VALUES (%s, %s::inet, %s, %s, %s, %s, now()) RETURNING id",
+                (user_id, ip, ua, pays, ville, region),
+                role=role,
+            )
+            if created:
+                break
+        except Exception as exc:  # noqa: BLE001 - retried once, then refused fail-closed
+            derniere = exc
+        if tentative == 0:
+            time.sleep(0.15)
     if not created:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="session non etablie, reessayez dans un instant",
-        )
+            detail="session non établie, réessayez dans un instant",
+        ) from derniere
     sid = str(created["id"])
     try:
         db.execute("UPDATE utilisateur SET dernier_login = now() WHERE id = %s", (user_id,), role=role)

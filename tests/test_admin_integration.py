@@ -34,7 +34,7 @@ def _client():
 def _staff_headers(client, role: str) -> dict[str, str]:
     login = json.loads(ACCOUNTS.read_text(encoding="utf-8"))["staff"][role]
     token = connexion(client, login["email"], login["password"])
-    return {"Authorization": f"Bearer {ok.json()['access_token']}"}
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _delete_membre(membre_id: str) -> None:

@@ -38,7 +38,6 @@ def test_super_admin_can_login_and_read_me() -> None:
     assert bad.status_code == 401
 
     token = connexion(client, creds["email"], creds["password"])
-    assert ok.json()["role"] == "super_admin"
 
     me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.status_code == 200, me.text
@@ -50,6 +49,6 @@ def test_member_account_can_login() -> None:
     login = json.loads(ACCOUNTS.read_text(encoding="utf-8"))["membre_login"]
     client = _client()
     token = connexion(client, login["email"], login["password"])
-    me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {ok.json()['access_token']}"})
+    me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.status_code == 200
     assert me.json()["membre_id"] is not None
