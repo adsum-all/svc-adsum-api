@@ -45,6 +45,7 @@ from .emargement import router as emargement_router
 from .engagement import public_router as engagement_public_router
 from .engagement import router as engagement_router
 from .engagement_import import router as engagement_import_router
+from .equipe_dirigeante import router as equipe_dirigeante_router
 from .equipes_speciales import router as equipes_speciales_router
 from .evenements_series import router as evenements_series_router
 from .fichiers import admin_router as fichiers_admin_router
@@ -90,6 +91,7 @@ from .rgpd import router as rgpd_router
 from .sessions_membre import router as sessions_membre_router
 from .sondage import cron_router as sondage_cron_router
 from .sondage import router as sondage_router
+from .supervision_tribus import router as supervision_tribus_router
 from .tags import router as tags_router
 from .technical_admin import router as technical_admin_router
 from .telegram_liaison import router as telegram_liaison_router
@@ -130,6 +132,8 @@ app.include_router(evenements_series_router)
 app.include_router(controle_router)
 app.include_router(organisation_router)
 app.include_router(equipes_speciales_router)
+app.include_router(equipe_dirigeante_router)
+app.include_router(supervision_tribus_router)
 app.include_router(organigramme_router)
 app.include_router(organigramme_reglages_router)
 app.include_router(interim_router)
