@@ -210,6 +210,7 @@ class EvenementOut(BaseModel):
     # Per-activity response-window override (hours after end); None = global default.
     # Surfaced so the edit form preserves it instead of silently resetting it.
     fenetre_reponse_heures: int | None = None
+    fenetre_reponse_minutes: int | None = None
     # Editorial content and human contributors, edited from the back office or the
     # collaboration app and shown in the activity detail.
     description: str | None = None
@@ -756,6 +757,10 @@ class CreateEvenement(BaseModel):
     # Response-window override in hours after the session end; when empty the
     # global admin parameter applies (questionnaire_fenetre_heures, default 6h).
     fenetre_reponse_heures: int | None = Field(default=None, ge=1, le=336)
+    # The same window in MINUTES, which is what the interface now offers: an activity
+    # running forty minutes could not be expressed while hours were the only unit.
+    # Zero is allowed and means the window closes exactly at the activity's end.
+    fenetre_reponse_minutes: int | None = Field(default=None, ge=0, le=20160)
     # The activity's reference IANA time zone (the zone the start/end were entered
     # in). Default is the base's home GMT zone; members still see their own time.
     fuseau_horaire: str = Field(default="Africa/Abidjan", max_length=64)
