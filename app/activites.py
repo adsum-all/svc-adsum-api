@@ -197,14 +197,14 @@ def creer_evenement_complet(payload: Any, cree_par: str, role: str | None) -> st
     created = db.execute(
         "INSERT INTO evenement (titre, type, type_evenement_id, volet, debut, fin, lieu, mode, lien_session, liens, "
         "type_diffusion, visibilite, cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails, "
-        "fenetre_reponse_heures, fuseau_horaire, description, intervenant_principal, intervenants, cree_par) "
+        "fenetre_reponse_heures, fenetre_reponse_minutes, fuseau_horaire, description, intervenant_principal, intervenants, cree_par) "  # noqa: E501
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::text[], %s, %s, %s, %s, "  # noqa: E501
         "%s::text[], %s) RETURNING id",
         (
             payload.titre, payload.type, type_evenement_id, payload.volet, payload.debut, payload.fin, payload.lieu,
             payload.mode, primary, liens_json, payload.type_diffusion, payload.visibilite,
             payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-            payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, cree_par,
+            payload.fenetre_reponse_heures, payload.fenetre_reponse_minutes, payload.fuseau_horaire, description, principal, intervenants, cree_par,  # noqa: E501
         ),
         role=role,
     )
@@ -222,13 +222,13 @@ def creer_evenement_complet(payload: Any, cree_par: str, role: str | None) -> st
         for occ in payload.occurrences:
             db.execute(
                 "INSERT INTO evenement (titre, type, type_evenement_id, volet, debut, fin, lieu, mode, lien_session, liens, "  # noqa: E501
-                "type_diffusion, visibilite, cible_type, cible_id, fenetre_reponse_heures, fuseau_horaire, "
+                "type_diffusion, visibilite, cible_type, cible_id, fenetre_reponse_heures, fenetre_reponse_minutes, fuseau_horaire, "  # noqa: E501
                 "serie_id, cree_par) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     payload.titre, payload.type, type_evenement_id, payload.volet, occ.debut, occ.fin, payload.lieu,
                     occ.mode or payload.mode, primary, liens_json, payload.type_diffusion, payload.visibilite,
-                    payload.cible_type, cible_id, payload.fenetre_reponse_heures, payload.fuseau_horaire,
+                    payload.cible_type, cible_id, payload.fenetre_reponse_heures, payload.fenetre_reponse_minutes, payload.fuseau_horaire,  # noqa: E501
                     master_id, cree_par,
                 ),
                 role=role,
@@ -256,13 +256,13 @@ def mettre_a_jour_evenement_complet(
         "UPDATE evenement SET titre=%s, type=%s, type_evenement_id=%s, volet=%s, debut=%s, fin=%s, lieu=%s, mode=%s, "
         "lien_session=%s, liens=%s::jsonb, type_diffusion=%s, visibilite=%s, cible_type=%s, "
         "cible_id=%s, cible_genre=%s, cible_age_min=%s, cible_age_max=%s, cible_emails=%s::text[], "
-        "fenetre_reponse_heures=%s, fuseau_horaire=%s, description=%s, intervenant_principal=%s, "
+        "fenetre_reponse_heures=%s, fenetre_reponse_minutes=%s, fuseau_horaire=%s, description=%s, intervenant_principal=%s, "  # noqa: E501
         "intervenants=%s::text[] WHERE id=%s",
         (
             payload.titre, payload.type, type_evenement_id, payload.volet, payload.debut, payload.fin, payload.lieu,
             payload.mode, primary, liens_json, payload.type_diffusion, payload.visibilite,
             payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-            payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, evenement_id,
+            payload.fenetre_reponse_heures, payload.fenetre_reponse_minutes, payload.fuseau_horaire, description, principal, intervenants, evenement_id,  # noqa: E501
         ),
         role=role,
     )
@@ -272,13 +272,13 @@ def mettre_a_jour_evenement_complet(
                 "UPDATE evenement SET titre=%s, type=%s, type_evenement_id=%s, volet=%s, lieu=%s, mode=%s, "
                 "lien_session=%s, liens=%s::jsonb, type_diffusion=%s, visibilite=%s, "
                 "cible_type=%s, cible_id=%s, cible_genre=%s, cible_age_min=%s, cible_age_max=%s, "
-                "cible_emails=%s::text[], fenetre_reponse_heures=%s, fuseau_horaire=%s, description=%s, "
+                "cible_emails=%s::text[], fenetre_reponse_heures=%s, fenetre_reponse_minutes=%s, fuseau_horaire=%s, description=%s, "  # noqa: E501
                 "intervenant_principal=%s, intervenants=%s::text[] WHERE id=%s",
                 (
                     payload.titre, payload.type, type_evenement_id, payload.volet, payload.lieu, payload.mode,
                     primary, liens_json, payload.type_diffusion, payload.visibilite,
                     payload.cible_type, cible_id, cible_genre, cible_age_min, cible_age_max, cible_emails,
-                    payload.fenetre_reponse_heures, payload.fuseau_horaire, description, principal, intervenants, other,
+                    payload.fenetre_reponse_heures, payload.fenetre_reponse_minutes, payload.fuseau_horaire, description, principal, intervenants, other,  # noqa: E501
                 ),
                 role=role,
             )
