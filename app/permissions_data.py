@@ -338,6 +338,8 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/membres/me/bibliotheque': 'membres.self',
     'GET /api/v1/membres/me/bibliotheque/{version_id}/fichier': 'membres.self',
     'GET /api/v1/admin/consentements/tracabilite': 'consentements.consulter',
+    'GET /api/v1/admin/reglages/durees': 'parametres.consulter',
+    'PUT /api/v1/admin/reglages/durees/{cle}': 'parametres.gerer',
     'GET /api/v1/membres/me/connexions': 'membres.self',
     'POST /api/v1/membres/me/connexions/fermer-autres': 'membres.self',
     'GET /api/v1/membres/me/telegram': 'membres.self',

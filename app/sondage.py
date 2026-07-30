@@ -179,7 +179,10 @@ def dispatcher_sondages_dus(role: str | None) -> dict[str, object]:
           AND coalesce(e.annule, false) = false
           AND e.sondage_pointage_envoye_le IS NULL
           AND now() >= e.debut + make_interval(mins => %(off)s)
-          AND now() <= e.debut + make_interval(mins => %(off)s) + interval '2 hours'
+          AND now() <= e.debut + make_interval(mins => %(off)s)
+              + make_interval(mins => COALESCE(
+                  (SELECT (p2.valeur #>> '{}')::int FROM parametre p2
+                    WHERE p2.cle = 'pointage_duree_defaut_minutes'), 120))
         ORDER BY e.debut ASC
         """,
         {"off": offset},

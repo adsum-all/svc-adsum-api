@@ -139,7 +139,15 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
     membre_id, role = ctx
     # Lifecycle is computed from the server clock, never from a manual flag: a
     # future event can never look joinable, and a stored link stays hidden until
-    # the joinable window opens (15 min before the start, until the end + 6 h).
+    # the joinable window opens. How early it opens, and how long an activity with
+    # no stated end is treated as lasting, are settings in minutes: an organisation
+    # whose prayer runs forty minutes could not say so while these were literals.
+    from . import fenetres_pointage
+
+    _avant = fenetres_pointage.ouverture_avant(role)
+    _duree = fenetres_pointage.duree_defaut(role)
+    _debut_fenetre = fenetres_pointage.debut_fenetre_sql("e", _avant)
+    _fin = fenetres_pointage.fin_effective_sql("e", _duree)
     rows = db.fetch_all(
         """
         SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode,
@@ -159,14 +167,14 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                          FROM evenement_tag et JOIN tag t ON t.id = et.tag_id WHERE et.evenement_id = e.id), '[]'::jsonb) AS tags,
                EXISTS (SELECT 1 FROM participation p WHERE p.evenement_id = e.id AND p.membre_id = %s) AS inscrit,
                CASE
-                 WHEN now() < e.debut - interval '15 minutes' THEN 'a_venir'
+                 WHEN now() < """ + _debut_fenetre + """ THEN 'a_venir'
                  WHEN now() < e.debut THEN 'bientot'
-                 WHEN now() <= COALESCE(e.fin, e.debut + interval '2 hours') THEN 'en_cours'
+                 WHEN now() <= """ + _fin + """ THEN 'en_cours'
                  ELSE 'termine'
                END AS phase,
                (now() >= e.debut) AS formulaire_ouvert,
-               (now() >= e.debut - interval '15 minutes'
-                AND now() <= COALESCE(e.fin, e.debut + interval '2 hours')) AS in_window
+               (now() >= """ + _debut_fenetre + """
+                AND now() <= """ + _fin + """) AS in_window
         FROM evenement e
         JOIN membre m ON m.id = %s
         LEFT JOIN intendance mi ON mi.id = m.intendance_id
