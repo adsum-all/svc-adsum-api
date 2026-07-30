@@ -52,7 +52,15 @@ _SEUIL_EVAL = 3
 # activity end). Every read (display), write (submission guard) and reminder must
 # use this same formula.
 FENETRE_FIN_SQL = (
-    "coalesce(e.fin, e.debut + interval '2 hours') + make_interval(mins => coalesce("
+    # When the activity ends: its own end, else the configured default duration.
+    "coalesce(e.fin, e.debut + make_interval(mins => coalesce("
+    "  (SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'pointage_duree_defaut_minutes'), 120)))"
+    # Plus the response window: the activity's own value in MINUTES first, then the
+    # same value expressed in hours for activities set before minutes existed, then
+    # the global setting. Minutes come first because that is the finer statement and
+    # the one an organisation is now offered.
+    " + make_interval(mins => coalesce("
+    "e.fenetre_reponse_minutes, "
     "e.fenetre_reponse_heures * 60, "
     "(SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'questionnaire_fenetre_minutes'), "
     "120))"

@@ -82,7 +82,8 @@ def activites_passees(
     """Terminated activities visible to the member, with the official survey status."""
     membre_id, role = ctx
     where = (
-        "WHERE COALESCE(e.fin, e.debut + interval '2 hours') < now() "
+        "WHERE COALESCE(e.fin, e.debut + make_interval(mins => COALESCE("
+        "  (SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'pointage_duree_defaut_minutes'), 120))) < now() "
         "AND (e.annule = false OR e.annule IS NULL) AND "
         + visibilite.CIBLE_PREDICATE
     )
