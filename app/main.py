@@ -88,6 +88,7 @@ from .participation import router as participation_router
 from .permissions_applications_api import router as permissions_applications_router
 from .pilotage import router as pilotage_router
 from .reference import router as reference_router
+from .reglages_duree import router as reglages_duree_router
 from .retention_archivage import router as retention_archivage_router
 from .rgpd import router as rgpd_router
 from .sessions_membre import router as sessions_membre_router
@@ -136,6 +137,7 @@ app.include_router(organisation_router)
 app.include_router(equipes_speciales_router)
 app.include_router(equipe_dirigeante_router)
 app.include_router(supervision_tribus_router)
+app.include_router(reglages_duree_router)
 app.include_router(bibliotheque_router)
 app.include_router(bibliotheque_lecture_router)
 app.include_router(organigramme_router)

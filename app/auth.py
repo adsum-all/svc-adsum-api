@@ -523,13 +523,28 @@ def current_user(creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)
     # admin revocation take effect before the token's natural expiry.
     sid = claims.get("sid")
     if sid:
-        session = db.fetch_one(
-            "SELECT 1 FROM session WHERE id = %s AND revoque = false AND fin IS NULL",
-            (str(sid),),
-            role=claims["role"],
-        )
-        if not session:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session closed")
+        from . import session_inactivite
+
+        etat = session_inactivite.etat_session(str(sid), role=claims["role"])
+        if not etat:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="session closed",
+                headers={"X-Session-Fin": "revoquee",
+                         "Access-Control-Expose-Headers": "X-Session-Fin"},
+            )
+        if etat["inactive"]:
+            # Closed here rather than merely refused, so the same token cannot be
+            # presented again. The header names the reason: the interface can say
+            # "closed after a period without activity" and bring the person back to
+            # the sign-in screen, instead of showing a bare error on a page that no
+            # longer works, which is what people were reporting as a defect.
+            session_inactivite.fermer_pour_inactivite(str(sid), role=claims["role"])
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="session inactive",
+                headers={"X-Session-Fin": "inactivite",
+                         "Access-Control-Expose-Headers": "X-Session-Fin"},
+            )
+        session_inactivite.marquer_activite(str(sid), role=claims["role"])
     return UserMe(
         id=str(user["id"]),
         email=user["email"],
