@@ -75,7 +75,18 @@ def render_code_email(code: str, intro: str, validity: str = "quelques minutes")
     return _shell(inner, f"Votre code {marque().marque} : {code}")
 
 
-def render_temp_password_email(temp_password: str, validity: str = "72 heures", app_url: str = "https://adsum-web-membre.pages.dev") -> str:
+def render_temp_password_email(
+    temp_password: str,
+    validity: str = "72 heures",
+    app_url: str | None = None,
+) -> str:
+    # The button opens the member's own portal. Fixed to one deployment, every
+    # new member of every other organisation received a link to a portal where
+    # their account does not exist.
+    if app_url is None:
+        from .information_diffusion import portail_url
+
+        app_url = portail_url()
     ACC = marque().couleur
     inner = f"""\
 <tr><td style="padding:30px 28px 6px;">

@@ -12,11 +12,28 @@ from typing import Any
 
 from . import db, interim, organigramme_builder
 
-# Apex chain, function-based, ordered from the member upward (lowest authority first).
-# The Controleur General is ALWAYS above the Intendant General: the Intendant General
-# is therefore the closer (lower N) apex level, the Controleur General the next one up.
-# This matches the published back-office chart and niveau_hierarchique (IG=5 below CG=4).
-_APEX = ("intendant_general", "controleur_general", "berger_missions", "moderateur", "fondateur")
+# The apex is read from the catalogue, not written here: five function keys in the
+# code meant every other organisation saw five invented levels above its own
+# leadership, with no way to remove them. Ordered from the member upward, so the
+# closest level comes first, which is what niveau_hierarchique descending gives.
+_APEX_REPLI = ("intendant_general", "controleur_general", "berger_missions", "moderateur", "fondateur")
+
+
+def _apex(role: str | None = None) -> tuple[str, ...]:
+    """The organisation's top functions, closest to the member first."""
+    try:
+        lignes = db.fetch_all(
+            "SELECT cle FROM fonction_honorifique "
+            "WHERE est_sommet = true AND niveau_hierarchique IS NOT NULL "
+            "ORDER BY niveau_hierarchique DESC",
+            (), role=role,
+        )
+    except Exception:  # noqa: BLE001 - the chain must render even if the column is absent
+        return _APEX_REPLI
+    cles = tuple(str(r["cle"]) for r in lignes)
+    # An organisation that has declared no apex sees its own units and stops there,
+    # which is truthful. The fallback only covers a base that predates the column.
+    return cles if cles else ()
 # Display precedence between categories (lower wins), so the primary position is the
 # member's highest-authority active function.
 _CAT_RANG = {"fonction_speciale": 0, "titre": 1, "fonction": 2, "fonction_particuliere": 3}
@@ -165,7 +182,7 @@ def _construire_chaine(m: dict[str, Any], membre_id: str, role: str | None, genr
         etage = _etage_occupe(fcle, _hlabel(catalogue.get(fcle), fcle, genre), unite_row.get("nom"), unite_row, role, membre_id, actifs)
         if etage:
             etages.append(etage)
-    for fcle in _APEX:
+    for fcle in _apex(role):
         h = organigramme_builder._titulaire_fonction(fcle, role)
         nom = organigramme_builder._nom_membre(h)
         if h and str(h.get("id")) == str(membre_id):

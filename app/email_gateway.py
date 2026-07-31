@@ -275,21 +275,26 @@ PURPOSE_INTRO = {
     "password_reset": "Saisissez ce code pour réinitialiser votre mot de passe.",
     "engagement": "Saisissez ce code pour signer électroniquement vos engagements.",
 }
-PURPOSE_SUBJECTS = {
-    "login_2fa": "ADSUM, votre code de connexion",
-    "password_reset": "ADSUM, réinitialisation de mot de passe",
-    "engagement": "ADSUM, code de signature des engagements",
+# What each code is for, without the organisation's name: the name is added at
+# send time, because a constant evaluated at import would freeze whichever
+# organisation happened to be configured when the process started.
+PURPOSE_OBJETS = {
+    "login_2fa": "votre code de connexion",
+    "password_reset": "réinitialisation de mot de passe",
+    "engagement": "code de signature des engagements",
 }
 
 
 def send_code(email: str, purpose: str) -> tuple[bool, str]:
     """Generate and send the one-time code for a purpose. Returns (sent, provider)."""
     from .email_templates import render_code_email
+    from .marque import marque
 
+    nom = marque().marque
     code = generate_code(email, purpose)
-    subject = PURPOSE_SUBJECTS.get(purpose, "ADSUM, votre code")
-    intro = PURPOSE_INTRO.get(purpose, "Voici votre code de vérification ADSUM.")
-    text = f"Votre code ADSUM est : {code}\nIl est valable quelques minutes. Ne le partagez avec personne."
+    subject = f"{nom}, {PURPOSE_OBJETS.get(purpose, 'votre code')}"
+    intro = PURPOSE_INTRO.get(purpose, f"Voici votre code de vérification {nom}.")
+    text = f"Votre code {nom} est : {code}\nIl est valable quelques minutes. Ne le partagez avec personne."
     html = render_code_email(code, intro)
     sent, provider = send_email(email, subject, text, html)
     return sent, provider
@@ -307,5 +312,7 @@ def send_notification(
 
     html = render_notification_email(titre, corps, cta_label, cta_url)
     text = f"{titre}\n\n{corps}"
-    sent, _ = send_email(email, f"ADSUM, {titre}", text, html)
+    from .marque import marque
+
+    sent, _ = send_email(email, f"{marque().marque}, {titre}", text, html)
     return sent
