@@ -11,8 +11,23 @@ from typing import Any
 
 from . import db, interim
 
-# Apex functions that must be held by exactly one active member.
-_APEX_UNIQUE = ("fondateur", "moderateur", "berger_missions", "controleur_general", "intendant_general")
+# Apex functions that must be held by exactly one active member. Read from the
+# catalogue rather than written here: five keys in the code meant every organisation
+# was reported as missing five posts it had never heard of, which is a report that
+# teaches its reader to ignore it.
+_APEX_REPLI = ("fondateur", "moderateur", "berger_missions", "controleur_general", "intendant_general")
+
+
+def _cles_sommet(role: str | None) -> tuple[str, ...]:
+    try:
+        lignes = db.fetch_all(
+            "SELECT cle FROM fonction_honorifique WHERE est_sommet = true "
+            "ORDER BY niveau_hierarchique NULLS LAST",
+            (), role=role,
+        )
+    except Exception:  # noqa: BLE001 - the report must render even without the column
+        return _APEX_REPLI
+    return tuple(str(r["cle"]) for r in lignes)
 _BASE_DE_VICE = {"vice_coordinateur": "coordinateur", "vice_intendant": "intendant"}
 
 
@@ -43,7 +58,7 @@ def _unites_sans_responsable(role: str | None) -> list[dict[str, Any]]:
 
 def _apex(role: str | None) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
-    for cle in _APEX_UNIQUE:
+    for cle in _cles_sommet(role):
         rows = db.fetch_all(
             "SELECT m.prenoms, m.nom, m.nom_affiche FROM membre_fonction mf JOIN membre m ON m.id = mf.membre_id "
             "WHERE mf.actif = true AND mf.confirmee = true AND lower(mf.fonction_cle) = %s AND m.statut = 'actif'",

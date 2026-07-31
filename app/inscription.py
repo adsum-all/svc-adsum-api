@@ -60,7 +60,7 @@ def _send_temp_password(email: str, temp: str, membre_id: str | None = None, rol
 
     sujet = f"{marque().marque}, votre accès et mot de passe temporaire"
     text = (
-        f"Bonjour,\n\nVotre compte ADSUM a été créé. Mot de passe temporaire : {temp}\n"
+        f"Bonjour,\n\nVotre compte {marque().marque} a été créé. Mot de passe temporaire : {temp}\n"
         f"Il est valable {TEMP_VALID_HOURS} heures. Connectez-vous à l'espace membre, "
         f"changez votre mot de passe puis complétez votre inscription.\n\n"
         f"Passé ce délai, contactez l'administration pour un nouveau mot de passe."
@@ -97,16 +97,16 @@ def _temp_password_via_telegram(membre_id: str, role: str, temp: str) -> bool:
             return False
         prenom = (str(member.get("prenoms") or "").split(" ")[0]) or ""
         if member.get("langue") == "en":
-            titre = "Your ADSUM access"
+            titre = f"Your {marque().marque} access"
             corps = (
-                f"Hello {prenom}, your ADSUM account was created. Temporary password: {temp}. "
+                f"Hello {prenom}, your {marque().marque} account was created. Temporary password: {temp}. "
                 f"It is valid for {TEMP_VALID_HOURS} hours. Sign in to the member space, change your "
                 f"password, then complete your registration. Do not share this password."
             )
         else:
-            titre = "Votre accès ADSUM"
+            titre = f"Votre accès {marque().marque}"
             corps = (
-                f"Bonjour {prenom}, votre compte ADSUM a été créé. Mot de passe temporaire : {temp}. "
+                f"Bonjour {prenom}, votre compte {marque().marque} a été créé. Mot de passe temporaire : {temp}. "
                 f"Il est valable {TEMP_VALID_HOURS} heures. Connectez-vous à l'espace membre, changez "
                 f"votre mot de passe, puis complétez votre inscription. Ne communiquez ce mot de passe à personne."
             )
@@ -563,7 +563,7 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
         if code and db.fetch_one("SELECT 1 FROM membre WHERE upper(matricule) = upper(%s) LIMIT 1", (code,), role=role):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Ce code membre correspond à un matricule ADSUM existant. Choisissez un autre code.",
+                detail=f"Ce code membre correspond à un matricule {marque().marque} existant. Choisissez un autre code.",
             )
     # A declared shepherd name only makes sense with the declaration itself:
     # answering "no" clears any previously stored name so no orphan value stays.

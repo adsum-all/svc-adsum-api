@@ -11,7 +11,35 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-DEFAULT_TZ = "Africa/Abidjan"  # GMT+0, a safe neutral reference for the base
+# The zone used when nothing else says otherwise. Read from the organisation's own
+# settings rather than fixed: org_fuseau was declared, editable in the back office and
+# never read by anything, so a parish in France saw its times rendered in Abidjan.
+# The literal below is only the fallback for a base that has not chosen.
+_FUSEAU_PAR_DEFAUT = "Africa/Abidjan"
+
+
+def fuseau_organisation() -> str:
+    """The organisation's own zone, or the neutral fallback."""
+    try:
+        from . import db
+
+        ligne = db.fetch_one(
+            "SELECT valeur FROM integration_config WHERE cle = 'org_fuseau'", ()
+        )
+    except Exception:  # noqa: BLE001 - a settings read must never break a rendering
+        return _FUSEAU_PAR_DEFAUT
+    valeur = ((ligne or {}).get("valeur") or "").strip()
+    if not valeur:
+        return _FUSEAU_PAR_DEFAUT
+    try:
+        ZoneInfo(valeur)
+    except (ZoneInfoNotFoundError, ValueError):
+        # An unknown zone would raise on every rendering; the fallback keeps the
+        # message readable and the setting visibly wrong rather than fatal.
+        return _FUSEAU_PAR_DEFAUT
+    return valeur
+
+DEFAULT_TZ = _FUSEAU_PAR_DEFAUT  # conservé pour les imports existants
 
 _JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 _MOIS = [
@@ -39,7 +67,7 @@ _PAYS_PAR_ZONE = {
 def pays_du_fuseau(fuseau: str | None) -> str:
     """A human country label for an IANA zone, e.g. 'France', with a city fallback."""
     if not zone_valide(fuseau):
-        return _PAYS_PAR_ZONE[DEFAULT_TZ]
+        return _PAYS_PAR_ZONE.get(fuseau_organisation(), _PAYS_PAR_ZONE[_FUSEAU_PAR_DEFAUT])
     if fuseau in _PAYS_PAR_ZONE:
         return _PAYS_PAR_ZONE[fuseau]
     return (fuseau or "").split("/")[-1].replace("_", " ")
@@ -58,9 +86,9 @@ def zone_valide(fuseau: str | None) -> str | None:
 
 def _zone(fuseau: str | None) -> ZoneInfo:
     try:
-        return ZoneInfo(fuseau or DEFAULT_TZ)
+        return ZoneInfo(fuseau or fuseau_organisation())
     except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo(DEFAULT_TZ)
+        return ZoneInfo(_FUSEAU_PAR_DEFAUT)
 
 
 def local_datetime(instant: datetime, fuseau: str | None) -> datetime:

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from . import audit, db, identifiants
 from .auth import current_user
+from .marque import marque
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -158,11 +159,11 @@ def _texte_attestation(membre_id: str, role: str | None, langue: str) -> str:
     if langue == "en":
         return (
             f"I, the undersigned {nom}, hereby attest that I have read, understood and approved the following "
-            f"documents of the Sacerdoce Royal: {liste}. I confirm my commitment as a member.\n\n"
+            f"documents of {marque().nom}: {liste}. I confirm my commitment as a member.\n\n"
             f"Date: {date_str}\nHandwritten signature: ______________________"
         )
     return (
-        f"Je soussigné(e) {nom}, atteste avoir lu, compris et approuvé les documents suivants du Sacerdoce Royal : "
+        f"Je soussigné(e) {nom}, atteste avoir lu, compris et approuvé les documents suivants de {marque().nom} : "
         f"{liste}. Je confirme mon engagement en qualité de membre.\n\n"
         f"Fait le : {date_str}\nSignature manuscrite : ______________________"
     )
