@@ -68,6 +68,7 @@ from .inscriptions_reparation import router as inscriptions_reparation_router
 from .institutionnel import router as institutionnel_router
 from .integrations import router as integrations_router
 from .interim import router as interim_router
+from .marque_publique import router as marque_publique_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
 from .mfa import router as mfa_router
@@ -137,6 +138,7 @@ app.include_router(organisation_router)
 app.include_router(equipes_speciales_router)
 app.include_router(equipe_dirigeante_router)
 app.include_router(supervision_tribus_router)
+app.include_router(marque_publique_router)
 app.include_router(reglages_duree_router)
 app.include_router(bibliotheque_router)
 app.include_router(bibliotheque_lecture_router)
