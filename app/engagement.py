@@ -17,6 +17,7 @@ from pydantic import BaseModel, EmailStr
 
 from . import audit, db, ratelimit
 from .fields import LineStr, ShortStr
+from .marque import marque
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -64,7 +65,7 @@ def _remercier(email: str, prenoms: str | None, pays_code: str | None) -> tuple[
             f"Bonjour {prenom},\n\nMerci d'avoir fait ce beau choix et d'avoir exprime votre souhait de vous "
             "engager au sein de la fraternite du Sacerdoce Royal. Votre demande a bien ete recue.\n\nNous "
             "reviendrons vers vous tres prochainement avec les prochaines etapes.\n\nBien fraternellement,\n"
-            "L'equipe du Sacerdoce Royal"
+            f"L'équipe {marque().nom}"
         )
     html = "<p>" + text.replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>"
     try:

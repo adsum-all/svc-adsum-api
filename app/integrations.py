@@ -24,6 +24,26 @@ router = APIRouter(prefix="/api/v1/admin/integrations", tags=["integrations"])
 
 # Guidance shown next to each setting (rendered behind info icons in the UI).
 _GUIDE = {
+    "org_marque": {
+        "titre": "Nom affiché dans les e-mails",
+        "aide": "Le nom en grand dans l'en-tête des messages, et dans leurs objets. C'est la marque de la plateforme telle que vos membres la voient.",
+        "obtenir": "Choisissez le nom sous lequel votre organisation communique. Laissez vide pour conserver ADSUM.",
+    },
+    "org_couleur_principale": {
+        "titre": "Couleur principale des e-mails",
+        "aide": "La couleur de l'en-tête, des boutons et des accents dans les messages. Format hexadécimal, par exemple #2a4fad.",
+        "obtenir": "Reprenez la couleur de votre charte. Une valeur invalide est ignorée et la couleur d'origine est conservée.",
+    },
+    "org_couleur_sombre": {
+        "titre": "Couleur sombre des e-mails",
+        "aide": "La seconde couleur du dégradé d'en-tête. Format hexadécimal, par exemple #1d3470.",
+        "obtenir": "Prenez une teinte plus sombre de votre couleur principale.",
+    },
+    "org_baseline": {
+        "titre": "Phrase de pied de page",
+        "aide": "La phrase qui décrit votre organisation en bas de chaque message, par exemple « plateforme d'adhésion et de présence ».",
+        "obtenir": "Une phrase courte, sans point final : la ville et le nom sont ajoutés automatiquement.",
+    },
     "email_webhook_secret": {
         "titre": "Clé du retour de livraison des e-mails",
         "aide": "Elle authentifie les retours du fournisseur d'e-mail (livré, ouvert, rejeté). Sans elle, la plateforme ne sait pas ce que devient un message une fois parti.",

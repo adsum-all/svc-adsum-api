@@ -24,6 +24,7 @@ from .auth import current_user
 from .config import settings
 from .cron_auth import require_cron_auth
 from .email_templates import render_anniversaire_email
+from .marque import marque
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -183,7 +184,7 @@ def _send_telegram_code(chat_id: str, code: str) -> bool:
     """Send the one-time linking confirmation code TO the candidate chat, so only whoever
     controls that chat can complete the link (proof of possession)."""
     msg = channels.Message(
-        titre="ADSUM - liaison Telegram",
+        titre=f"{marque().marque} - liaison Telegram",
         corps_text=(
             f"Votre code de liaison est : {code}\n\n"
             "Saisissez-le dans l'application pour confirmer que ce compte Telegram est bien le vôtre. "
