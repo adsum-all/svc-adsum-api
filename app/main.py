@@ -102,6 +102,7 @@ from .telegram_liaison import router as telegram_liaison_router
 from .terminaux import router as terminaux_router
 from .type_evenement import router as type_evenement_router
 from .users import router as users_router
+from .vocabulaire_api import router as vocabulaire_router
 
 app = FastAPI(
     title="ADSUM API",
@@ -139,6 +140,7 @@ app.include_router(equipes_speciales_router)
 app.include_router(equipe_dirigeante_router)
 app.include_router(supervision_tribus_router)
 app.include_router(marque_publique_router)
+app.include_router(vocabulaire_router)
 app.include_router(reglages_duree_router)
 app.include_router(bibliotheque_router)
 app.include_router(bibliotheque_lecture_router)

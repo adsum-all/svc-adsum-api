@@ -19,6 +19,7 @@ from fastapi import APIRouter
 
 from . import db
 from .marque import marque
+from .vocabulaire import rendu as vocabulaire_rendu
 
 router = APIRouter(prefix="/api/v1", tags=["reference"])
 
@@ -52,4 +53,8 @@ def marque_publique() -> dict[str, Any]:
         "site": valeurs.get("org_site") or None,
         "couleur": m.couleur,
         "couleur_sombre": m.couleur_sombre,
+        # How this organisation names its own units and responsibilities. Shipped
+        # with the identity because a screen needs both at once, and a second call
+        # would show the right colours around the wrong words.
+        "mots": vocabulaire_rendu(),
     }
