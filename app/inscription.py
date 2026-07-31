@@ -22,6 +22,7 @@ from . import audit, db, identifiants
 from .auth import current_user
 from .email_gateway import send_email
 from .fields import LineStr, ShortStr
+from .marque import marque
 from .modifications import _EDITABLE_FIELDS, soumettre_cycle
 from .permissions_rbac import require_permission
 from .schemas import UserMe
@@ -57,7 +58,7 @@ def _send_temp_password(email: str, temp: str, membre_id: str | None = None, rol
     from . import email_registre
     from .email_templates import render_temp_password_email
 
-    sujet = "ADSUM, votre accès et mot de passe temporaire"
+    sujet = f"{marque().marque}, votre accès et mot de passe temporaire"
     text = (
         f"Bonjour,\n\nVotre compte ADSUM a été créé. Mot de passe temporaire : {temp}\n"
         f"Il est valable {TEMP_VALID_HOURS} heures. Connectez-vous à l'espace membre, "

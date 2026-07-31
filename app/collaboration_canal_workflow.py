@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from . import audit, db
 from . import collaboration_canal as cc
 from .fields import LongTextStr, ShortStr, TextStr
+from .marque import marque
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -110,7 +111,7 @@ def _notifier_emetteur(mid: str, texte: str, role: str) -> None:
         if pref is not None and not pref.get("telegram"):
             return
         from .channels import Message, send_telegram
-        send_telegram(str(chat), Message(titre="ADSUM Canal", corps_text=texte), contexte=f"instruction:{mid}")
+        send_telegram(str(chat), Message(titre=f"{marque().marque} Canal", corps_text=texte), contexte=f"instruction:{mid}")
     except Exception:  # noqa: BLE001 - a notification failure must never break the workflow
         pass
 

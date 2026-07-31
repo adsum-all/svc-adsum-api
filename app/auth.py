@@ -14,6 +14,7 @@ from pydantic import BaseModel, EmailStr, Field
 from . import db, ratelimit
 from .clientip import client_ip
 from .config import settings
+from .marque import marque
 from .schemas import LoginRequest, LoginResponse, TokenResponse, UserMe
 from .security import create_access_token, decode_access_token, hash_password, verify_password_or_dummy
 
@@ -332,7 +333,11 @@ def _otp_via_sms(email: str, user: dict[str, object]) -> bool:
         if not numero:
             return False
         code = generate_code(email, "login_2fa")
-        return channels.send_sms(numero, f"ADSUM, votre code de connexion : {code}. Il expire dans quelques minutes.")
+        texte = (
+            f"{marque().marque}, votre code de connexion : {code}. "
+            "Il expire dans quelques minutes."
+        )
+        return channels.send_sms(numero, texte)
     except Exception:  # noqa: BLE001 - SMS is best-effort; caller falls back to e-mail
         return False
 
