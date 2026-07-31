@@ -16,6 +16,7 @@ from . import db, identifiants
 from .auth import current_user
 from .demandes_catalogue import _TRANSITIONS, CATALOGUE, STATUTS_LISIBLES
 from .fields import ShortStr, TextStr, TitleStr
+from .marque import marque
 from .permissions_rbac import require_permission
 from .schemas import UserMe
 
@@ -202,8 +203,8 @@ def _delai_deblocage_defaut(role: str | None) -> int:
 def _system_message(demande_id: str, role: str | None, corps: str) -> None:
     """Timeline entry inside the thread for every workflow event."""
     db.execute(
-        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps) VALUES (%s, 'systeme', 'ADSUM', %s)",
-        (demande_id, corps),
+        "INSERT INTO demande_message (demande_id, auteur_type, auteur_nom, corps) VALUES (%s, 'systeme', %s, %s)",
+        (demande_id, marque().marque, corps),
         role=role,
     )
 
