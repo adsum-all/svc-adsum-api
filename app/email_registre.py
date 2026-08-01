@@ -123,19 +123,28 @@ def enregistrer_evenement(
     outbox_id: str | None = None,
     motif: str | None = None,
     charge: dict[str, Any] | None = None,
+    survenu_le: str | None = None,
     role: str | None = None,
 ) -> None:
     """Record what the provider reported after the fact, and move the outbox along.
 
     Delivery, opening, bouncing and rejection all happen after the request was
     accepted, which is exactly the window where the platform used to be blind.
+
+    ``survenu_le`` is when the provider says the event happened, which is not when we
+    hear about it. Callbacks arrive late, and a history imported in bulk arrives all
+    at once: dating every row at insertion time would compress weeks of bounces into
+    one apparent incident, and the mailbox diagnosis reads exactly that column to
+    decide whether an address is refusing mail *now*. Defaults to now() when the
+    provider gives no date, so the column is never null and stays indexable.
     """
     statut = _STATUTS_FOURNISSEUR.get(evenement, "en_cours")
     try:
         db.execute(
             "INSERT INTO email_delivery_event (email_outbox_id, destinataire, evenement_fournisseur, "
-            "statut_normalise, motif, charge_brute) VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
-            (outbox_id, destinataire, evenement, statut, motif, json.dumps(charge or {})),
+            "statut_normalise, motif, charge_brute, survenu_le) "
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, COALESCE(%s::timestamptz, now()))",
+            (outbox_id, destinataire, evenement, statut, motif, json.dumps(charge or {}), survenu_le),
             role=role,
         )
     except Exception:  # noqa: BLE001
@@ -152,3 +161,60 @@ def enregistrer_evenement(
             )
     except Exception:  # noqa: BLE001
         pass
+
+
+# What a provider says when a mailbox itself is the obstacle, mapped to what the
+# member has to do about it. Matched on the lowered reason, most specific first.
+# Anything else is reported as a refusal without a guessed cause: an invented
+# explanation would send the member chasing the wrong fix.
+_MOTIFS_BOITE = (
+    ("out of storage", "la boîte de réception est pleine"),
+    ("quota", "la boîte de réception a atteint son quota"),
+    ("mailbox full", "la boîte de réception est pleine"),
+    ("insufficient system storage", "le serveur du destinataire manque d'espace"),
+    ("user unknown", "l'adresse n'existe pas chez le fournisseur"),
+    ("does not exist", "l'adresse n'existe pas chez le fournisseur"),
+)
+
+
+def diagnostic_boite(destinataire: str, heures: int = 48, role: str | None = None) -> dict:
+    """Has this mailbox been refusing our messages lately, and why.
+
+    A member could not sign in and had no way to know why: the screen announced a
+    code while the provider bounced every message for two days. The events were
+    recorded all along; nothing read them back. This does, and answers in terms the
+    member can act on.
+
+    Reads only the recent window, on the dated column, so an address that bounced
+    once last month is not held against a mailbox that works today.
+
+    This is observability. It can never raise: a diagnostic that breaks a login is
+    worse than a login with no diagnostic.
+    """
+    vide = {"probleme": False, "motif": "", "explication": "", "occurrences": 0}
+    if not destinataire:
+        return vide
+    try:
+        lignes = db.fetch_all(
+            "SELECT motif, survenu_le FROM email_delivery_event "
+            "WHERE lower(destinataire) = lower(%s) "
+            "AND statut_normalise IN ('rebondi', 'rejete') "
+            "AND survenu_le > now() - (%s || ' hours')::interval "
+            "ORDER BY survenu_le DESC LIMIT 20",
+            (destinataire, str(int(heures))),
+            role=role,
+        )
+    except Exception:  # noqa: BLE001 - never let a diagnostic break a login
+        return vide
+    if not lignes:
+        return vide
+
+    motif = str((lignes[0] or {}).get("motif") or "").strip()
+    bas = motif.lower()
+    explication = "le fournisseur de messagerie a refusé les derniers envois"
+    for marqueur, phrase in _MOTIFS_BOITE:
+        if marqueur in bas:
+            explication = phrase
+            break
+    return {"probleme": True, "motif": motif[:300],
+            "explication": explication, "occurrences": len(lignes)}

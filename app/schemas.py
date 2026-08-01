@@ -50,6 +50,11 @@ class LoginResponse(BaseModel):
     # address instead of the typed identifier. Never returned on the otp_required
     # branch (no token, first factor only).
     email: str | None = None
+    # Set when the code went out by e-mail to a mailbox the provider has been
+    # refusing recently. The screen used to say "a code has been sent" while every
+    # message bounced, so the member pressed resend and waited again. This carries
+    # the reason in plain terms so they can act instead of waiting.
+    alerte_email: str | None = None
 
 
 class UserMe(BaseModel):

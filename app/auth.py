@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 
-from . import db, ratelimit
+from . import db, email_registre, ratelimit
 from .clientip import client_ip
 from .config import settings
 from .marque import marque
@@ -75,7 +75,8 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
     # validated, so this never leaks whether an account exists.
     if _mfa_should_challenge(user, request):
         canal = _send_login_code(str(user["email"]), user)
-        return LoginResponse(otp_required=True, canal=canal)
+        return LoginResponse(otp_required=True, canal=canal,
+                             alerte_email=_alerte_boite(str(user["email"]), canal))
     sid = _record_session(str(user["id"]), user["role"], request)
     token = create_access_token(subject=str(user["id"]), role=user["role"], sid=sid)
     return LoginResponse(
@@ -84,6 +85,23 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
         doit_changer_mdp=bool(user.get("doit_changer_mdp")),
         email=str(user["email"]),
     )
+
+
+def _alerte_boite(email: str, canal: str | None) -> str | None:
+    """Warn the member when the code just went to a mailbox that keeps refusing it.
+
+    Only on the e-mail channel: a Telegram delivery does not care what the mailbox
+    is doing. Returned exclusively on the branch that follows a validated password,
+    never on the resend endpoint, which must stay silent about account state.
+    """
+    if (canal or "").lower() != "email":
+        return None
+    diagnostic = email_registre.diagnostic_boite(email)
+    if not diagnostic.get("probleme"):
+        return None
+    return (f"Le code a été envoyé, mais {diagnostic['explication']} : les derniers messages "
+            "ont été refusés. Libérez de l'espace dans cette boîte, puis demandez un "
+            "nouveau code. Vous pouvez aussi recevoir le code par Telegram.")
 
 
 def _geo(request: Request) -> tuple[str | None, str | None, str | None]:
