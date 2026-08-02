@@ -140,7 +140,11 @@ class Settings(BaseSettings):
         only when the caller has not already chosen a value.
         """
         dsn = self.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
-        if "connect_timeout" in dsn:
+        if not dsn or "connect_timeout" in dsn:
+            # Nothing configured means nothing to append: a bare query string is not
+            # a connection string, and psycopg rejects it with an error about the
+            # timeout rather than about the missing URL, which sends the reader after
+            # the wrong thing entirely.
             return dsn
         return f"{dsn}{'&' if '?' in dsn else '?'}connect_timeout={self.database_connect_timeout_s}"
 

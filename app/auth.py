@@ -77,7 +77,7 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
         canal = _send_login_code(str(user["email"]), user)
         return LoginResponse(
             otp_required=True, canal=canal,
-            alerte_email=_alerte_boite(str(user["email"]), canal, str(user["role"])),
+            alerte_email=_alerte_boite(str(user["email"]), canal, str(user["role"]), str(user["id"])),
         )
     sid = _record_session(str(user["id"]), user["role"], request)
     token = create_access_token(subject=str(user["id"]), role=user["role"], sid=sid)
@@ -89,7 +89,9 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
     )
 
 
-def _alerte_boite(email: str, canal: str | None, role: str | None = None) -> str | None:
+def _alerte_boite(
+    email: str, canal: str | None, role: str | None = None, user_id: str | None = None,
+) -> str | None:
     """Warn the member when the code just went to a mailbox that keeps refusing it.
 
     Only on the e-mail channel: a Telegram delivery does not care what the mailbox
@@ -99,15 +101,25 @@ def _alerte_boite(email: str, canal: str | None, role: str | None = None) -> str
     The role is passed through so the read runs under the caller's RLS policies
     rather than on the schema owner's connection, like every other read in the
     request. The address is server-side and canonical, never the typed identifier.
+
+    The fallback channel is only offered to an account that actually has one. The
+    technical super-administrator carries no member row, so it has no Telegram link
+    and cannot obtain one from this screen: advising "you can also receive the code
+    by Telegram" sent the one person already locked out down a route that does not
+    exist for them. Without a second channel the message says what will actually
+    unblock the sign-in instead.
     """
     if (canal or "").lower() != "email":
         return None
     diagnostic = email_registre.diagnostic_boite(email, role=role)
     if not diagnostic.get("probleme"):
         return None
-    return (f"Le code a été envoyé, mais {diagnostic['explication']} : les derniers messages "
-            "ont été refusés. Libérez de l'espace dans cette boîte, puis demandez un "
-            "nouveau code. Vous pouvez aussi recevoir le code par Telegram.")
+    base = (f"Le code a été envoyé, mais {diagnostic['explication']} : les derniers messages "
+            "ont été refusés. Libérez de l'espace dans cette boîte, puis demandez un nouveau code.")
+    if user_id and _telegram_chat_id(user_id):
+        return f"{base} Vous pouvez aussi recevoir le code par Telegram."
+    return (f"{base} Tant que la boîte refuse le courrier, aucun code ne peut arriver : "
+            "la vider est la seule façon de débloquer cette connexion.")
 
 
 def _geo(request: Request) -> tuple[str | None, str | None, str | None]:

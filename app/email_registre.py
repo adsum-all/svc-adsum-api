@@ -228,6 +228,12 @@ def diagnostic_boite(destinataire: str, heures: int = 48, role: str | None = Non
             role=role,
             statement_timeout_ms=_DELAI_DIAGNOSTIC_MS,
             connect_timeout_s=_DELAI_CONNEXION_S,
+            # The policy on this table lets an ordinary role read the events of one
+            # address: this one. Without it the read would either be refused or, if
+            # the policy were written loosely, would let any signed-in member see
+            # who the platform writes to. The address comes from the account, never
+            # from what was typed at the login screen.
+            local_settings={"adsum.diagnostic_email": destinataire},
         )
     except Exception as exc:  # noqa: BLE001 - never let a diagnostic break a login
         # Fail open, but not silently: a silent failure here is the exact blindness

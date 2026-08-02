@@ -115,6 +115,28 @@ def test_the_query_is_bounded_so_it_can_never_hold_up_a_login(monkeypatch):
     assert vu["params"][-1] == email_registre._PLAFOND_EVENEMENTS
 
 
+def test_the_read_declares_the_one_address_the_policy_may_return(monkeypatch):
+    """Migration 0188 lets an ordinary role read the events of one address.
+
+    The policy matches on adsum.diagnostic_email, so a member sees their own address
+    and no other. If the application stopped setting it, the policy would return
+    nothing rather than everything, which is the right way round to fail.
+    """
+    vu: dict = {}
+    _stub(monkeypatch, [], capture=vu)
+    email_registre.diagnostic_boite("Membre@Example.org", role="membre")
+    assert vu["local_settings"] == {"adsum.diagnostic_email": "Membre@Example.org"}
+
+
+def test_a_local_setting_cannot_reach_outside_the_adsum_namespace():
+    """The namespace is what stops a caller reaching statement_timeout or the role."""
+    from app import db
+
+    with pytest.raises(ValueError, match="adsum namespace"):
+        with db.connection(local_settings={"statement_timeout": "0"}):
+            pass                                        # never reached
+
+
 def test_the_query_matches_the_index_created_for_it(monkeypatch):
     """Migration 0187 indexes lower(destinataire) restricted to refusals.
 

@@ -28,6 +28,7 @@ def connection(
     *,
     statement_timeout_ms: int | None = None,
     connect_timeout_s: int | None = None,
+    local_settings: dict[str, str] | None = None,
 ) -> Iterator[psycopg.Connection]:
     """Open a connection for one unit of work.
 
@@ -36,7 +37,19 @@ def connection(
     can still hang, and a caller that only wants to enrich a message must never be
     able to hold up the message itself. Both default to off, so every existing
     caller keeps the server-side settings it has always had.
+
+    local_settings carries extra transaction-local variables for policies that need
+    to narrow a read further than the role does. A member may read the delivery
+    events of their own address and no other, and the policy can only express that
+    if the address is in the transaction. Values are set through set_config, so
+    nothing is ever interpolated into SQL.
     """
+    for nom in local_settings or {}:
+        if not nom.startswith("adsum."):
+            # The namespace is the guard: a caller must not be able to reach
+            # statement_timeout, the role, or any server setting through here.
+            # Checked before connecting, so a programming error costs no handshake.
+            raise ValueError(f"local setting outside the adsum namespace: {nom}")
     extra = {"connect_timeout": connect_timeout_s} if connect_timeout_s else {}
     conn = psycopg.connect(settings.database_dsn, row_factory=dict_row, **extra)
     try:
@@ -52,6 +65,8 @@ def connection(
                     "SELECT set_config('statement_timeout', %s, true)",
                     (str(int(statement_timeout_ms)),),
                 )
+            for nom, valeur in (local_settings or {}).items():
+                cur.execute("SELECT set_config(%s, %s, true)", (nom, valeur))
         yield conn
         conn.commit()
     except Exception:
@@ -74,11 +89,13 @@ def fetch_all(
     *,
     statement_timeout_ms: int | None = None,
     connect_timeout_s: int | None = None,
+    local_settings: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     with connection(
         role,
         statement_timeout_ms=statement_timeout_ms,
         connect_timeout_s=connect_timeout_s,
+        local_settings=local_settings,
     ) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         return cur.fetchall()
