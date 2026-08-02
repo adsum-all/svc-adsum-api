@@ -30,6 +30,7 @@ from .schemas import (
     UpdateMembre,
     UserMe,
 )
+from .temps import fuseau_organisation
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -469,7 +470,10 @@ def _evenement_out(r: dict[str, object]) -> EvenementOut:
         tags=[{"id": str(x.get("id")), "cle": str(x.get("cle") or ""), "libelle": str(x.get("libelle") or "")} for x in (r.get("tags") or [])],
         annule=bool(r.get("annule")),
         annule_motif=r.get("annule_motif") if isinstance(r.get("annule_motif"), str) else None,
-        fuseau_horaire=r.get("fuseau_horaire") or "Africa/Abidjan",
+        # The organisation's own zone, not this one's. An activity read back with a
+        # zone belonging to another organisation is shown at the wrong hour to
+        # everybody editing it.
+        fuseau_horaire=r.get("fuseau_horaire") or fuseau_organisation(),
         serie_id=str(r["serie_id"]) if r.get("serie_id") else None,
         fenetre_reponse_heures=r.get("fenetre_reponse_heures"),
         description=r.get("description") if isinstance(r.get("description"), str) else None,

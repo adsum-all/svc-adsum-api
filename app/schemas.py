@@ -5,6 +5,19 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+
+def _fuseau_defaut() -> str:
+    """The organisation's own time zone, resolved when a payload is built.
+
+    Imported inside the function rather than at module scope: schemas is imported by
+    almost everything, and reaching for the settings reader at import time would put
+    a database module underneath the whole application's type definitions. Never
+    raises, because a settings read must not be able to reject a request.
+    """
+    from .temps import fuseau_organisation
+
+    return fuseau_organisation()
+
 # Canonical UUID pattern, reused by several payloads to reject a malformed id
 # with a clean 422 instead of a database error.
 _UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -767,8 +780,10 @@ class CreateEvenement(BaseModel):
     # Zero is allowed and means the window closes exactly at the activity's end.
     fenetre_reponse_minutes: int | None = Field(default=None, ge=0, le=20160)
     # The activity's reference IANA time zone (the zone the start/end were entered
-    # in). Default is the base's home GMT zone; members still see their own time.
-    fuseau_horaire: str = Field(default="Africa/Abidjan", max_length=64)
+    # in). Defaults to the organisation's own zone, read when the payload is built
+    # rather than fixed here: a literal made every organisation create its activities
+    # in this one's time, and members would then see every hour shifted.
+    fuseau_horaire: str = Field(default_factory=_fuseau_defaut, max_length=64)
     # Recurrence: when `occurrences` is non-empty, the event becomes a SERIES. The
     # first occurrence is (debut, fin); each extra occurrence is one more real
     # activity row sharing a serie_id, so participation/questionnaire/survey keep
