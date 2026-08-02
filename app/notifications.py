@@ -504,6 +504,16 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
     annee = now.year
     result = {"anniversaires": 0, "rappels_j1": 0, "agenda": 0, "recap": 0, "digest_pairs": 0, "participation_close": 0}
 
+    # 0) What became of yesterday's messages. The provider can push this on a
+    # callback, which needs a shared secret placed here and an address pasted into
+    # its console; until both happen the platform is blind to its own deliveries, and
+    # a member locked out by a full mailbox is told a code was sent. So it is pulled
+    # instead, with the key already configured for sending. Runs first and cannot
+    # raise, so the rest of the job is never at its mercy.
+    from . import email_moisson
+
+    result["livraisons"] = email_moisson.moissonner(role=role)
+
     # 1) Birthdays today. Cross-path idempotence: the manual admin trigger marks its
     # sends in notification_anniversaire; skip those members so running both paths the
     # same day never produces a second wish (each path keeps its own dedup ledger).
