@@ -350,7 +350,7 @@ class PreferencesIn(BaseModel):
     matrice_canaux: dict[str, dict[str, bool]] | None = Field(default=None, max_length=64)
 
 
-_MATRICE_CANAUX = ("email", "telegram", "whatsapp", "sms")
+_MATRICE_CANAUX = ("email", "telegram", "whatsapp", "sms", "push")
 
 
 def _sanitize_matrice(raw: object, groupes: tuple[str, ...]) -> dict[str, dict[str, bool]] | None:
@@ -369,7 +369,7 @@ def _sanitize_matrice(raw: object, groupes: tuple[str, ...]) -> dict[str, dict[s
 
 
 _PREF_COLS = (
-    "evenements", "demandes", "rappels", "email", "telegram", "whatsapp", "sms",
+    "evenements", "demandes", "rappels", "email", "telegram", "whatsapp", "sms", "push",
     "anniversaire", "anniv_pairs", "cal_vip", "cal_responsables", "cal_commission",
     "cal_tribu", "cal_coordination", "cal_intendance",
 )

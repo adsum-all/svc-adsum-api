@@ -133,7 +133,7 @@ _GROUPE_LEGACY_COL = {
     "dossier": "demandes",
 }
 _MATRICE_COLS = (
-    "matrice_canaux", "email", "telegram", "whatsapp", "sms",
+    "matrice_canaux", "email", "telegram", "whatsapp", "sms", "push",
     "evenements", "demandes", "rappels", "anniversaire", "anniv_pairs", "collaboration",
 )
 
@@ -166,7 +166,11 @@ def canaux_autorises(membre_id: str, role: str | None, type_cle: str, sensibilit
     legacy_col = _CATEGORY_PREF.get(type_cle)
     legacy_on = bool(prefs.get(legacy_col, True)) if legacy_col else True
     allowed: set[str] = set()
-    for canal in ("email", "telegram"):
+    # Push sits with e-mail and Telegram, defaulting to on: somebody who installed the
+    # mobile application and registered a device asked to be reached on it. A member
+    # who mutes a group on every channel still sees it in the application, which
+    # dispatch delivers unconditionally.
+    for canal in ("email", "telegram", "push"):
         master_on = bool(prefs.get(canal, True))
         group_on = bool(grp.get(canal, True)) if isinstance(grp, dict) else legacy_on
         if master_on and group_on:

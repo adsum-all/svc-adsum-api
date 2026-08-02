@@ -25,7 +25,31 @@ router = APIRouter(prefix="/api/v1", tags=["reference"])
 
 # What the front may show before a session exists. Deliberately narrow: anything not
 # on this list stays behind authentication, whatever the settings table holds.
-_PUBLIC = ("org_nom", "org_nom_court", "org_slogan", "org_logo_url", "org_site")
+#
+# The application addresses are here because one application has to send somebody to
+# another: the member application tells an account with no membership to go to the
+# back office, and that address was written into the member code. A second
+# organisation deploys its own applications at its own addresses, so its members were
+# being pointed at this organisation's back office.
+_PUBLIC = (
+    "org_nom", "org_nom_court", "org_slogan", "org_logo_url", "org_site",
+    "org_url_membre", "org_url_back_office", "org_url_public",
+)
+
+
+def _adresse_publique(valeur: str) -> str | None:
+    """An http(s) address, or nothing.
+
+    Refused rather than passed through: this lands in an href on a page served before
+    authentication, so a settings row holding ``javascript:`` would turn the sign-in
+    screen into a place where clicking a link runs whatever the last administrator
+    typed. Anything that is not plainly http or https is dropped, and the front then
+    renders no link at all rather than a dangerous one.
+    """
+    v = (valeur or "").strip()
+    if v.lower().startswith(("http://", "https://")) and " " not in v:
+        return v
+    return None
 
 
 @router.get("/marque")
@@ -50,7 +74,12 @@ def marque_publique() -> dict[str, Any]:
         "organisation_courte": valeurs.get("org_nom_court") or m.nom_court,
         "slogan": valeurs.get("org_slogan") or None,
         "logo_url": valeurs.get("org_logo_url") or None,
-        "site": valeurs.get("org_site") or None,
+        "site": _adresse_publique(valeurs.get("org_site", "")),
+        # Where this organisation's other applications live. Null when unset, which
+        # the front reads as "do not offer that link" rather than guessing an address.
+        "url_membre": _adresse_publique(valeurs.get("org_url_membre", "")),
+        "url_back_office": _adresse_publique(valeurs.get("org_url_back_office", "")),
+        "url_public": _adresse_publique(valeurs.get("org_url_public", "")),
         "couleur": m.couleur,
         "couleur_sombre": m.couleur_sombre,
         # How this organisation names its own units and responsibilities. Shipped

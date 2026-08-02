@@ -314,10 +314,10 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
         pass
 
     prefs = db.fetch_one(
-        "SELECT email, telegram, whatsapp, sms FROM preference_notification WHERE membre_id = %s",
+        "SELECT email, telegram, whatsapp, sms, push FROM preference_notification WHERE membre_id = %s",
         (membre_id,),
         role=role,
-    ) or {"email": True, "telegram": True, "whatsapp": True, "sms": True}
+    ) or {"email": True, "telegram": True, "whatsapp": True, "sms": True, "push": True}
     contact = db.fetch_one(
         "SELECT email, telegram_chat_id, whatsapp_numero, indicatif_telephone, telephone FROM membre WHERE id = %s",
         (membre_id,),
@@ -370,6 +370,20 @@ def dispatch(membre_id: str, role: str | None, message: Message, whatsapp_params
             used.append("sms")
         else:
             _record_echec(membre_id, role, message.type_notif, "sms", "envoi SMS non abouti")
+
+    # 6) Mobile application (config-gated, off until a push service account is set).
+    # Imported here rather than at module scope: push imports this module for the
+    # settings reader, and a top-level import would close the cycle.
+    if autorise("push"):
+        from . import push as push_mobile
+
+        if push_mobile.configure():
+            try:
+                if push_mobile.envoyer(membre_id, message.titre, message.corps_text,
+                                       message.type_notif, role=role):
+                    used.append("push")
+            except Exception as exc:  # noqa: BLE001 - a channel never breaks the others
+                _record_echec(membre_id, role, message.type_notif, "push", f"exception: {exc}"[:250])
 
     return used
 

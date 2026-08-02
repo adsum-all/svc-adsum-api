@@ -34,11 +34,17 @@ CLES_IDENTITE: tuple[str, ...] = (
     "org_logo_url", "org_banniere_url", "org_reseaux",
     "org_fondation_date", "org_fondation_lieu", "org_fondateur_membre_id", "org_fondateur_nom",
     "org_fondateur_type", "org_saint_patron", "org_saint_patron_date", "org_fuseau", "org_contact",
+    # Where this organisation's own applications are served. One application has to
+    # send somebody to another, and those addresses used to be literals in the
+    # front-end code, so a second organisation's members were pointed at this
+    # organisation's back office.
+    "org_url_membre", "org_url_back_office", "org_url_public",
 )
 CLES_IDENTITE_PUBLIQUES: tuple[str, ...] = (
     "org_nom", "org_nom_court", "org_acronyme", "org_site", "org_slogan", "org_signature",
     "org_description_courte", "org_mission", "org_vision", "org_saint_patron",
     "org_logo_url", "org_banniere_url", "org_fondation_date", "org_fuseau",
+    "org_url_membre", "org_url_back_office", "org_url_public",
 )
 _MAX_VALEUR = 40000  # long rich descriptions are allowed
 
