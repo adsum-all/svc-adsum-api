@@ -35,7 +35,7 @@ router = APIRouter(prefix="/api/v1", tags=["modifications"])
 # by the administration only, so a member can never grant themselves a function
 # during a correction cycle.
 _EDITABLE_FIELDS = {
-    "prenoms", "nom", "code_membre", "telephone", "indicatif_telephone", "date_naissance",
+    "prenoms", "nom", "code_membre", "a_code_membre", "telephone", "indicatif_telephone", "date_naissance",
     "naissance_annee_visible", "genre", "pays", "region", "ville", "adresse",
     "adresse_complement", "commission_id", "intendance_id", "coordination_id", "tribu_id", "groupe",
     "profession", "niveau_etudes", "situation_matrimoniale", "type_mariage", "en_cheminement",

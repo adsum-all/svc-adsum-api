@@ -107,6 +107,10 @@ class MembreProfile(BaseModel):
     id: str
     matricule: str
     code_membre: str | None = None
+    #: Whether the member says they hold an organisation-issued code. Null means the
+    #: question was never put to them, which is where every earlier registration
+    #: stands, and is distinct from having answered no.
+    a_code_membre: bool | None = None
     email: EmailStr
     nom: str | None = None
     prenoms: str | None = None
@@ -361,6 +365,10 @@ class MembreFields(BaseModel):
     # External member code (distinct from the app matricule): optional, uppercased,
     # loose format (letters, digits and hyphens) so real-world codes fit.
     code_membre: str | None = Field(default=None, max_length=32, pattern=r"^[A-Za-z0-9\- ]*$")
+    # Whether the member says they hold such a code. Asked before the code itself,
+    # because an empty column otherwise means both "not filled in yet" and "has
+    # none", and the organisation cannot tell who to chase from who to wait for.
+    a_code_membre: bool | None = None
     telephone: str | None = None
     commission_id: str | None = None
     groupe: str | None = None

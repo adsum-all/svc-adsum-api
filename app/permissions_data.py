@@ -584,6 +584,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'POST /api/v1/admin/integrations/test-email': 'integrations.administrer',
     'POST /api/v1/admin/intendances': 'organisation.administrer',
     'POST /api/v1/admin/membres': 'membres.administrer',
+    'POST /api/v1/admin/membres/campagne-code-membre': 'membres.administrer',
     'POST /api/v1/admin/membres/{membre_id}/bloquer': 'membres.administrer',
     'POST /api/v1/admin/membres/{membre_id}/debloquer': 'membres.administrer',
     'POST /api/v1/admin/membres/{membre_id}/demander-document': 'membres.gerer',

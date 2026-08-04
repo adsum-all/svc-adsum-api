@@ -496,6 +496,10 @@ class ProfilUpdate(BaseModel):
     # matricule): optional, uppercased, unique (partial index 0080), refused when
     # it collides with an existing matricule (the login resolver accepts both).
     code_membre: str | None = Field(default=None, max_length=32, pattern=r"^[A-Za-z0-9\- ]*$")
+    # Asked before the code itself. Without it an empty column says both "not filled
+    # in yet" and "has none", and the organisation cannot tell who to chase for a
+    # code they hold from who is waiting to be given one.
+    a_code_membre: bool | None = None
     # Community journey facts the member declares themselves (also editable by
     # the administration in the back office).
     date_entree: ShortStr | None = None
@@ -560,6 +564,15 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
     if "code_membre" in fields:
         code = str(fields["code_membre"] or "").strip().upper()
         fields["code_membre"] = code or None
+    # A member who says they hold no code cannot be storing one: keeping a value
+    # here would contradict the declaration and leave the campaign unsure which of
+    # the two to believe.
+    if fields.get("a_code_membre") is False:
+        fields["code_membre"] = None
+    # And supplying a code answers the question by itself, so nobody is asked again
+    # for something they have just provided.
+    elif fields.get("code_membre"):
+        fields["a_code_membre"] = True
         if code and db.fetch_one("SELECT 1 FROM membre WHERE upper(matricule) = upper(%s) LIMIT 1", (code,), role=role):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

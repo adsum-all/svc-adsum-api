@@ -18,6 +18,7 @@ from .bibliotheque import router as bibliotheque_router
 from .bibliotheque_lecture import router as bibliotheque_lecture_router
 from .calendrier_institutionnel import router as calendrier_institutionnel_router
 from .cibles_activite import router as cibles_activite_router
+from .code_membre_campagne import router as code_membre_campagne_router
 from .collaboration_canal import router as collaboration_canal_router
 from .collaboration_canal_config import router as collaboration_canal_config_router
 from .collaboration_canal_notes import router as collaboration_canal_notes_router
@@ -229,6 +230,7 @@ app.include_router(engagement_import_router)
 app.include_router(sondage_router)
 app.include_router(sondage_cron_router)
 app.include_router(push_router)
+app.include_router(code_membre_campagne_router)
 
 
 @app.get("/health", tags=["system"])
