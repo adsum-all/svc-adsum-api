@@ -13,13 +13,4 @@ paths = [
 ]
 regexes = [
   '''ADSUM1\.[A-Za-z0-9_.\-]+''',
-  # The integrations screen tells an administrator which SHAPE of key to paste,
-  # because Brevo issues both an API key and an SMTP key and pasting the wrong one
-  # fails silently. Naming the prefix is the whole point of that help text, and the
-  # scanner's Brevo rule matches the prefix alone.
-  #
-  # Written to match the documented form only, the prefix followed by an ellipsis.
-  # Allowing every "xkeysib-" would blind the scanner to a real key committed by
-  # accident, which is the one thing it exists to catch.
-  '''xkeysib-\.\.\.''',
 ]

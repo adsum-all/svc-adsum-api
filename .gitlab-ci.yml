@@ -23,3 +23,15 @@ include:
       - '/templates/docker.yml'
       - '/templates/deploy-gcp.yml'
       - '/templates/deploy-web.yml'
+
+# The shared template runs the secret scan quietly: it prints "leaks found: 1" and
+# nothing else, so nobody can tell a real credential from a format example without
+# installing the scanner and running it by hand. One wrong fix has already been made
+# on that guess. The same improvement is proposed to the shared template; until it
+# lands on main, this repository asks its own scan to say what it found.
+#
+# --redact stays, so the value itself never reaches the log, which is the point of
+# scanning for it. Only the rule, the file and the line become visible.
+security:gitleaks:
+  script:
+    - gitleaks detect --source . --no-banner --redact --verbose --exit-code 1
