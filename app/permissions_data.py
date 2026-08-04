@@ -618,6 +618,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'PUT /api/v1/admin/notifications/types/{cle}': 'notifications.gerer',
     'PUT /api/v1/admin/parametres/questionnaire-fenetre': 'parametres.gerer',
     'PUT /api/v1/admin/parametres/semaine-jour-debut': 'parametres.gerer',
+    'PATCH /api/v1/admin/tribus/{tribu_id}': 'tribus.administrer',
     'PUT /api/v1/admin/tribus/{tribu_id}/patriarche': 'tribus.administrer',
     'PUT /api/v1/membres/me/langue': 'membres.self',
     'PUT /api/v1/membres/me/theme': 'membres.self',

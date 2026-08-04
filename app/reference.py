@@ -25,8 +25,18 @@ def _list(sql: str, role: str) -> list[dict[str, str]]:
 
 @router.get("/tribus")
 def tribus(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, str | None]]:
-    rows = db.fetch_all("SELECT id, nom, patriarche FROM tribu ORDER BY nom ASC", (), role=user.role)
-    return [{"id": str(r["id"]), "nom": r["nom"], "patriarche": r["patriarche"]} for r in rows]
+    """The tribes, with the colour each one is known by.
+
+    The colour travels with the name because that is how a member finds their own:
+    they recognise it before they read anything. It is null when the organisation has
+    not chosen one, and the interface then shows no swatch rather than inventing a
+    colour that would come to stand for a group nobody assigned it to.
+    """
+    rows = db.fetch_all("SELECT id, nom, patriarche, couleur FROM tribu ORDER BY nom ASC", (), role=user.role)
+    return [
+        {"id": str(r["id"]), "nom": r["nom"], "patriarche": r["patriarche"], "couleur": r.get("couleur")}
+        for r in rows
+    ]
 
 
 @router.get("/commissions")

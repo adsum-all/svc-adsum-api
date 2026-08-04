@@ -170,6 +170,10 @@ class MembreProfile(BaseModel):
     berger: str | None = None
     berger_referent_id: str | None = None
     tribu: str | None = None
+    #: The colour the tribe is known by, hexadecimal, or None when the organisation
+    #: has chosen none. Sent with the name because a member recognises their tribe by
+    #: its colour before they read it.
+    tribu_couleur: str | None = None
     tribu_id: str | None = None
     patriarche: str | None = None  # current human patriarche of the tribe, resolved (blank if none)
     coordination: str | None = None
@@ -532,6 +536,10 @@ class TribuOut(BaseModel):
     nom: str
     description: str | None = None
     publie: bool = True
+    #: The colour the tribe is known by, hexadecimal, or None when the organisation
+    #: has not chosen one. A member recognises their tribe by its colour before they
+    #: read its name, so it travels with the name everywhere the name goes.
+    couleur: str | None = None
     patriarche: str | None = None  # biblical reference (kept for context)
     patriarche_membre_id: str | None = None
     patriarche_nom: str | None = None  # current human titulaire, resolved
