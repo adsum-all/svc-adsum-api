@@ -375,3 +375,83 @@ def _elargir_cycle(demande_id: str, membre_id: str, champs: list[str], role: str
         "laissez le reste vide, puis validez. Aucun document n'est à refournir.",
     )
     return True
+
+
+class ResultatAnnulation(BaseModel):
+    """What the rollback closed and cleared."""
+
+    simulation: bool
+    demandes_fermees: int
+    membres_reverrouilles: int
+    #: Members who had already answered: their proposal is left untouched and their
+    #: request stays open, because closing it would discard work they have done.
+    reponses_preservees: int
+
+
+@router.post("/membres/campagne-annuler", response_model=ResultatAnnulation)
+def annuler_campagnes(
+    user: Annotated[UserMe, Depends(require_permission("membres.administrer"))],
+    simulation: bool = Query(default=True, description="Ne rien écrire, seulement compter."),
+) -> ResultatAnnulation:
+    """Withdraw every request these campaigns opened, and relock what they unlocked.
+
+    The completeness campaign unlocked whatever column was empty, which is not the
+    same as what a member still has to answer. It asked a confirmed berger whether
+    they are a berger, and asked someone unmarried what kind of marriage they had.
+    A form that asks a person to confirm what the organisation already knows, or to
+    answer a question that does not apply to them, is worse than one that asks
+    nothing: it reads as a system that does not know who it is talking to.
+
+    So the requests are withdrawn rather than left to be worked through. A member who
+    has already answered is the exception: their proposal is theirs, and their
+    request stays open so it can be reviewed. Nobody's work is discarded to tidy up
+    somebody else's mistake.
+
+    Only requests these campaigns opened, recognised by their subject. Anything the
+    administration opened is untouched.
+    """
+    from .demandes import _notify_ticket, _system_message
+
+    lignes = db.fetch_all(
+        "SELECT d.id, d.membre_id, "
+        "  EXISTS (SELECT 1 FROM modification_membre mm WHERE mm.demande_id = d.id) AS a_repondu "
+        "FROM demande d WHERE d.sujet = ANY(%s) AND d.statut IN ('attente_membre', 'en_validation')",
+        (list(_NOS_SUJETS),), role=user.role,
+    )
+    a_fermer = [r for r in lignes if not r.get("a_repondu")]
+    preserves = len(lignes) - len(a_fermer)
+
+    if simulation:
+        return ResultatAnnulation(
+            simulation=True, demandes_fermees=len(a_fermer),
+            membres_reverrouilles=len(a_fermer), reponses_preservees=preserves,
+        )
+
+    corps = (
+        "Cette demande est retirée. Elle vous demandait de compléter des informations "
+        "sans tenir compte de ce que l'organisation sait déjà de vous, et certaines "
+        "questions ne vous concernaient pas. Vous n'avez rien à faire. Une demande "
+        "précise vous sera adressée si une information vous est réellement nécessaire."
+    )
+    for r in a_fermer:
+        db.execute(
+            "UPDATE membre SET champs_deverrouilles = NULL WHERE id = %s",
+            (str(r["membre_id"]),), role=user.role,
+        )
+        db.execute(
+            "UPDATE demande SET statut = 'resolue', motif_cloture = %s, clos_le = now(), "
+            "echeance_reponse = NULL, maj_le = now() WHERE id = %s",
+            ("Demande retirée : questions non pertinentes pour ce membre.", str(r["id"])),
+            role=user.role,
+        )
+        _system_message(str(r["id"]), user.role, corps)
+        _notify_ticket(str(r["id"]), user.role, "Demande retirée", corps)
+
+    audit.log(
+        user.id, user.role, "campagne_annulation", "membre", None,
+        {"fermees": len(a_fermer), "reponses_preservees": preserves},
+    )
+    return ResultatAnnulation(
+        simulation=False, demandes_fermees=len(a_fermer),
+        membres_reverrouilles=len(a_fermer), reponses_preservees=preserves,
+    )
