@@ -582,6 +582,15 @@ def update_mon_profil(payload: ProfilUpdate, ctx: Annotated[tuple[str, str], Dep
     # answering "no" clears any previously stored name so no orphan value stays.
     if fields.get("berger_declare") is False:
         fields["berger_nom_declare"] = None
+    # And declaring oneself a shepherd without giving that name leaves a title
+    # attached to nobody: the administration is asked to confirm a consecration it
+    # cannot read. Refused here as well as in the form, so the rule does not depend
+    # on which client is talking to us.
+    if fields.get("berger_declare") is True and not str(fields.get("berger_nom_declare") or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vous avez déclaré être berger ou bergère : indiquez votre nom de consécration.",
+        )
     # During registration, every chosen attribution is a PROPOSAL: recorded as an
     # unconfirmed catalogue function (never the confirmed mirror), so the four form
     # blocks are no longer silently dropped and the administration keeps the sole
