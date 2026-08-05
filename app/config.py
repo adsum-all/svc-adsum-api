@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     environment: str = "development"
     # PostgreSQL connection (plain postgresql:// form), Supabase Paris in production.
     database_url: str = ""
+    # How long a connection attempt may take before it is abandoned. Applied to the
+    # DSN unless the URL already carries its own value. Five seconds is generous for
+    # a pooler in the same region and short enough that an unreachable database
+    # produces an error the caller can act on rather than a request that never ends.
+    database_connect_timeout_s: int = 5
     # JWT signing
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
@@ -122,7 +127,26 @@ class Settings(BaseSettings):
 
     @property
     def database_dsn(self) -> str:
-        return self.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        """The connection string, with a bounded handshake.
+
+        A connection opened per request (see db.py on why there is no pool) means
+        every request also pays a TCP and TLS handshake. Nothing bounded it: when the
+        pooler was unreachable, the caller waited on the operating system default,
+        which is measured in minutes. The API is deployed on a platform that kills
+        the invocation long before that, so the symptom was a request that produced
+        nothing and explained nothing, and the local test suite simply hung.
+
+        A refusal after a few seconds is an answer; an unbounded wait is not. Set
+        only when the caller has not already chosen a value.
+        """
+        dsn = self.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        if not dsn or "connect_timeout" in dsn:
+            # Nothing configured means nothing to append: a bare query string is not
+            # a connection string, and psycopg rejects it with an error about the
+            # timeout rather than about the missing URL, which sends the reader after
+            # the wrong thing entirely.
+            return dsn
+        return f"{dsn}{'&' if '?' in dsn else '?'}connect_timeout={self.database_connect_timeout_s}"
 
 
 settings = Settings()

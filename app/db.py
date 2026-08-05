@@ -23,14 +23,50 @@ from .config import settings
 
 
 @contextmanager
-def connection(role: str | None = None) -> Iterator[psycopg.Connection]:
-    conn = psycopg.connect(settings.database_dsn, row_factory=dict_row)
+def connection(
+    role: str | None = None,
+    *,
+    statement_timeout_ms: int | None = None,
+    connect_timeout_s: int | None = None,
+    local_settings: dict[str, str] | None = None,
+) -> Iterator[psycopg.Connection]:
+    """Open a connection for one unit of work.
+
+    The two timeouts exist for queries that sit on a path where waiting is worse
+    than not answering, the login being the example: a diagnostic that cannot raise
+    can still hang, and a caller that only wants to enrich a message must never be
+    able to hold up the message itself. Both default to off, so every existing
+    caller keeps the server-side settings it has always had.
+
+    local_settings carries extra transaction-local variables for policies that need
+    to narrow a read further than the role does. A member may read the delivery
+    events of their own address and no other, and the policy can only express that
+    if the address is in the transaction. Values are set through set_config, so
+    nothing is ever interpolated into SQL.
+    """
+    for nom in local_settings or {}:
+        if not nom.startswith("adsum."):
+            # The namespace is the guard: a caller must not be able to reach
+            # statement_timeout, the role, or any server setting through here.
+            # Checked before connecting, so a programming error costs no handshake.
+            raise ValueError(f"local setting outside the adsum namespace: {nom}")
+    extra = {"connect_timeout": connect_timeout_s} if connect_timeout_s else {}
+    conn = psycopg.connect(settings.database_dsn, row_factory=dict_row, **extra)
     try:
-        if role:
-            with conn.cursor() as cur:
+        with conn.cursor() as cur:
+            if role:
                 # Transaction-local so the role never leaks to another request that
                 # reuses the same pooled connection (Supabase transaction pooler).
                 cur.execute("SELECT set_config('adsum.role', %s, true)", (role,))
+            if statement_timeout_ms:
+                # Transaction-local for the same reason: a borrowed connection must
+                # go back with the server default, not with someone else's deadline.
+                cur.execute(
+                    "SELECT set_config('statement_timeout', %s, true)",
+                    (str(int(statement_timeout_ms)),),
+                )
+            for nom, valeur in (local_settings or {}).items():
+                cur.execute("SELECT set_config(%s, %s, true)", (nom, valeur))
         yield conn
         conn.commit()
     except Exception:
@@ -46,8 +82,21 @@ def fetch_one(sql: str, params: tuple[Any, ...], role: str | None = None) -> dic
         return cur.fetchone()
 
 
-def fetch_all(sql: str, params: tuple[Any, ...], role: str | None = None) -> list[dict[str, Any]]:
-    with connection(role) as conn, conn.cursor() as cur:
+def fetch_all(
+    sql: str,
+    params: tuple[Any, ...],
+    role: str | None = None,
+    *,
+    statement_timeout_ms: int | None = None,
+    connect_timeout_s: int | None = None,
+    local_settings: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    with connection(
+        role,
+        statement_timeout_ms=statement_timeout_ms,
+        connect_timeout_s=connect_timeout_s,
+        local_settings=local_settings,
+    ) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         return cur.fetchall()
 

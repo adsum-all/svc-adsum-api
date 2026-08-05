@@ -7,10 +7,23 @@ title = "ADSUM API gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "Test fixtures and the public ADSUM1 QR token format are not secrets"
+description = "Test fixtures, the public ADSUM1 QR token format and documented key shapes"
 paths = [
   '''tests/.*''',
 ]
 regexes = [
   '''ADSUM1\.[A-Za-z0-9_.\-]+''',
+  # Public model identifiers, named in the AI configuration help text so an
+  # administrator knows which ones this platform expects. The generic-api-key rule
+  # matches them because they sit in a sentence that also says "Cle API": the
+  # keyword is next to a hyphenated token with enough entropy to look like a
+  # credential. It is not one; these names appear in the provider's own public
+  # documentation.
+  #
+  # Scoped to the names themselves, never to the file. Allowing app/ai_config.py
+  # wholesale would hide a real key pasted into the very screen that asks for one,
+  # which is the exact accident this scan exists to catch. A real OpenAI key starts
+  # with "sk-" and is far longer than any of these.
+  '''gpt-[0-9][a-z0-9.\-]*''',
+  '''whisper-[0-9]''',
 ]

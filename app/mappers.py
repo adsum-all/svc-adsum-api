@@ -10,7 +10,7 @@ from .schemas import MembreProfile
 
 # Columns a member SELECT must expose for membre_row_to_profile, in order.
 MEMBRE_PROFILE_SELECT = (
-    "m.id, m.matricule, m.code_membre, m.email, m.nom, m.prenoms, m.telephone, m.indicatif_telephone, m.groupe, m.photo_url, "
+    "m.id, m.matricule, m.code_membre, m.a_code_membre, m.email, m.nom, m.prenoms, m.telephone, m.indicatif_telephone, m.groupe, m.photo_url, "
     "m.photo_pending_url, m.photo_focus_x, m.photo_focus_y, "
     "m.nom_naissance, m.nom_marital, m.nom_affiche, m.est_berger, m.nom_pastoral, m.fonction_perimetre, "
     "m.berger_declare, m.berger_nom_declare, "
@@ -23,7 +23,7 @@ MEMBRE_PROFILE_SELECT = (
     "m.commission_id, m.fonction_cle, m.fonction_confirmee, "
     "fh.libelle_h AS fonction_h, fh.libelle_f AS fonction_f, fh.libelle_n AS fonction_n, fh.est_vip AS fonction_vip, "
     "c.nom AS commission, c.type_organisation AS commission_type, i.nom AS intendance, bm.nom AS berger_nom, bm.prenoms AS berger_prenoms, "
-    "t.nom AS tribu, patr.patr_prenoms, patr.patr_nom, "
+    "t.nom AS tribu, t.couleur AS tribu_couleur, patr.patr_prenoms, patr.patr_nom, "
     "COALESCE(codirect.nom, co.nom) AS coordination, m.coordination_id, "
     "cm.nom AS coord_nom, cm.prenoms AS coord_prenoms, cm.genre AS coord_resp_genre, "
     "intd.int_prenoms, intd.int_nom, intd.int_genre, "
@@ -175,6 +175,7 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
         id=str(row["id"]),
         matricule=row["matricule"],
         code_membre=row.get("code_membre"),
+        a_code_membre=row.get("a_code_membre"),
         email=row["email"],
         nom=row["nom"],
         prenoms=row["prenoms"],
@@ -241,6 +242,9 @@ def membre_row_to_profile(row: dict[str, Any], fonctions: list[dict[str, Any]] |
         berger=_join_name(row.get("berger_prenoms"), row.get("berger_nom")),
         berger_referent_id=str(row["berger_referent_id"]) if row.get("berger_referent_id") else None,
         tribu=row.get("tribu"),
+        # The colour travels with the name: a member recognises their tribe by it
+        # before they read anything, so the two are never sent apart.
+        tribu_couleur=row.get("tribu_couleur"),
         tribu_id=str(row["tribu_id"]) if row.get("tribu_id") else None,
         # "patriarche" is the tribe member holding the 'patriarche' function,
         # resolved and shown in civil form; None (blank) when no one holds it.

@@ -316,7 +316,7 @@ def create_sous_commission(
 @router.get("/tribus", response_model=list[TribuOut])
 def list_tribus(user: Annotated[UserMe, Depends(require_permission("tribus.consulter"))]) -> list[TribuOut]:
     rows = db.fetch_all(
-        "SELECT t.id, t.nom, t.description, t.publie, t.patriarche, patr.membre_id AS patriarche_membre_id, "
+        "SELECT t.id, t.nom, t.description, t.publie, t.couleur, t.patriarche, patr.membre_id AS patriarche_membre_id, "
         "TRIM(COALESCE(patr.prenoms, '') || ' ' || COALESCE(patr.nom, '')) AS patriarche_nom "
         "FROM tribu t LEFT JOIN LATERAL ("
         "  SELECT pm2.id AS membre_id, pm2.prenoms, pm2.nom FROM membre pm2 "
@@ -330,7 +330,7 @@ def list_tribus(user: Annotated[UserMe, Depends(require_permission("tribus.consu
     return [
         TribuOut(
             id=str(r["id"]), nom=r["nom"], description=r.get("description"), publie=bool(r.get("publie")),
-            patriarche=r["patriarche"],
+            couleur=r.get("couleur"), patriarche=r["patriarche"],
             patriarche_membre_id=str(r["patriarche_membre_id"]) if r.get("patriarche_membre_id") else None,
             patriarche_nom=((r.get("patriarche_nom") or "").strip() or None),
         )
@@ -341,6 +341,10 @@ def list_tribus(user: Annotated[UserMe, Depends(require_permission("tribus.consu
 class TribuIn(BaseModel):
     nom: str = Field(min_length=1, max_length=120)
     description: str | None = None
+    #: Hexadecimal, three or six digits. Validated here and again by a CHECK on the
+    #: column, because this value lands straight inside a style attribute on every
+    #: page that shows the tribe.
+    couleur: str | None = Field(default=None, pattern=r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 
 @router.post("/tribus", response_model=TribuOut, status_code=status.HTTP_201_CREATED)
@@ -353,21 +357,85 @@ def create_tribu(
     a clear 409 instead of surfacing a raw unique-constraint violation as a 500."""
     nom = payload.nom.strip()
     if db.fetch_one("SELECT 1 FROM tribu WHERE lower(nom) = lower(%s)", (nom,), role=user.role):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="une tribu porte deja ce nom")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="une tribu porte déjà ce nom")
     try:
         created = db.execute(
-            "INSERT INTO tribu (nom, description) VALUES (%s, %s) RETURNING id, nom, description, publie",
-            (nom, (payload.description or "").strip() or None),
+            "INSERT INTO tribu (nom, description, couleur) VALUES (%s, %s, %s) "
+            "RETURNING id, nom, description, publie, couleur",
+            (nom, (payload.description or "").strip() or None, payload.couleur),
             role=user.role,
         )
     except psycopg.errors.UniqueViolation as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="une tribu porte deja ce nom") from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="une tribu porte déjà ce nom") from exc
     if not created:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="tribe not created")
     audit.log(user.id, user.role, "creation_tribu", "tribu", str(created["id"]), {"nom": payload.nom})
     return TribuOut(
         id=str(created["id"]), nom=created["nom"], description=created.get("description"),
-        publie=bool(created.get("publie")), patriarche=None, patriarche_membre_id=None, patriarche_nom=None,
+        publie=bool(created.get("publie")), couleur=created.get("couleur"),
+        patriarche=None, patriarche_membre_id=None, patriarche_nom=None,
+    )
+
+
+class TribuPatch(BaseModel):
+    """What an administrator may change on a tribe. Absent means "leave as is"."""
+
+    nom: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = None
+    #: Hexadecimal, or the empty string to clear it. Validated here and again by a
+    #: CHECK on the column: this value lands inside a style attribute on every page
+    #: that shows the tribe, so a free-text colour would be a way into those pages.
+    couleur: str | None = Field(default=None, pattern=r"^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))?$")
+    publie: bool | None = None
+
+
+@router.patch("/tribus/{tribu_id}", response_model=TribuOut)
+def update_tribu(
+    tribu_id: str, payload: TribuPatch,
+    user: Annotated[UserMe, Depends(require_permission("tribus.administrer"))],
+) -> TribuOut:
+    """Change a tribe's name, description, colour or publication.
+
+    The colour exists so a member can recognise their tribe at a glance, and it is
+    editable rather than fixed because another organisation deploying this product
+    has its own groups: a palette written into the code would be this organisation's
+    palette in everybody else's application.
+    """
+    champs: dict[str, object] = {}
+    if payload.nom is not None:
+        nom = payload.nom.strip()
+        # The name is the tribe's unique code, so a collision is reported as such
+        # rather than surfacing a raw constraint violation as a 500.
+        if db.fetch_one(
+            "SELECT 1 FROM tribu WHERE lower(nom) = lower(%s) AND id <> %s",
+            (nom, tribu_id), role=user.role,
+        ):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="une tribu porte déjà ce nom")
+        champs["nom"] = nom
+    if payload.description is not None:
+        champs["description"] = payload.description.strip() or None
+    if payload.couleur is not None:
+        # An empty string means "no colour": the interface then shows no swatch at
+        # all, which is honest, rather than falling back to a colour nobody chose.
+        champs["couleur"] = payload.couleur or None
+    if payload.publie is not None:
+        champs["publie"] = payload.publie
+    if not champs:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="rien à modifier")
+
+    assignations = ", ".join(f"{c} = %s" for c in champs)
+    ligne = db.execute(
+        f"UPDATE tribu SET {assignations} WHERE id = %s "
+        "RETURNING id, nom, description, publie, couleur, patriarche",
+        (*champs.values(), tribu_id), role=user.role,
+    )
+    if not ligne:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tribe not found")
+    audit.log(user.id, user.role, "modification_tribu", "tribu", str(tribu_id), {"champs": sorted(champs)})
+    return TribuOut(
+        id=str(ligne["id"]), nom=ligne["nom"], description=ligne.get("description"),
+        publie=bool(ligne.get("publie")), couleur=ligne.get("couleur"),
+        patriarche=ligne.get("patriarche"), patriarche_membre_id=None, patriarche_nom=None,
     )
 
 
@@ -387,7 +455,7 @@ def set_patriarche(
         if not membre:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
         if str(membre.get("tribu_id") or "") != str(tribu_id):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="le patriarche doit appartenir a cette tribu")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="le patriarche doit appartenir à cette tribu")
     # Atomic critical section: lock the tribe row so two concurrent appointments
     # cannot both run "close then insert", close the currently open history line,
     # set (or clear) the titulaire and open a new history line, all in one

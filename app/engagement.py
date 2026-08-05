@@ -52,20 +52,23 @@ def _remercier(email: str, prenoms: str | None, pays_code: str | None) -> tuple[
     from .email_gateway import send_email
 
     prenom = (prenoms or "").split(" ")[0].strip() or ("dear friend" if _langue(pays_code) == "en" else "cher ami")
+    # The organisation names itself. Written as a literal, this message welcomed
+    # every other organisation's prospects into the Sacerdoce Royal, which is the
+    # first thing a lead ever reads from a platform they are considering joining.
+    organisation = marque().nom
     if _langue(pays_code) == "en":
         subject = "Thank you for your interest"
         text = (
-            f"Hello {prenom},\n\nThank you for choosing to take this step and express your wish to engage "
-            "with the Sacerdoce Royal fraternity. Your interest has been received.\n\nWe will get back to you "
-            "shortly with the next steps.\n\nWith our warmest regards,\nThe Sacerdoce Royal team"
+            f"Hello {prenom},\n\nThank you for choosing to take this step and expressing your wish to join "
+            f"{organisation}. Your request has been received.\n\nWe will get back to you shortly with the "
+            f"next steps.\n\nWith our warmest regards,\nThe {organisation} team"
         )
     else:
         subject = "Merci pour votre engagement"
         text = (
-            f"Bonjour {prenom},\n\nMerci d'avoir fait ce beau choix et d'avoir exprime votre souhait de vous "
-            "engager au sein de la fraternite du Sacerdoce Royal. Votre demande a bien ete recue.\n\nNous "
-            "reviendrons vers vous tres prochainement avec les prochaines etapes.\n\nBien fraternellement,\n"
-            f"L'équipe {marque().nom}"
+            f"Bonjour {prenom},\n\nMerci d'avoir fait ce beau choix et d'avoir exprimé votre souhait de "
+            f"rejoindre {organisation}. Votre demande a bien été reçue.\n\nNous reviendrons vers vous très "
+            f"prochainement avec les prochaines étapes.\n\nBien cordialement,\nL'équipe {organisation}"
         )
     html = "<p>" + text.replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>"
     try:

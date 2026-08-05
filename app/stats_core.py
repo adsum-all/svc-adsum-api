@@ -230,6 +230,7 @@ def repartition_evenement(evenement_id: str, dimension_expr: str, role: str | No
     return [{"cle": r["cle"], "presents": int(r["presents"]), "partiels": int(r["partiels"]), "absents": int(r["absents"])} for r in rows]
 
 
+
 def non_repondants_detail(evenement_id: str, role: str | None, fenetre_fin_sql: str) -> dict[str, int]:
     """Split the non-respondents (targeted active members with NO consolidated record
     in either table) by whether they signed in during the response window. The total

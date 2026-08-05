@@ -14,8 +14,12 @@ from app.formation import _merge_matrice, _sanitize_matrice
 
 
 def _prefs(matrice=None, **over):
+    # push defaults to on, like email and telegram and unlike whatsapp and sms:
+    # somebody who installed the mobile application and registered a device asked to
+    # be reached on it, whereas the paid channels stay off until chosen.
     base = {
-        "matrice_canaux": matrice, "email": True, "telegram": True, "whatsapp": False, "sms": False,
+        "matrice_canaux": matrice, "email": True, "telegram": True, "whatsapp": False,
+        "sms": False, "push": True,
         "evenements": True, "demandes": True, "rappels": True, "anniversaire": True,
         "anniv_pairs": True, "collaboration": True,
     }
@@ -34,13 +38,29 @@ def _patch_prefs(prefs):
 def test_group_email_off_keeps_telegram():
     m = {"rappels": {"email": False, "telegram": True}}
     with _patch_prefs(_prefs(m)):
-        assert N.canaux_autorises("M", None, "activite_rappel_j1", "operationnel") == {"telegram"}
+        # push is absent from this group's entry, so it keeps its default: muting one
+        # channel must never mute a channel the member did not name.
+        assert N.canaux_autorises("M", None, "activite_rappel_j1", "operationnel") == {"telegram", "push"}
 
 
 def test_group_all_on_default():
     with _patch_prefs(_prefs(None)):
-        # No matrix, legacy category on -> both channels
-        assert N.canaux_autorises("M", None, "demande_reponse", "prive") == {"email", "telegram"}
+        # No matrix, legacy category on -> every free channel
+        assert N.canaux_autorises("M", None, "demande_reponse", "prive") == {"email", "telegram", "push"}
+
+
+def test_a_group_muted_on_push_keeps_the_other_channels():
+    """The mobile application is one channel among several, silenced on its own."""
+    m = {"rappels": {"push": False}}
+    with _patch_prefs(_prefs(m)):
+        assert N.canaux_autorises("M", None, "activite_rappel_j1", "operationnel") == {"email", "telegram"}
+
+
+def test_master_push_off_blocks_every_group():
+    """Turning the channel off wholesale must not need a pass over every group."""
+    m = {"rappels": {"email": True, "telegram": True, "push": True}}
+    with _patch_prefs(_prefs(m, push=False)):
+        assert N.canaux_autorises("M", None, "activite_rappel_j1", "operationnel") == {"email", "telegram"}
 
 
 def test_critical_is_never_gated():
@@ -58,17 +78,17 @@ def test_announcements_and_attendance_are_now_gated():
     # Announcements and the attendance survey (pointage) are member-controllable per channel
     # now (on/off), instead of bypassing the matrix. Default: both channels on.
     with _patch_prefs(_prefs(None)):
-        assert N.canaux_autorises("M", None, "annonce", "informationnel") == {"email", "telegram"}
-        assert N.canaux_autorises("M", None, "sondage_activite", "operationnel") == {"email", "telegram"}
+        assert N.canaux_autorises("M", None, "annonce", "informationnel") == {"email", "telegram", "push"}
+        assert N.canaux_autorises("M", None, "sondage_activite", "operationnel") == {"email", "telegram", "push"}
     # A member can now silence the e-mail channel for pointage while keeping Telegram.
-    with _patch_prefs(_prefs({"pointage": {"email": False, "telegram": True}})):
+    with _patch_prefs(_prefs({"pointage": {"email": False, "telegram": True, "push": False}})):
         assert N.canaux_autorises("M", None, "sondage_activite", "operationnel") == {"telegram"}
 
 
 def test_master_email_off_blocks_even_if_group_on():
     m = {"rappels": {"email": True, "telegram": True}}
     with _patch_prefs(_prefs(m, email=False)):
-        assert N.canaux_autorises("M", None, "activite_rappel_j1", "operationnel") == {"telegram"}
+        assert N.canaux_autorises("M", None, "activite_rappel_j1", "operationnel") == {"telegram", "push"}
 
 
 def test_legacy_category_off_without_matrix_mutes_both():

@@ -34,6 +34,7 @@ from .collaboration_tableaux import router as collaboration_tableaux_router
 from .collaboration_telegram_ingest import router as collaboration_telegram_ingest_router
 from .collaboration_transverse import router as collaboration_transverse_router
 from .communication_centre import router as communication_centre_router
+from .completude_profil import router as completude_profil_router
 from .comptage import comptage_public_router
 from .comptage import router as comptage_router
 from .config import settings
@@ -88,6 +89,7 @@ from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
 from .permissions_applications_api import router as permissions_applications_router
 from .pilotage import router as pilotage_router
+from .push_api import router as push_router
 from .reference import router as reference_router
 from .reglages_duree import router as reglages_duree_router
 from .retention_archivage import router as retention_archivage_router
@@ -227,6 +229,8 @@ app.include_router(engagement_router)
 app.include_router(engagement_import_router)
 app.include_router(sondage_router)
 app.include_router(sondage_cron_router)
+app.include_router(push_router)
+app.include_router(completude_profil_router)
 
 
 @app.get("/health", tags=["system"])
