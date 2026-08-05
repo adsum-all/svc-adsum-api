@@ -427,6 +427,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'PUT /api/v1/admin/parametres/sondage-pointage': 'parametres.gerer',
     'POST /api/v1/admin/notifications/declencher-sondages': 'notifications.gerer',
     'GET /api/v1/admin/participation/global': 'participation.consulter',
+    'GET /api/v1/admin/participation/par-entite': 'participation.consulter',
     'GET /api/v1/admin/pays-signature': 'matrice-pays.consulter',
     'GET /api/v1/admin/perimetres-disponibles': 'acces.administrer',
     'GET /api/v1/admin/sous-commissions': 'organisation.consulter',

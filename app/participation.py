@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from . import db, evenement_pieces, temps, visibilite
@@ -436,6 +436,35 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
 
 
 # --- Admin: global participation trends -------------------------------------
+
+@router.get("/admin/participation/par-entite")
+def participation_par_entite(
+    user: Annotated[UserMe, Depends(require_permission("participation.consulter"))],
+    dimension: str = Query(..., description="commission, tribu, coordination, intendance, pays, continent ou volet"),
+    cross: str | None = Query(default=None, description="Seconde dimension optionnelle, pour un croisement."),
+) -> list[dict[str, object]]:
+    """Cumulative attendance across all events, broken down by an entity dimension.
+
+    Feeds the direction dashboard's "participation by entity" screen, which lets a
+    reader compare presence between commissions, tribes, countries, and so on, and
+    optionally cross two dimensions. The figures come from the same consolidation as
+    the global cards, so a bar here reconciles with the totals shown elsewhere.
+
+    An unknown dimension is refused rather than guessed at: the direction front is
+    read-only and its whole value is that the numbers are trustworthy, so a request
+    it does not understand returns 422, never a plausible but meaningless breakdown.
+    """
+    from . import stats_core
+
+    rows = stats_core.repartition_globale_par_entite(dimension, user.role, cross)
+    if rows is None:
+        connues = ", ".join(stats_core.dimensions_direction())
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"dimension inconnue. Attendu : {connues}.",
+        )
+    return rows
+
 
 @router.get("/admin/participation/global")
 def participation_global(user: Annotated[UserMe, Depends(require_permission("participation.consulter"))]) -> dict[str, object]:
