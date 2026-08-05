@@ -454,11 +454,11 @@ def participation_par_entite(
     read-only and its whole value is that the numbers are trustworthy, so a request
     it does not understand returns 422, never a plausible but meaningless breakdown.
     """
-    from . import stats_core
+    from . import stats_direction
 
-    rows = stats_core.repartition_globale_par_entite(dimension, user.role, cross)
+    rows = stats_direction.repartition_globale_par_entite(dimension, user.role, cross)
     if rows is None:
-        connues = ", ".join(stats_core.dimensions_direction())
+        connues = ", ".join(stats_direction.dimensions_direction())
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"dimension inconnue. Attendu : {connues}.",
