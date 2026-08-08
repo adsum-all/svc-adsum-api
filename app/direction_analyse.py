@@ -99,7 +99,20 @@ _INCONNU = "Non renseigné"
 #: answers "does this commission follow online or on site", which a single axis
 #: cannot say.
 DIMENSIONS: dict[str, dict[str, str]] = {
-    "commission": {"expr": f"coalesce(c.nom, '{_INCONNU}')", "libelle": "Commission", "famille": "membre"},
+    # The commission table carries two kinds of unit, commission and mission, and the
+    # platform's taxonomy keeps them apart. A member is attached to one of them
+    # through the same column, so grouping on it mixes both: labelling that axis
+    # "Commission" contradicted the organisation screen, which counts the nine
+    # commissions and not the six missions. Named for what it groups, and the type is
+    # offered as its own axis so the two can be told apart or crossed.
+    "commission": {"expr": f"coalesce(c.nom, '{_INCONNU}')", "libelle": "Commission ou mission", "famille": "membre"},
+    "type_unite": {
+        "expr": (
+            "CASE c.type_organisation WHEN 'commission' THEN 'Commission' "
+            "WHEN 'mission' THEN 'Mission' ELSE 'Non rattaché' END"
+        ),
+        "libelle": "Type d'unité", "famille": "membre",
+    },
     "intendance": {"expr": f"coalesce(i.nom, '{_INCONNU}')", "libelle": "Intendance", "famille": "membre"},
     "coordination": {"expr": f"coalesce(co.nom, cod.nom, '{_INCONNU}')", "libelle": "Coordination", "famille": "membre"},
     "tribu": {"expr": f"coalesce(t.nom, '{_INCONNU}')", "libelle": "Tribu", "famille": "membre"},
