@@ -182,6 +182,63 @@ def _etat(f: Fournisseur, valeurs: dict[str, str], chaine: list[str]) -> dict[st
     }
 
 
+def _compte_expediteur(adresse: str) -> dict[str, object] | None:
+    """The account that logs in with the sending address, if there is one."""
+    if not adresse.strip():
+        return None
+    return db.fetch_one(
+        "SELECT role, actif, coalesce(acces_technique_global, false) AS technique "
+        "FROM utilisateur WHERE lower(email) = lower(%s)",
+        (adresse.strip(),),
+    )
+
+
+def _alertes(valeurs: dict[str, str], compte: dict[str, object] | None) -> list[dict[str, str]]:
+    """What is configured in a way that will hurt, said before it does.
+
+    A sending address is printed on every message a member receives, so it is the
+    most widely published string the platform owns. When that same address also
+    opens a session, its exposure becomes an attack surface: everyone knows where
+    to aim, and the one-time codes that protect the account land in the mailbox
+    whose address was handed out. The risk is not theoretical when the account
+    carries technical access, which outranks a human super administrator.
+
+    Reported rather than refused: an organisation starting out legitimately runs
+    on one mailbox, and blocking the save would leave it unable to send at all.
+
+    ``compte`` is the account row behind the sending address, or ``None``. It is
+    passed in rather than read here so the decision stays a pure function of its
+    inputs, testable on real values without standing in for the database.
+    """
+    alertes: list[dict[str, str]] = []
+    expediteur = valeurs.get("email_from", "").strip()
+    if not expediteur:
+        return alertes
+
+    if compte and compte.get("actif"):
+        privilegie = bool(compte.get("technique")) or str(compte.get("role")) in ("super_admin", "admin")
+        alertes.append({
+            "niveau": "critique" if privilegie else "avertissement",
+            "titre": "L'adresse expéditrice est aussi un compte de connexion",
+            "detail": (
+                f"{expediteur} apparaît sur chaque message envoyé aux membres, et ouvre également une session"
+                + (" avec des droits étendus" if privilegie else "")
+                + ". Utilisez une adresse d'envoi distincte, et gardez l'adresse de connexion non publiée."
+            ),
+        })
+
+    if not valeurs.get("email_reply_to", "").strip():
+        alertes.append({
+            "niveau": "avertissement",
+            "titre": "Aucune adresse de réponse",
+            "detail": (
+                "Un membre qui répond à une notification écrit dans la boîte d'envoi, que personne ne relève. "
+                "Renseignez une adresse réellement lue."
+            ),
+        })
+    return alertes
+
+
 @router.get("/fournisseurs")
 def lister(user: Annotated[UserMe, Depends(require_permission("integrations.administrer"))]) -> dict[str, object]:
     """Everything the switching screen needs, in one call."""
@@ -189,6 +246,7 @@ def lister(user: Annotated[UserMe, Depends(require_permission("integrations.admi
     chaine = _chaine_active()
     return {
         "chaine": chaine,
+        "alertes": _alertes(valeurs, _compte_expediteur(valeurs.get("email_from", ""))),
         "commun": [
             {**c.model_dump(), "valeur": valeurs.get(c.cle, ""), "renseigne": bool(valeurs.get(c.cle))}
             for c in _COMMUNS
