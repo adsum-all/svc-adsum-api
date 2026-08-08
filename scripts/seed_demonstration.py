@@ -324,6 +324,66 @@ def _pointages_scannes(simulation: bool) -> dict[str, int]:
     return {"candidats": len(lignes), "scannes": ecrits}
 
 
+def _motifs_absence(simulation: bool) -> dict[str, int]:
+    """Give some demonstration absences a reason, so the decision queue has content.
+
+    An absence back-filled from the old model carries no reason, and an absence with
+    no reason asks for nothing: it never reaches a responsible person. That is the
+    correct behaviour, and it also means the qualification screen is empty and cannot
+    be judged.
+
+    So a third of the demonstration absences are given a reason, deterministically,
+    and a few are decided so the screen shows all three states rather than only the
+    queue. Nothing here decides on behalf of a real member: the predicate is the same
+    one that guards every other statement in this script.
+    """
+    alea = random.Random(_GRAINE + 4)
+    lignes = db.fetch_all(
+        f"SELECT p.evenement_id, p.membre_id FROM participation p JOIN membre m ON m.id = p.membre_id "
+        f"WHERE {_DEMO} AND p.statut = 'absent' AND p.absence_motif IS NULL "
+        f"AND NOT coalesce(p.legacy_ambigu, false) ORDER BY p.evenement_id, p.membre_id",
+        (),
+    )
+    catalogue = [str(r["code"]) for r in db.fetch_all(
+        "SELECT code FROM motif_absence WHERE actif AND code <> 'autre' ORDER BY ordre", ()
+    )]
+    if not (lignes and catalogue):
+        return {"motifs": 0, "decidees": 0}
+
+    decideur = db.fetch_one(
+        "SELECT id FROM utilisateur WHERE role IN ('admin', 'super_admin') AND actif LIMIT 1", ()
+    )
+
+    motifs = decidees = 0
+    for r in lignes:
+        if alea.random() > 0.33:
+            continue
+        code = alea.choice(catalogue)
+        motifs += 1
+        # A fifth of them already decided, so the screen shows a queue, a history and
+        # a refusal rather than one state repeated.
+        tirage = alea.random()
+        qualification = "excusee" if tirage < 0.15 else "non_excusee" if tirage < 0.20 else "en_attente"
+        ferme = qualification != "en_attente"
+        if ferme:
+            decidees += 1
+        if simulation:
+            continue
+        db.execute(
+            f"UPDATE participation p SET absence_motif = %s, absence_qualification = %s, "
+            f"qualifie_par = %s, qualifie_le = CASE WHEN %s THEN now() ELSE NULL END "
+            f"FROM membre m WHERE m.id = p.membre_id AND {_DEMO} "
+            f"AND p.evenement_id = %s AND p.membre_id = %s",
+            (
+                code, qualification,
+                str(decideur["id"]) if (ferme and decideur) else None,
+                ferme,
+                str(r["evenement_id"]), str(r["membre_id"]),
+            ),
+        )
+    return {"motifs": motifs, "decidees": decidees}
+
+
 def main() -> None:
     analyseur = argparse.ArgumentParser(description=__doc__)
     analyseur.add_argument("--appliquer", action="store_true", help="écrire réellement")
@@ -347,6 +407,8 @@ def main() -> None:
     print(f"  participations écrites (hors doublons)    : {part['participations']}")
     sc = _pointages_scannes(simulation)
     print(f"  présences transformées en pointage QR      : {sc['scannes']} sur {sc['candidats']}")
+    mo = _motifs_absence(simulation)
+    print(f"  absences dotées d'un motif                 : {mo['motifs']} (dont {mo['decidees']} déjà décidées)")
 
     if simulation:
         print()
@@ -355,3 +417,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
