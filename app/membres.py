@@ -148,6 +148,8 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
     _duree = fenetres_pointage.duree_defaut(role)
     _debut_fenetre = fenetres_pointage.debut_fenetre_sql("e", _avant)
     _fin = fenetres_pointage.fin_effective_sql("e", _duree)
+    # The activity ending and the declaration closing are two different moments.
+    _cloture = fenetres_pointage.cloture_declaration_sql("e")
     rows = db.fetch_all(
         """
         SELECT e.id, e.titre, e.type, e.volet, e.debut, e.fin, e.lieu, e.mode,
@@ -170,9 +172,17 @@ def my_events(ctx: Annotated[tuple[str, str], Depends(require_membre)]) -> list[
                  WHEN now() < """ + _debut_fenetre + """ THEN 'a_venir'
                  WHEN now() < e.debut THEN 'bientot'
                  WHEN now() <= """ + _fin + """ THEN 'en_cours'
+                 -- Between the end and the closing of the form the activity is over
+                 -- but the member still owes an answer. Folding this into 'termine'
+                 -- removed it from every list, and the answer it was still waiting
+                 -- for became a fabricated non-response in the statistics.
+                 WHEN now() <= """ + _cloture + """ THEN 'a_declarer'
                  ELSE 'termine'
                END AS phase,
-               (now() >= e.debut) AS formulaire_ouvert,
+               -- Bounded by the same closing instant the submission endpoint enforces.
+               -- Unbounded, a list announced an open form months later and the member
+               -- met a refusal the screen had promised would not happen.
+               (now() >= e.debut AND now() <= """ + _cloture + """) AS formulaire_ouvert,
                (now() >= """ + _debut_fenetre + """
                 AND now() <= """ + _fin + """) AS in_window
         FROM evenement e

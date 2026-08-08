@@ -68,3 +68,28 @@ def debut_fenetre_sql(alias: str = "e", avant: int | None = None) -> str:
     """SQL for when attendance opens, the start minus the configured tolerance."""
     minutes = DEFAUT_AVANT if avant is None else max(0, min(MAXIMUM_MINUTES, avant))
     return f"({alias}.debut - make_interval(mins => {minutes}))"
+
+
+def cloture_declaration_sql(alias: str = "e") -> str:
+    """SQL for the instant the declaration form closes.
+
+    The activity ending and the form closing are two different moments: a member is
+    given a window afterwards to say whether they followed it. Listings used to treat
+    the activity's end as the end of everything, so during that window the activity
+    belonged to no list at all. The member could not answer a form that was still
+    open, and the missing answer was then counted as a non-response, which entered the
+    statistics as if the member had chosen not to reply.
+
+    The window is the activity's own value in minutes first, then the same value
+    expressed in hours for activities configured before minutes existed, then the
+    global setting. Kept here so display, submission and reminders cannot drift apart.
+    """
+    return (
+        f"(COALESCE({alias}.fin, {alias}.debut + make_interval(mins => COALESCE("
+        "  (SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'pointage_duree_defaut_minutes'), 120)))"
+        " + make_interval(mins => COALESCE("
+        f"{alias}.fenetre_reponse_minutes, "
+        f"{alias}.fenetre_reponse_heures * 60, "
+        "(SELECT (p.valeur #>> '{}')::int FROM parametre p WHERE p.cle = 'questionnaire_fenetre_minutes'), "
+        "120)))"
+    )
