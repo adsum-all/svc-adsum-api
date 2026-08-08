@@ -103,6 +103,9 @@ from .sessions_membre import router as sessions_membre_router
 from .sondage import cron_router as sondage_cron_router
 from .sondage import router as sondage_router
 from .supervision_tribus import router as supervision_tribus_router
+from .support import router as support_router
+from .support_console import router as support_console_router
+from .support_entrant import router as support_entrant_router
 from .tags import router as tags_router
 from .technical_admin import router as technical_admin_router
 from .telegram_liaison import router as telegram_liaison_router
@@ -225,6 +228,9 @@ app.include_router(niveaux_router)
 app.include_router(gestion_router)
 app.include_router(email_fournisseurs_router)
 app.include_router(formulaire_pointage_router)
+app.include_router(support_router)
+app.include_router(support_entrant_router)
+app.include_router(support_console_router)
 app.include_router(technical_admin_router)
 app.include_router(groupes_router)
 app.include_router(groupes_fiche_router)
