@@ -243,7 +243,7 @@ class EvenementOut(BaseModel):
     intervenant_principal: str | None = None
     intervenants: list[str] = []
     # Server-computed lifecycle (source of truth for time-gated UI actions).
-    phase: str = "a_venir"  # a_venir | bientot | en_cours | termine
+    phase: str = "a_venir"  # a_venir | bientot | en_cours | a_declarer | termine
     joignable: bool = False  # the join button may show (in window and a link is available)
     formulaire_ouvert: bool = False  # the participation form may show (session started)
 

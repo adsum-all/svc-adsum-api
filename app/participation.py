@@ -545,7 +545,13 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
         role=user.role,
     ) or {}
     nb_eval = int(ev_row.get("nb_eval") or 0)
-    seuil_eval_ok = nb_eval >= _SEUIL_EVAL
+    nb_notes = int(ev_row.get("nb_notes") or 0)
+    # The threshold protects the MEAN, so it must count the ratings that build it, not
+    # every evaluation. Counting all of them published the mean as soon as three people
+    # answered even if only one had rated: the "average" was then that single person's
+    # score, attached to an activity whose participants are known. Comments are withheld
+    # under the same rule for the same reason.
+    seuil_eval_ok = nb_notes >= _SEUIL_EVAL
     notes_dist = db.fetch_all(
         "SELECT note, count(*) AS n FROM evaluation_activite WHERE evenement_id = %s AND note IS NOT NULL GROUP BY note ORDER BY note",
         (evenement_id,),
@@ -553,7 +559,7 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
     ) if seuil_eval_ok else []
     notes = {
         "note_moyenne": ev_row.get("note_moyenne") if seuil_eval_ok else None,
-        "nb_notes": int(ev_row.get("nb_notes") or 0),
+        "nb_notes": nb_notes,
         "brouillons": brouillons_row.get("brouillons") or 0,
     }
     # Modality x follow-up cross table (counted participations only).
@@ -573,7 +579,6 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
     # Non-respondents (targeted active members with NO record in either table),
     # split by connectivity. Its total equals s['non_repondants'] by construction.
     nr = stats_core.non_repondants_detail(evenement_id, user.role, FENETRE_FIN_SQL)
-    nb_notes = int(notes.get("nb_notes") or 0)
 
     def taux(n: int, base: int) -> float:
         return round(100.0 * n / base, 1) if base else 0.0
@@ -623,7 +628,10 @@ def participation_stats(evenement_id: str, user: Annotated[UserMe, Depends(requi
         "evaluation_anonyme": True,
         "seuil_evaluation": _SEUIL_EVAL,
         "seuil_evaluation_atteint": seuil_eval_ok,
-        "taux_reponse_note": taux(nb_notes, presents),
+        # Ratings are anonymous and unlinked to a member, so nothing guarantees a rater
+        # was counted present: dividing by the present alone produced rates above 100 %.
+        # The denominator is whichever population is larger, so the rate stays a share.
+        "taux_reponse_note": taux(nb_notes, max(presents, nb_notes)),
         "distribution_notes": [{"note": int(r["note"]), "n": int(r["n"])} for r in notes_dist],
         "repartitions": {dim: stats_core.repartition_evenement(evenement_id, expr, user.role) for dim, expr in stats_core.REPARTITION_DIMENSIONS.items()},
     }
