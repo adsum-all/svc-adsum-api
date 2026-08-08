@@ -141,6 +141,16 @@ def _notifier_session_ouverte(evenement_id: str, lien: str, role: str) -> None:
 # --- Admin: questionnaire builder -------------------------------------------
 
 class QuestionIn(BaseModel):
+    """One question of the form.
+
+    ``id`` is what makes editing safe. Answers are stored as a JSON object keyed by
+    the question's identifier, so deleting every question and reinserting them, which
+    is what this endpoint used to do, gave each one a fresh identifier and left every
+    answer pointing at a key that no longer existed. Saving twice without changing
+    anything was enough to make an entire survey read "Aucune réponse".
+    """
+
+    id: str | None = None
     libelle: TitleStr
     type: ShortStr = "texte"  # 'texte' | 'choix' | 'note'
     options: list[LineStr] = []
@@ -149,49 +159,210 @@ class QuestionIn(BaseModel):
 class QuestionnaireIn(BaseModel):
     titre: TitleStr = "Questionnaire de session"
     questions: list[QuestionIn] = Field(max_length=100)
+    #: Saving leaves the form as a draft unless publication is asked for. Before
+    #: this, saving made the form immediately answerable by every member, so a
+    #: half-written question went out the moment somebody hit the button.
+    publier: bool = False
+
+
+def _compter_reponses(qid: str, question_ids: list[str], role: str) -> dict[str, int]:
+    """How many answers each question already carries.
+
+    Read before anything is removed, so a question people have answered can be
+    archived rather than deleted. The count comes from the JSON keys themselves,
+    which is where the link between a question and its answers actually lives.
+    """
+    if not question_ids:
+        return {}
+    rows = db.fetch_all(
+        "SELECT reponses FROM reponse_questionnaire WHERE questionnaire_id = %s",
+        (qid,), role=role,
+    )
+    compte = dict.fromkeys(question_ids, 0)
+    for r in rows:
+        reponses = r.get("reponses") or {}
+        if isinstance(reponses, dict):
+            for cle in reponses:
+                if cle in compte:
+                    compte[cle] += 1
+    return compte
 
 
 @router.put("/admin/evenements/{evenement_id}/questionnaire")
 def definir_questionnaire(evenement_id: str, payload: QuestionnaireIn, user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))]) -> dict[str, object]:
-    """Create or replace the questionnaire attached to an event."""
+    """Create or update the questionnaire attached to an event, without losing answers.
+
+    Reconciled rather than replaced. Questions that came back with an identifier are
+    updated in place, new ones are inserted, and a question the editor removed is
+    deleted only when nobody has answered it; otherwise it is archived, because the
+    answers reference it by that identifier and deleting it would make them
+    unreadable.
+    """
     if not payload.questions:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="at least one question required")
+    for question in payload.questions:
+        if question.type not in ("texte", "choix", "note"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid question type")
+        # A multiple-choice question with no options renders as an empty dropdown the
+        # member cannot answer. Refused here rather than discovered by the member.
+        if question.type == "choix" and len([o for o in question.options if o.strip()]) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"La question « {question.libelle} » est de type choix : donnez au moins deux options.",
+            )
+
     q = db.execute(
         """
-        INSERT INTO questionnaire (evenement_id, titre) VALUES (%s, %s)
-        ON CONFLICT (evenement_id) DO UPDATE SET titre = EXCLUDED.titre, actif = true
-        RETURNING id
+        INSERT INTO questionnaire (evenement_id, titre, statut, actif)
+        VALUES (%(ev)s, %(titre)s, %(statut)s, %(actif)s)
+        ON CONFLICT (evenement_id) DO UPDATE SET
+            titre = EXCLUDED.titre,
+            statut = EXCLUDED.statut,
+            actif = EXCLUDED.actif,
+            version = questionnaire.version + 1,
+            maj_le = now()
+        RETURNING id, version
         """,
-        (evenement_id, payload.titre),
+        {
+            "ev": evenement_id, "titre": payload.titre,
+            "statut": "publie" if payload.publier else "brouillon",
+            "actif": payload.publier,
+        },
         role=user.role,
     )
     if not q:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="questionnaire not created")
     qid = str(q["id"])
-    db.execute("DELETE FROM question WHERE questionnaire_id = %s", (qid,), role=user.role)
-    for i, question in enumerate(payload.questions):
-        if question.type not in ("texte", "choix", "note"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid question type")
-        db.execute(
-            "INSERT INTO question (questionnaire_id, libelle, type, options, ordre) VALUES (%s, %s, %s, %s::jsonb, %s)",
-            (qid, question.libelle, question.type, json.dumps(question.options), i),
-            role=user.role,
+
+    existantes = [
+        str(r["id"])
+        for r in db.fetch_all(
+            "SELECT id FROM question WHERE questionnaire_id = %s", (qid,), role=user.role
         )
-    audit.log(user.id, user.role, "definir_questionnaire", "evenement", evenement_id, {"questions": len(payload.questions)})
-    return {"id": qid, "questions": len(payload.questions)}
+    ]
+    compte = _compter_reponses(qid, existantes, user.role)
+    gardees: list[str] = []
+
+    for i, question in enumerate(payload.questions):
+        options = json.dumps([o for o in question.options if o.strip()])
+        if question.id and question.id in existantes:
+            db.execute(
+                "UPDATE question SET libelle = %s, type = %s, options = %s::jsonb, ordre = %s, "
+                "archivee = false WHERE id = %s AND questionnaire_id = %s",
+                (question.libelle, question.type, options, i, question.id, qid),
+                role=user.role,
+            )
+            gardees.append(question.id)
+        else:
+            cree = db.execute(
+                "INSERT INTO question (questionnaire_id, libelle, type, options, ordre) "
+                "VALUES (%s, %s, %s, %s::jsonb, %s) RETURNING id",
+                (qid, question.libelle, question.type, options, i),
+                role=user.role,
+            )
+            if cree:
+                gardees.append(str(cree["id"]))
+
+    retirees = [x for x in existantes if x not in gardees]
+    supprimees, archivees = [], []
+    for ident in retirees:
+        if compte.get(ident, 0) > 0:
+            # Somebody answered this. Keeping the row is what keeps their answer
+            # readable; the form simply stops showing the question.
+            db.execute(
+                "UPDATE question SET archivee = true WHERE id = %s", (ident,), role=user.role
+            )
+            archivees.append(ident)
+        else:
+            db.execute("DELETE FROM question WHERE id = %s", (ident,), role=user.role)
+            supprimees.append(ident)
+
+    audit.log(
+        user.id, user.role, "definir_questionnaire", "evenement", evenement_id,
+        {
+            "questions": len(payload.questions),
+            "version": int(q.get("version") or 1),
+            "statut": "publie" if payload.publier else "brouillon",
+            "supprimees": supprimees,
+            "archivees": archivees,
+        },
+    )
+    return {
+        "id": qid,
+        "questions": len(payload.questions),
+        "version": int(q.get("version") or 1),
+        "statut": "publie" if payload.publier else "brouillon",
+        "questions_archivees": len(archivees),
+        "questions_supprimees": len(supprimees),
+    }
 
 
-def _questions(qid: str, role: str) -> list[dict[str, object]]:
-    rows = db.fetch_all("SELECT id, libelle, type, options, ordre FROM question WHERE questionnaire_id = %s ORDER BY ordre ASC", (qid,), role=role)
-    return [{"id": str(r["id"]), "libelle": r["libelle"], "type": r["type"], "options": r["options"] or []} for r in rows]
+@router.post("/admin/evenements/{evenement_id}/questionnaire/publication")
+def publier_questionnaire(
+    evenement_id: str,
+    publie: bool,
+    user: Annotated[UserMe, Depends(require_permission("evenements.gerer"))],
+) -> dict[str, object]:
+    """Publish the form to the members, or withdraw it.
+
+    A deliberate act, separate from saving. Without it, the only way to stop showing a
+    form was to delete it, and there was no way at all to prepare one in advance.
+    """
+    q = db.execute(
+        "UPDATE questionnaire SET statut = %s, actif = %s, "
+        "publie_le = CASE WHEN %s THEN now() ELSE publie_le END, "
+        "publie_par = CASE WHEN %s THEN %s::uuid ELSE publie_par END, maj_le = now() "
+        "WHERE evenement_id = %s RETURNING id, statut, version",
+        ("publie" if publie else "brouillon", publie, publie, publie, user.id, evenement_id),
+        role=user.role,
+    )
+    if not q:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun questionnaire sur cette activité.")
+    audit.log(
+        user.id, user.role, "publication_questionnaire", "evenement", evenement_id,
+        {"publie": publie, "version": int(q.get("version") or 1)},
+    )
+    return {"id": str(q["id"]), "statut": q["statut"], "publie": publie}
+
+
+def _questions(qid: str, role: str, inclure_archivees: bool = False) -> list[dict[str, object]]:
+    filtre = "" if inclure_archivees else " AND NOT coalesce(archivee, false)"
+    rows = db.fetch_all(
+        f"SELECT id, libelle, type, options, ordre, coalesce(archivee, false) AS archivee "
+        f"FROM question WHERE questionnaire_id = %s{filtre} ORDER BY ordre ASC",
+        (qid,), role=role,
+    )
+    return [
+        {
+            "id": str(r["id"]), "libelle": r["libelle"], "type": r["type"],
+            "options": r["options"] or [], "archivee": bool(r["archivee"]),
+        }
+        for r in rows
+    ]
 
 
 @router.get("/admin/evenements/{evenement_id}/questionnaire")
 def get_questionnaire_admin(evenement_id: str, user: Annotated[UserMe, Depends(require_permission("evenements.consulter"))]) -> dict[str, object] | None:
-    q = db.fetch_one("SELECT id, titre FROM questionnaire WHERE evenement_id = %s", (evenement_id,), role=user.role)
+    q = db.fetch_one(
+        "SELECT id, titre, coalesce(statut, 'publie') AS statut, coalesce(version, 1) AS version, "
+        "publie_le FROM questionnaire WHERE evenement_id = %s",
+        (evenement_id,), role=user.role,
+    )
     if not q:
         return None
-    return {"id": str(q["id"]), "titre": q["titre"], "questions": _questions(str(q["id"]), user.role)}
+    qid = str(q["id"])
+    questions = _questions(qid, user.role, inclure_archivees=True)
+    compte = _compter_reponses(qid, [str(x["id"]) for x in questions], user.role)
+    return {
+        "id": qid,
+        "titre": q["titre"],
+        "statut": q["statut"],
+        "version": int(q["version"]),
+        "publie_le": q["publie_le"].isoformat() if q.get("publie_le") else None,
+        # The editor needs to know which questions already carry answers, so it can
+        # warn before removing one instead of destroying it silently.
+        "questions": [{**x, "reponses": compte.get(str(x["id"]), 0)} for x in questions],
+    }
 
 
 # Diffusion threshold: below this number of answers, no individual content (rating

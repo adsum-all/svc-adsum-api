@@ -271,6 +271,59 @@ def _participations(simulation: bool) -> dict[str, int]:
     return {"evenements": len(evenements), "participations": ecrits}
 
 
+def _pointages_scannes(simulation: bool) -> dict[str, int]:
+    """Turn part of the demonstration attendance into QR check-ins.
+
+    Without this the base holds four scans against twelve hundred declarations, the
+    "présentiel prouvé" column is empty, and the direction cannot see the difference
+    between a presence somebody proved at the door and one they typed into a form.
+    That difference is the whole reason the controller application exists.
+
+    It is also what exercises the anti-duplicate guarantee on real volume: each of
+    these members now has a row in BOTH attendance tables for the same activity, which
+    is exactly the shape that double counts if the consolidation is wrong.
+
+    Only members already recorded present are scanned. Inventing a scan for somebody
+    marked absent would put two contradictory facts in the base.
+    """
+    alea = random.Random(_GRAINE + 3)
+    lignes = db.fetch_all(
+        f"SELECT p.evenement_id, p.membre_id, e.debut FROM participation p "
+        f"JOIN membre m ON m.id = p.membre_id "
+        f"JOIN evenement e ON e.id = p.evenement_id "
+        f"WHERE {_DEMO} AND p.statut = 'present' AND p.source <> 'scan' "
+        f"AND e.debut IS NOT NULL AND e.debut <= now() "
+        f"ORDER BY p.evenement_id, p.membre_id",
+        (),
+    )
+    # Roughly two presences in five are scanned, which is what a gathering with a
+    # check-in desk actually produces: never everybody, never nobody.
+    retenues = [r for r in lignes if alea.random() < 0.4]
+
+    ecrits = 0
+    for r in retenues:
+        eid, mid = str(r["evenement_id"]), str(r["membre_id"])
+        arrivee = r["debut"]
+        ecrits += 1
+        if simulation:
+            continue
+        # The scan writes to BOTH tables, exactly as the controller application does.
+        db.execute(
+            "INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode) "
+            "VALUES (%s, %s, 'presentiel', %s, 'qr') "
+            "ON CONFLICT (membre_id, evenement_id) DO NOTHING",
+            (mid, eid, arrivee),
+        )
+        # The declaration becomes a scan: proof of presence outranks what was typed.
+        db.execute(
+            f"UPDATE participation p SET source = 'scan', valide = true, modalite = 'presentiel' "
+            f"FROM membre m WHERE m.id = p.membre_id AND {_DEMO} "
+            f"AND p.evenement_id = %s AND p.membre_id = %s",
+            (eid, mid),
+        )
+    return {"candidats": len(lignes), "scannes": ecrits}
+
+
 def main() -> None:
     analyseur = argparse.ArgumentParser(description=__doc__)
     analyseur.add_argument("--appliquer", action="store_true", help="écrire réellement")
@@ -292,6 +345,8 @@ def main() -> None:
     part = _participations(simulation)
     print(f"  activités passées couvertes               : {part['evenements']}")
     print(f"  participations écrites (hors doublons)    : {part['participations']}")
+    sc = _pointages_scannes(simulation)
+    print(f"  présences transformées en pointage QR      : {sc['scannes']} sur {sc['candidats']}")
 
     if simulation:
         print()

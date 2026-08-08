@@ -19,7 +19,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from . import direction_analyse as analyse
-from . import direction_membres
+from . import direction_membres, direction_referentiels
 from . import direction_pilotage as pilotage
 from .permissions_rbac import require_permission
 from .schemas import UserMe
@@ -62,11 +62,17 @@ def filtres_communs(
     type_membre: str | None = Query(default=None),
     depuis: str | None = Query(default=None, description="Date de début, format ISO"),
     jusqu_a: str | None = Query(default=None, description="Date de fin, format ISO"),
+    donnees: str | None = Query(
+        default=None,
+        description="toutes (défaut), reelles, ou demonstration",
+    ),
 ) -> dict[str, Any]:
-    return _filtres(
+    base = _filtres(
         coordination, intendance, commission, tribu, volet, evenement,
         pays, genre, type_membre, depuis, jusqu_a,
     )
+    base["donnees"] = donnees
+    return base
 
 
 _Filtres = Annotated[dict[str, Any], Depends(filtres_communs)]
@@ -98,11 +104,31 @@ def dimensions(user: _Lecteur) -> dict[str, Any]:
     }
 
 
+@router.get("/referentiels")
+def referentiels(user: _Lecteur) -> dict[str, Any]:
+    """The lists the filter bar offers, served under the direction's own permission.
+
+    One round trip instead of four calls to administration endpoints, one of which
+    required a member-management permission the direction does not hold and answered
+    403 on every page load.
+    """
+    return direction_referentiels.referentiels(user.role)
+
+
 @router.get("/synthese")
 def synthese(user: _Lecteur, filtres: _Filtres) -> dict[str, Any]:
     """Headline figures for the current filter set."""
     try:
         return pilotage.synthese(filtres, user.role)
+    except analyse.DimensionInconnue as err:
+        raise _refuser(err) from err
+
+
+@router.get("/comparaison")
+def comparaison(user: _Lecteur, filtres: _Filtres) -> dict[str, Any]:
+    """This period against the preceding one of the same length."""
+    try:
+        return direction_referentiels.comparaison(filtres, user.role)
     except analyse.DimensionInconnue as err:
         raise _refuser(err) from err
 

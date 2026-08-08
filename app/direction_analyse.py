@@ -54,15 +54,20 @@ brut AS (
     SELECT pr.membre_id, pr.evenement_id,
            CASE WHEN pr.mode = 'en_ligne' THEN 'en_ligne' ELSE 'presentiel' END AS modalite,
            'present'::text AS statut,
-           (pr.methode IN ('qr', 'manuelle')) AS scanne
+           (pr.methode IN ('qr', 'manuelle')) AS scanne,
+           NULL::text AS niveau_en_ligne,
+           false AS ambigu
     FROM presence pr
     UNION ALL
     SELECT pa.membre_id, pa.evenement_id,
            CASE WHEN pa.source = 'scan' THEN 'presentiel'
+                WHEN pa.mode_suivi IN ('presentiel', 'en_ligne') THEN pa.mode_suivi
                 WHEN pa.modalite IN ('presentiel', 'en_ligne') THEN pa.modalite
                 ELSE NULL END AS modalite,
            pa.statut,
-           (pa.source = 'scan') AS scanne
+           (pa.source = 'scan') AS scanne,
+           pa.niveau_en_ligne,
+           coalesce(pa.legacy_ambigu, false) AS ambigu
     FROM participation pa
     WHERE {COMPTE} AND pa.statut IN ('present', 'partiel', 'absent')
 ),
@@ -73,10 +78,22 @@ conso AS (
            bool_or(statut = 'absent') AS absent,
            coalesce(bool_or(scanne), false) AS scanne,
            coalesce(bool_or(modalite = 'presentiel'), false) AS a_presentiel,
-           coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne
+           coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne,
+           -- Online attendance has a degree, on-site attendance does not.
+           coalesce(bool_or(niveau_en_ligne = 'complet'), false) AS en_ligne_complet,
+           coalesce(bool_or(niveau_en_ligne = 'partiel'), false) AS en_ligne_partiel,
+           -- A row the old model cannot express. Counted apart, never inside a rate:
+           -- nobody knows whether "partial, on site" meant arriving late or following
+           -- intermittently, and averaging a guess is how a dashboard lies quietly.
+           coalesce(bool_or(ambigu), false) AS ambigu
     FROM brut GROUP BY membre_id, evenement_id
 )
 """
+
+#: Rows a rate may be computed on. Ambiguous legacy rows are excluded everywhere a
+#: percentage is produced, and counted separately so their exclusion is visible rather
+#: than silent.
+_EXPLOITABLE = "NOT cc.ambigu"
 
 #: Joins that make every dimension below reachable from a consolidated row.
 _JOINTURES = """
@@ -134,14 +151,31 @@ DIMENSIONS: dict[str, dict[str, str]] = {
     "volet": {"expr": f"coalesce(e.volet, '{_INCONNU}')", "libelle": "Volet", "famille": "activite"},
     "type_activite": {"expr": f"coalesce(te.nom, nullif(btrim(e.type), ''), '{_INCONNU}')", "libelle": "Type d'activité", "famille": "activite"},
     "mois": {"expr": "to_char(e.debut, 'YYYY-MM')", "libelle": "Mois", "famille": "activite"},
+    # The axis that carries the whole vocabulary. Ordered from the strongest fact to
+    # the weakest, and each label says what it is: a presence proven at a checkpoint
+    # and one somebody typed into a form are different things, and merging them was
+    # the defect that made every attendance rate unreadable.
     "modalite": {
         "expr": (
-            "CASE WHEN NOT cc.present AND NOT cc.partiel THEN 'Absent' "
-            "WHEN cc.scanne THEN 'Présentiel prouvé' "
-            "WHEN cc.a_presentiel THEN 'Présentiel déclaré' "
-            "WHEN cc.a_enligne THEN 'En ligne' ELSE 'Modalité inconnue' END"
+            "CASE WHEN cc.ambigu THEN 'Donnée ancienne, non interprétable' "
+            "WHEN cc.scanne THEN 'Présentiel confirmé au contrôle' "
+            "WHEN cc.present AND cc.a_presentiel THEN 'Présentiel déclaré' "
+            "WHEN cc.a_enligne AND cc.en_ligne_partiel THEN 'En ligne, suivi partiel' "
+            "WHEN cc.a_enligne THEN 'En ligne, suivi complet' "
+            "WHEN cc.present OR cc.partiel THEN 'Suivi, modalité non précisée' "
+            "ELSE 'N''a pas suivi' END"
         ),
         "libelle": "Modalité de suivi", "famille": "activite",
+    },
+    # What the figure rests on, which a reader has to know before acting on it.
+    "confiance": {
+        "expr": (
+            "CASE WHEN cc.ambigu THEN 'Non interprétable' "
+            "WHEN cc.scanne THEN 'Prouvée au contrôle' "
+            "WHEN cc.present OR cc.partiel THEN 'Déclarée par le membre' "
+            "ELSE 'Sans objet' END"
+        ),
+        "libelle": "Fiabilité de la donnée", "famille": "activite",
     },
 }
 
@@ -161,6 +195,29 @@ _FILTRES: dict[str, str] = {
     "jusqu_a": "e.debut <= %(f_jusqu_a)s::timestamptz",
 }
 
+#: What makes a member a demonstration profile. Same predicate as the seed script, so
+#: the two cannot drift: a profile the seed can touch is a profile this can exclude.
+#: The accent is folded because the family names were normalised to DEMO.
+_EST_DEMO = (
+    "(translate(upper(m.nom), 'ÉÈÊË', 'EEEE') LIKE '%%DEMO%%' "
+    "OR m.email LIKE '%%@exemple.com' OR m.email LIKE '%%@example.com')"
+)
+
+#: Filters whose value selects a fixed fragment rather than binding a parameter.
+#:
+#: The demonstration switch exists because the base is largely populated with
+#: demonstration profiles while the organisation onboards. A direction reading a
+#: credible attendance rate has no way to know it describes invented people, and
+#: "toutes" stays the default only so that no figure changes silently under somebody
+#: who did not ask for it.
+_FILTRES_ENUMERES: dict[str, dict[str, str]] = {
+    "donnees": {
+        "toutes": "true",
+        "reelles": f"NOT {_EST_DEMO}",
+        "demonstration": _EST_DEMO,
+    },
+}
+
 
 class DimensionInconnue(ValueError):
     """A dimension or filter the platform does not compute. Refused, never guessed."""
@@ -176,7 +233,12 @@ def dimensions_disponibles() -> list[dict[str, str]]:
 
 def filtres_disponibles() -> list[str]:
     """The filter keys a screen may send."""
-    return sorted(_FILTRES)
+    return sorted([*_FILTRES, *_FILTRES_ENUMERES])
+
+
+def valeurs_enumerees() -> dict[str, list[str]]:
+    """The accepted values of the filters that are a choice rather than an identifier."""
+    return {cle: sorted(vals) for cle, vals in _FILTRES_ENUMERES.items()}
 
 
 def _expr(dimension: str) -> str:
@@ -197,6 +259,17 @@ def _where(filtres: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     params: dict[str, Any] = {}
     for cle, valeur in filtres.items():
         if valeur in (None, ""):
+            continue
+        # A choice filter selects one of a fixed set of fragments. The value never
+        # reaches the SQL, so an unexpected one is refused rather than interpolated.
+        choix = _FILTRES_ENUMERES.get(cle)
+        if choix is not None:
+            fragment = choix.get(str(valeur))
+            if fragment is None:
+                raise DimensionInconnue(
+                    f"{cle} : valeur inconnue « {valeur} ». Attendu : {', '.join(sorted(choix))}."
+                )
+            morceaux.append(fragment)
             continue
         fragment = _FILTRES.get(cle)
         if fragment is None:
@@ -221,28 +294,62 @@ def _ligne(r: dict[str, Any], cle: str = "cle") -> dict[str, Any]:
     partiels = int(r.get("partiels") or 0)
     absents = int(r.get("absents") or 0)
     total = presents + partiels + absents
+    prouve = int(r.get("presentiel_prouve") or 0)
+    declare = int(r.get("presentiel_declare") or 0)
+    suivis = presents + partiels
     return {
         "label": r.get(cle) or _INCONNU,
         "presents": presents,
         "partiels": partiels,
         "absents": absents,
+        # `total` is the denominator of every rate here and therefore excludes the
+        # uninterpretable rows. `lignes` is what the base actually holds, so a group
+        # made entirely of such rows shows its size instead of reading as empty.
         "total": total,
+        "lignes": total + int(r.get("non_interpretables") or 0),
         "presentiel": int(r.get("presentiel") or 0),
         "en_ligne": int(r.get("en_ligne") or 0),
-        "scannes": int(r.get("scannes") or 0),
+        "scannes": prouve,
+        # The four buckets a follow can fall into, each named for what it is. They sum
+        # to the number of people who followed, so a reader can check the breakdown
+        # against the headline instead of trusting it.
+        "presentiel_prouve": prouve,
+        "presentiel_declare": declare,
+        "en_ligne_complet": int(r.get("en_ligne_complet") or 0),
+        "en_ligne_partiel": int(r.get("en_ligne_partiel") or 0),
+        "suivi_modalite_inconnue": int(r.get("suivi_modalite_inconnue") or 0),
+        # Excluded from every rate above, reported so the exclusion is visible.
+        "non_interpretables": int(r.get("non_interpretables") or 0),
         "taux_presence": _taux(presents, total),
-        "taux_participation": _taux(presents + partiels, total),
+        "taux_participation": _taux(suivis, total),
         "taux_absence": _taux(absents, total),
+        # How much of the attendance is evidence rather than assertion. A unit at
+        # eighty per cent on declarations alone is a different situation from one at
+        # eighty per cent proven at the door, and the figure alone cannot say which.
+        "taux_preuve": _taux(prouve, suivis),
     }
 
 
-_AGREGATS = """
-    count(*) FILTER (WHERE cc.present) AS presents,
-    count(*) FILTER (WHERE cc.partiel AND NOT cc.present) AS partiels,
-    count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel) AS absents,
-    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND (cc.scanne OR cc.a_presentiel)) AS presentiel,
-    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_enligne AND NOT cc.a_presentiel AND NOT cc.scanne) AS en_ligne,
-    count(*) FILTER (WHERE cc.scanne) AS scannes
+#: One expression per fact the direction reads, computed once so a bar, a rate and a
+#: card cannot disagree. Every count excludes the ambiguous legacy rows, which are
+#: reported separately: a rate over rows nobody can interpret is not a rate.
+_AGREGATS = f"""
+    count(*) FILTER (WHERE cc.present AND {_EXPLOITABLE}) AS presents,
+    count(*) FILTER (WHERE cc.partiel AND NOT cc.present AND {_EXPLOITABLE}) AS partiels,
+    count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel AND {_EXPLOITABLE}) AS absents,
+    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND (cc.scanne OR cc.a_presentiel) AND {_EXPLOITABLE}) AS presentiel,
+    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_enligne AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne,
+    count(*) FILTER (WHERE cc.scanne AND {_EXPLOITABLE}) AS scannes,
+    -- Proven on site, versus asserted on site. Kept apart because acting on the two
+    -- as if they were one is what the direction asked to stop.
+    count(*) FILTER (WHERE cc.scanne AND {_EXPLOITABLE}) AS presentiel_prouve,
+    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS presentiel_declare,
+    count(*) FILTER (WHERE cc.a_enligne AND NOT cc.en_ligne_partiel AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne_complet,
+    count(*) FILTER (WHERE cc.a_enligne AND cc.en_ligne_partiel AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne_partiel,
+    -- The residual. Explicit rather than implied: a breakdown whose parts do not
+    -- add up to its whole leaves the reader to guess where the difference went.
+    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND NOT cc.a_presentiel AND NOT cc.a_enligne AND NOT cc.scanne AND {_EXPLOITABLE}) AS suivi_modalite_inconnue,
+    count(*) FILTER (WHERE cc.ambigu) AS non_interpretables
 """
 
 

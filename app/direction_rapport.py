@@ -78,6 +78,18 @@ def _rendre(rapport: RapportEnvoi) -> tuple[str, str]:
     return "\n".join(lignes_txt), html
 
 
+def envoyer_maintenant(rapport: RapportEnvoi, destinataire: str) -> tuple[bool, str]:
+    """Render and send, without the HTTP layer.
+
+    Shared with the scheduled channel so a report that goes out automatically is
+    rendered and escaped exactly like one a person sent by hand. Two code paths
+    producing the same message is how one of them ends up unescaped.
+    """
+    texte, html = _rendre(rapport)
+    sujet = f"[Direction] {_tronquer(rapport.titre)}"
+    return email_gateway.send_email(destinataire, sujet, texte, html)
+
+
 @router.post("/rapport/envoyer")
 def envoyer_rapport(
     rapport: RapportEnvoi,
@@ -87,9 +99,7 @@ def envoyer_rapport(
     if not rapport.colonnes or not rapport.lignes:
         raise HTTPException(status_code=422, detail="Le rapport est vide, rien à envoyer.")
 
-    texte, html = _rendre(rapport)
-    sujet = f"[Direction] {_tronquer(rapport.titre)}"
-    envoye, fournisseur = email_gateway.send_email(str(rapport.destinataire), sujet, texte, html)
+    envoye, fournisseur = envoyer_maintenant(rapport, str(rapport.destinataire))
 
     # Written whether or not the provider accepted it: a refused send is exactly the
     # event somebody needs to find later, and recording only the successes would hide
@@ -113,3 +123,80 @@ def envoyer_rapport(
             detail="Le fournisseur de messagerie a refusé l'envoi. La tentative est tracée.",
         )
     return {"envoye": True, "destinataire": str(rapport.destinataire), "lignes": len(rapport.lignes)}
+
+
+# --- The automatic channel: subscriptions ----------------------------------
+
+class AbonnementCreation(BaseModel):
+    libelle: str = Field(min_length=1, max_length=160)
+    destinataires: list[EmailStr] = Field(min_length=1, max_length=20)
+    frequence: str = Field(description="quotidien, hebdomadaire ou mensuel")
+    dimension: str = Field(default="commission")
+    filtres: dict[str, Any] = Field(default_factory=dict)
+
+
+_Pilote = Annotated[UserMe, Depends(require_permission("statistiques.consulter"))]
+
+
+@router.get("/rapport/abonnements")
+def lister_abonnements(user: _Pilote) -> list[dict[str, Any]]:
+    """The reports the organisation sends on its own, and when each last went out."""
+    from . import direction_planification
+
+    return direction_planification.lister(user.role)
+
+
+@router.post("/rapport/abonnements", status_code=201)
+def creer_abonnement(corps: AbonnementCreation, user: _Pilote) -> dict[str, Any]:
+    """Register a recurring report.
+
+    The scope is validated now rather than at send time: a subscription accepted with
+    an unknown axis would sit in the table looking healthy and fail every night with
+    nobody watching.
+    """
+    from . import direction_analyse, direction_planification
+
+    try:
+        return direction_planification.creer(
+            corps.libelle, [str(d) for d in corps.destinataires], corps.frequence,
+            corps.dimension, corps.filtres, user.id, user.role,
+        )
+    except direction_analyse.DimensionInconnue as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+
+
+@router.put("/rapport/abonnements/{abonnement_id}")
+def basculer_abonnement(abonnement_id: str, actif: bool, user: _Pilote) -> dict[str, Any]:
+    """Pause or resume a subscription without losing what it describes."""
+    from . import direction_planification
+
+    if not direction_planification.basculer(abonnement_id, actif, user.id, user.role):
+        raise HTTPException(status_code=404, detail="Abonnement introuvable.")
+    return {"id": abonnement_id, "actif": actif}
+
+
+@router.delete("/rapport/abonnements/{abonnement_id}")
+def supprimer_abonnement(abonnement_id: str, user: _Pilote) -> dict[str, Any]:
+    from . import direction_planification
+
+    if not direction_planification.supprimer(abonnement_id, user.id, user.role):
+        raise HTTPException(status_code=404, detail="Abonnement introuvable.")
+    return {"supprime": True}
+
+
+@router.post("/rapport/abonnements/{abonnement_id}/tester")
+def tester_abonnement(abonnement_id: str, user: _Pilote) -> dict[str, Any]:
+    """Send this subscription once, now, to check it before trusting it to a schedule.
+
+    Without this, the only way to find out whether a recurring report works is to wait
+    for the night it should have gone out and notice that it did not.
+    """
+    from . import direction_planification
+
+    resultat = direction_planification.executer_un(abonnement_id, force=True, role=user.role)
+    if resultat is None:
+        raise HTTPException(status_code=404, detail="Abonnement introuvable.")
+    audit.log(
+        user.id, user.role, "test_rapport_planifie", "rapport_planifie", abonnement_id, resultat,
+    )
+    return resultat

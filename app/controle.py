@@ -10,7 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from . import db, identite
+from . import controle_eligibilite, db, identite
 from .mappers import titre_prefixe
 from .permissions_rbac import require_permission
 from .qr import verify_token
@@ -29,7 +29,12 @@ from .schemas import (
 
 router = APIRouter(prefix="/api/v1/controle", tags=["controle"])
 
-_IDENTITE_COLS = "m.est_berger, m.nom_pastoral, m.nom_naissance, m.nom_marital, m.nom_affiche"
+_IDENTITE_COLS = (
+    "m.est_berger, m.nom_pastoral, m.nom_naissance, m.nom_marital, m.nom_affiche, "
+    # The controller has to see who they are letting in. Without these three the
+    # scan card shows a suspended member exactly like an approved one.
+    "m.statut, m.statut_inscription, coalesce(m.verifie, false) AS verifie"
+)
 
 
 def _civil(row: dict[str, object]) -> str:
@@ -194,22 +199,48 @@ def directory(
     ]
 
 
-def _mark_present_scan(membre_id: str, evenement_id: str, role: str) -> None:
-    """A QR/manual check-in is the source of truth for presence: it upserts a
-    validated in-person participation and always wins over a prior declaration."""
+def _mark_present_scan(membre_id: str, evenement_id: str, role: str) -> bool:
+    """Record the check-in as a PROVEN on-site attendance, overriding any declaration.
+
+    A scan is the only channel that proves somebody was physically there, so it writes
+    the modality and the confidence rather than leaving them to be guessed downstream.
+    Before this, the row said "present" and left ``modalite`` empty: every reader had
+    to re-derive on-site status from ``source``, and any that forgot counted a proven
+    presence as a modality-unknown one.
+
+    Any absence the member had declared is cleared: they are standing at the door, so
+    the reason they gave for not coming no longer describes anything.
+
+    Returns whether the row was written. The caller needs to know: a check-in whose
+    participation silently failed to record is exactly the case that produced presences
+    visible in one table and absent from the other.
+    """
     try:
         db.execute(
             """
-            INSERT INTO participation (evenement_id, membre_id, statut, source, valide)
-            VALUES (%s, %s, 'present', 'scan', true)
+            INSERT INTO participation (evenement_id, membre_id, statut, source, valide,
+                                       modalite, mode_suivi, niveau_en_ligne, confiance,
+                                       absence_motif, absence_commentaire, absence_qualification)
+            VALUES (%s, %s, 'present', 'scan', true,
+                    'presentiel', 'presentiel', NULL, 'prouvee',
+                    NULL, NULL, 'sans_objet')
             ON CONFLICT (evenement_id, membre_id)
-            DO UPDATE SET statut = 'present', source = 'scan', valide = true, maj_le = now()
+            DO UPDATE SET statut = 'present', source = 'scan', valide = true,
+                          modalite = 'presentiel', mode_suivi = 'presentiel',
+                          niveau_en_ligne = NULL, confiance = 'prouvee',
+                          absence_motif = NULL, absence_commentaire = NULL,
+                          absence_qualification = 'sans_objet',
+                          qualifie_par = NULL, qualifie_le = NULL,
+                          legacy_ambigu = false, maj_le = now()
             """,
             (evenement_id, membre_id),
             role=role,
         )
-    except Exception:  # noqa: BLE001 - participation tracking must never block a check-in
-        pass
+        return True
+    except Exception:  # noqa: BLE001 - a failed mirror must not block the person at the door
+        # Swallowed on purpose, reported to the caller. Letting this raise would turn a
+        # database hiccup into a queue of people who cannot enter.
+        return False
 
 
 @router.post("/checkin-manuel", response_model=CheckinResult)
@@ -221,6 +252,17 @@ def checkin_manuel(
     membre = _lookup_membre(payload.membre_id, user.role)
     if not membre:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    # The control application verifies an identity before it records a presence.
+    # A closed file, suspended, archived or refused, is a decision the organisation
+    # already took, and the door is not the place to overturn it. Enforced here, on
+    # the server, so a modified client cannot check anybody in.
+    etat = controle_eligibilite.etat_pour_pointage(payload.membre_id, user.role)
+    if controle_eligibilite.refuse(etat):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Pointage refusé : {etat['raison']}",
+            headers={"X-Adsum-Motif": str(etat.get("code") or "refuse")},
+        )
     inserted = db.execute(
         """
         INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode, cree_par)
@@ -255,9 +297,15 @@ def checkin_manuel(
             nom_pastoral_affiche=_pastoral(membre),
             photo_url=_signed_photo(membre.get("photo_url")),
             titre=membre.get("titre") if isinstance(membre.get("titre"), str) else None,
+            statut=etat.get("statut"),
+            statut_inscription=etat.get("statut_inscription"),
+            identite_verifiee=bool(etat.get("identite_verifiee")),
         ),
         evenement_id=payload.evenement_id,
         arrivee=arrivee,
+        # An "alerte" verdict let the person through but flagged something. Returned so
+        # the controller sees it on the confirmation screen rather than never.
+        alerte=etat["raison"] if etat.get("verdict") == controle_eligibilite.ALERTE else None,
     )
 
 
@@ -328,7 +376,15 @@ def verify(
     nom_affichage = ""
     est_berger = False
     nom_pastoral_affiche = None
+    # A signature that checks out only proves the badge is genuine. Whether the
+    # organisation still counts this person is a separate question, answered here so
+    # the controller never has to assume.
+    etat: dict[str, object] = {"verdict": controle_eligibilite.REFUSE,
+                               "raison": "Jeton illisible", "code": "jeton_illisible",
+                               "statut": None, "statut_inscription": None,
+                               "identite_verifiee": False}
     if isinstance(membre_id, str):
+        etat = controle_eligibilite.etat_pour_pointage(membre_id, user.role)
         row = _lookup_membre(membre_id, user.role)
         if row:
             matricule = row["matricule"]
@@ -354,6 +410,12 @@ def verify(
         nom_pastoral_affiche=nom_pastoral_affiche,
         photo_url=photo_url,
         titre=titre,
+        verdict=str(etat.get("verdict") or controle_eligibilite.REFUSE),
+        verdict_raison=(str(etat["raison"]) if etat.get("raison") else None),
+        verdict_code=(str(etat["code"]) if etat.get("code") else None),
+        statut=(str(etat["statut"]) if etat.get("statut") else None),
+        statut_inscription=(str(etat["statut_inscription"]) if etat.get("statut_inscription") else None),
+        identite_verifiee=bool(etat.get("identite_verifiee")),
     )
 
 
@@ -377,6 +439,17 @@ def checkin(
     membre = _lookup_membre(membre_id, user.role)
     if not membre:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="member not found")
+    # The control application verifies an identity before it records a presence.
+    # A closed file, suspended, archived or refused, is a decision the organisation
+    # already took, and the door is not the place to overturn it. Enforced here, on
+    # the server, so a modified client cannot check anybody in.
+    etat = controle_eligibilite.etat_pour_pointage(membre_id, user.role)
+    if controle_eligibilite.refuse(etat):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Pointage refusé : {etat['raison']}",
+            headers={"X-Adsum-Motif": str(etat.get("code") or "refuse")},
+        )
     inserted = db.execute(
         """
         INSERT INTO presence (membre_id, evenement_id, mode, arrivee, methode, cree_par)
@@ -411,7 +484,13 @@ def checkin(
             nom_pastoral_affiche=_pastoral(membre),
             photo_url=_signed_photo(membre.get("photo_url")),
             titre=membre.get("titre") if isinstance(membre.get("titre"), str) else None,
+            statut=etat.get("statut"),
+            statut_inscription=etat.get("statut_inscription"),
+            identite_verifiee=bool(etat.get("identite_verifiee")),
         ),
         evenement_id=payload.evenement_id,
         arrivee=arrivee,
+        # An "alerte" verdict let the person through but flagged something. Returned so
+        # the controller sees it on the confirmation screen rather than never.
+        alerte=etat["raison"] if etat.get("verdict") == controle_eligibilite.ALERTE else None,
     )

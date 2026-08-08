@@ -514,6 +514,14 @@ def _run_quotidien(role: str | None) -> dict[str, object]:
 
     result["livraisons"] = email_moisson.moissonner(role=role)
 
+    # 0 bis) The direction's automatic channel. A subscription is a stored intention,
+    # replayed against today's data, so the report describes the period it goes out
+    # in. Cadence is measured from each row's last dispatch, which is what makes
+    # running this job twice in a day harmless.
+    from . import direction_planification
+
+    result["rapports_direction"] = direction_planification.executer_les_dus(role=role)
+
     # 1) Birthdays today. Cross-path idempotence: the manual admin trigger marks its
     # sends in notification_anniversaire; skip those members so running both paths the
     # same day never produces a second wish (each path keeps its own dedup ledger).
