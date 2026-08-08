@@ -91,6 +91,7 @@ from .organisation_admin import router as organisation_admin_router
 from .participation import router as participation_router
 from .permissions_applications_api import router as permissions_applications_router
 from .pilotage import router as pilotage_router
+from .pilotage_absences import router as pilotage_absences_router
 from .push_api import router as push_router
 from .reference import router as reference_router
 from .reglages_duree import router as reglages_duree_router
@@ -167,6 +168,7 @@ app.include_router(participation_router)
 app.include_router(direction_router)
 app.include_router(direction_rapport_router)
 app.include_router(pilotage_router)
+app.include_router(pilotage_absences_router)
 app.include_router(consultations_router)
 app.include_router(tags_router)
 app.include_router(analytics_router)

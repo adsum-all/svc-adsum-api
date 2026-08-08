@@ -1,3 +1,4 @@
+# ruff: noqa: E501 - the aggregate expressions read better on one line each
 """Steering views for the direction: drill-down, assiduity cohorts, trends.
 
 A breakdown says where people are. Steering asks the next questions: which unit is
@@ -25,7 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import db
-from .direction_analyse import _CONSO, _FILTRES_ENUMERES, _JOINTURES, _where
+from .direction_analyse import _CONSO, _EXPLOITABLE, _FILTRES_ENUMERES, _JOINTURES, _where
 
 _INCONNU = "Non renseigné"
 
@@ -52,10 +53,10 @@ def arborescence(filtres: dict[str, Any], role: str | None) -> list[dict[str, An
         f"coalesce(co.nom, cod.nom, '{_INCONNU}') AS coordination, "
         f"coalesce(i.nom, '{_INCONNU}') AS intendance, "
         f"coalesce(c.nom, '{_INCONNU}') AS commission, "
-        "count(*) FILTER (WHERE cc.present) AS presents, "
-        "count(*) FILTER (WHERE cc.partiel AND NOT cc.present) AS partiels, "
-        "count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel) AS absents, "
-        "count(DISTINCT cc.membre_id) AS membres "
+        f"count(*) FILTER (WHERE cc.present AND {_EXPLOITABLE}) AS presents, "
+        f"count(*) FILTER (WHERE cc.partiel AND NOT cc.present AND {_EXPLOITABLE}) AS partiels, "
+        f"count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel AND {_EXPLOITABLE}) AS absents, "
+        f"count(DISTINCT cc.membre_id) FILTER (WHERE {_EXPLOITABLE}) AS membres "
         f"FROM conso cc {_JOINTURES} WHERE {where} "
         "GROUP BY 1, 2, 3",
         params, role=role,
@@ -125,10 +126,10 @@ def serie_temporelle(filtres: dict[str, Any], role: str | None) -> list[dict[str
     rows = db.fetch_all(
         f"WITH {_CONSO} SELECT e.id, e.titre, e.debut, "
         f"coalesce(e.volet, '{_INCONNU}') AS volet, "
-        "count(*) FILTER (WHERE cc.present) AS presents, "
-        "count(*) FILTER (WHERE cc.partiel AND NOT cc.present) AS partiels, "
-        "count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel) AS absents, "
-        "count(*) FILTER (WHERE cc.scanne) AS scannes, "
+        f"count(*) FILTER (WHERE cc.present AND {_EXPLOITABLE}) AS presents, "
+        f"count(*) FILTER (WHERE cc.partiel AND NOT cc.present AND {_EXPLOITABLE}) AS partiels, "
+        f"count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel AND {_EXPLOITABLE}) AS absents, "
+        f"count(*) FILTER (WHERE cc.scanne AND {_EXPLOITABLE}) AS scannes, "
         "count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_enligne "
         "AND NOT cc.a_presentiel AND NOT cc.scanne) AS en_ligne "
         f"FROM conso cc {_JOINTURES} WHERE {where} "
@@ -182,8 +183,8 @@ def cohortes_assiduite(filtres: dict[str, Any], role: str | None) -> dict[str, A
     where, params = _where(filtres)
     rows = db.fetch_all(
         f"WITH {_CONSO} SELECT cc.membre_id, "
-        "count(*) AS observees, "
-        "count(*) FILTER (WHERE cc.present OR cc.partiel) AS suivies "
+        f"count(*) FILTER (WHERE {_EXPLOITABLE}) AS observees, "
+        f"count(*) FILTER (WHERE (cc.present OR cc.partiel) AND {_EXPLOITABLE}) AS suivies "
         f"FROM conso cc {_JOINTURES} WHERE {where} "
         "GROUP BY cc.membre_id",
         params, role=role,
@@ -298,15 +299,24 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
     about that third.
     """
     where, params = _where(filtres)
+    # Every count here carries the same exclusion as the breakdowns below it. It did
+    # not, and the headline therefore counted the hundred and eleven uninterpretable
+    # rows while the charts under it did not: the four buckets no longer added up to
+    # the number of people the card said had followed.
     r = db.fetch_one(
         f"WITH {_CONSO} SELECT "
-        "count(*) AS observations, "
-        "count(DISTINCT cc.membre_id) AS membres_vus, "
-        "count(DISTINCT cc.evenement_id) AS activites, "
-        "count(*) FILTER (WHERE cc.present) AS presents, "
-        "count(*) FILTER (WHERE cc.partiel AND NOT cc.present) AS partiels, "
-        "count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel) AS absents, "
-        "count(*) FILTER (WHERE cc.scanne) AS scannes "
+        f"count(*) FILTER (WHERE {_EXPLOITABLE}) AS observations, "
+        f"count(DISTINCT cc.membre_id) FILTER (WHERE {_EXPLOITABLE}) AS membres_vus, "
+        f"count(DISTINCT cc.evenement_id) FILTER (WHERE {_EXPLOITABLE}) AS activites, "
+        f"count(*) FILTER (WHERE cc.present AND {_EXPLOITABLE}) AS presents, "
+        f"count(*) FILTER (WHERE cc.partiel AND NOT cc.present AND {_EXPLOITABLE}) AS partiels, "
+        f"count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel AND {_EXPLOITABLE}) AS absents, "
+        f"count(*) FILTER (WHERE cc.scanne AND {_EXPLOITABLE}) AS presentiel_prouve, "
+        f"count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS presentiel_declare, "
+        f"count(*) FILTER (WHERE cc.a_enligne AND NOT cc.en_ligne_partiel AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne_complet, "
+        f"count(*) FILTER (WHERE cc.a_enligne AND cc.en_ligne_partiel AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne_partiel, "
+        f"count(*) FILTER (WHERE (cc.present OR cc.partiel) AND NOT cc.a_presentiel AND NOT cc.a_enligne AND NOT cc.scanne AND {_EXPLOITABLE}) AS suivi_modalite_inconnue, "
+        "count(*) FILTER (WHERE cc.ambigu) AS non_interpretables "
         f"FROM conso cc {_JOINTURES} WHERE {where}",
         params, role=role,
     ) or {}
@@ -318,6 +328,12 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
     partiels = int(r.get("partiels") or 0)
     membres_vus = int(r.get("membres_vus") or 0)
     activites = int(r.get("activites") or 0)
+    prouve = int(r.get("presentiel_prouve") or 0)
+    declare = int(r.get("presentiel_declare") or 0)
+    complet = int(r.get("en_ligne_complet") or 0)
+    partiel_en_ligne = int(r.get("en_ligne_partiel") or 0)
+    modalite_inconnue = int(r.get("suivi_modalite_inconnue") or 0)
+    suivis = presents + partiels
     return {
         "observations": observations,
         "activites": activites,
@@ -326,9 +342,22 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
         "presents": presents,
         "partiels": partiels,
         "absents": int(r.get("absents") or 0),
-        "scannes": int(r.get("scannes") or 0),
+        "scannes": prouve,
+        # The four ways of having followed. They sum to `suivis`, so the breakdown can
+        # be checked against the headline rather than trusted.
+        "presentiel_prouve": prouve,
+        "presentiel_declare": declare,
+        "en_ligne_complet": complet,
+        "en_ligne_partiel": partiel_en_ligne,
+        "suivi_modalite_inconnue": modalite_inconnue,
+        "suivis": suivis,
+        "non_interpretables": int(r.get("non_interpretables") or 0),
         "taux_presence": _taux(presents, observations),
-        "taux_participation": _taux(presents + partiels, observations),
+        "taux_participation": _taux(suivis, observations),
+        # What share of the attendance is evidence rather than assertion. Eighty per
+        # cent proven at the door and eighty per cent asserted in a form are different
+        # situations, and the attendance rate alone cannot tell them apart.
+        "taux_preuve": _taux(prouve, suivis),
         # How much of the base the figures above actually describe. Without it, a rate
         # computed on a handful of people reads exactly like one computed on everybody.
         "taux_couverture": _taux(membres_vus, int(membres_actifs or 0)),
