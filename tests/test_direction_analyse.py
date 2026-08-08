@@ -16,7 +16,8 @@ from __future__ import annotations
 import pytest
 
 from app import direction_analyse as analyse
-from app import direction_membres, direction_pilotage as pilotage
+from app import direction_membres
+from app import direction_pilotage as pilotage
 from app.db import fetch_one
 
 
@@ -43,7 +44,7 @@ def test_les_axes_donnent_le_meme_total():
     page can be trusted.
     """
     totaux = {
-        axe: sum(l["total"] for l in analyse.repartition(axe, {}, None))
+        axe: sum(x["total"] for x in analyse.repartition(axe, {}, None))
         for axe in ("commission", "tribu", "coordination", "pays", "volet")
     }
     assert len(set(totaux.values())) == 1, f"les axes divergent : {totaux}"
@@ -123,7 +124,7 @@ def test_le_scan_prime_sur_la_declaration():
     themselves out of the on-site count after being seen at the door.
     """
     lignes = analyse.repartition("modalite", {}, None)
-    par_label = {l["label"]: l for l in lignes}
+    par_label = {x["label"]: x for x in lignes}
     prouve = par_label.get("Présentiel prouvé")
     if prouve is None or prouve["total"] == 0:
         pytest.skip("aucune présence scannée sur la base : rien à prouver ici")
@@ -135,9 +136,9 @@ def test_le_scan_prime_sur_la_declaration():
 
 def test_un_filtre_restreint_toujours():
     """A filter can only ever remove observations, never add any."""
-    total = sum(l["total"] for l in analyse.repartition("commission", {}, None))
+    total = sum(x["total"] for x in analyse.repartition("commission", {}, None))
     for filtre in ({"volet": "A"}, {"depuis": "2026-07-01"}, {"genre": "F"}):
-        restreint = sum(l["total"] for l in analyse.repartition("commission", filtre, None))
+        restreint = sum(x["total"] for x in analyse.repartition("commission", filtre, None))
         assert restreint <= total, f"le filtre {filtre} a élargi le périmètre"
 
 
@@ -176,10 +177,10 @@ def test_un_filtre_inconnu_est_refuse():
 # --- Honesty of the rates ---------------------------------------------------
 
 def test_les_taux_restent_dans_leurs_bornes():
-    for l in analyse.repartition("commission", {}, None):
-        assert 0.0 <= l["taux_presence"] <= 100.0
-        assert l["taux_presence"] <= l["taux_participation"] <= 100.0
-        assert l["presents"] + l["partiels"] + l["absents"] == l["total"]
+    for ligne in analyse.repartition("commission", {}, None):
+        assert 0.0 <= ligne["taux_presence"] <= 100.0
+        assert ligne["taux_presence"] <= ligne["taux_participation"] <= 100.0
+        assert ligne["presents"] + ligne["partiels"] + ligne["absents"] == ligne["total"]
 
 
 def test_un_membre_trop_peu_observe_n_est_pas_classe():
