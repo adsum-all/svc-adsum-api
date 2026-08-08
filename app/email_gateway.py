@@ -44,7 +44,11 @@ def _config_value(cle: str, fallback: str) -> str:
 
 def _sender() -> tuple[str, str]:
     """The active sender identity (admin-configurable, default Sacerdoce Royal)."""
-    email = _config_value("email_from", settings.email_from) or "saintgabrielsacerdoceroyal@ikmail.com"
+    # Last resort when both the database and the environment are empty. It used to be
+    # an ikmail address that config.py itself documents as rejected by Brevo, so the
+    # one path meant to rescue a send guaranteed its failure. Now the validated
+    # platform mailbox.
+    email = _config_value("email_from", settings.email_from) or "adsum.sr@gmail.com"
     name = _config_value("email_from_name", settings.email_from_name) or "Sacerdoce Royal"
     return email, name
 
