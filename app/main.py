@@ -58,6 +58,7 @@ from .fichiers import admin_router as fichiers_admin_router
 from .fichiers import router as fichiers_router
 from .fonctions import router as fonctions_router
 from .formation import router as formation_router
+from .formulaire_pointage import router as formulaire_pointage_router
 from .gestion import router as gestion_router
 from .groupes import router as groupes_router
 from .groupes_fiche import router as groupes_fiche_router
@@ -223,6 +224,7 @@ app.include_router(fonctions_router)
 app.include_router(niveaux_router)
 app.include_router(gestion_router)
 app.include_router(email_fournisseurs_router)
+app.include_router(formulaire_pointage_router)
 app.include_router(technical_admin_router)
 app.include_router(groupes_router)
 app.include_router(groupes_fiche_router)

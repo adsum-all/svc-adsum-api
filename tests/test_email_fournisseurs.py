@@ -6,7 +6,7 @@ screen that cannot work, and the administrator would only find out after switchi
 """
 from __future__ import annotations
 
-from app.email_fournisseurs import _CLES_AUTORISEES, _COMMUNS, CATALOGUE, _manquants
+from app.email_fournisseurs import _CLES_AUTORISEES, _COMMUNS, CATALOGUE, _alertes, _manquants
 from app.email_gateway import _PROVIDERS
 
 
@@ -86,3 +86,42 @@ def test_les_limites_des_fournisseurs_a_risque_sont_ecrites() -> None:
     for code in ("smtp", "console"):
         f = next(x for x in CATALOGUE if x.code == code)
         assert f.limite.strip(), f"{code} est proposé sans énoncer sa limite"
+
+
+def test_l_alerte_sur_l_expediteur_est_gradee_selon_les_droits_du_compte() -> None:
+    """The severity must follow what the account can do, not merely that it exists.
+
+    An address that only receives mail is one thing. An address that also opens a
+    privileged session is another: it is printed on every message, so the target is
+    public, and the one-time codes protecting it arrive in that same mailbox.
+    """
+    base = {"email_from": "envoi@exemple.fr", "email_reply_to": "contact@exemple.fr"}
+
+    # No account behind the sender: nothing to say.
+    assert _alertes(base, None) == []
+
+    # A plain member account: worth flagging, not critical.
+    membre = {"role": "membre", "actif": True, "technique": False}
+    assert [a["niveau"] for a in _alertes(base, membre)] == ["avertissement"]
+
+    # Technical access outranks a human super administrator: critical.
+    technique = {"role": "membre", "actif": True, "technique": True}
+    assert [a["niveau"] for a in _alertes(base, technique)] == ["critique"]
+
+    # A super administrator, even without technical access, is critical too.
+    super_admin = {"role": "super_admin", "actif": True, "technique": False}
+    assert [a["niveau"] for a in _alertes(base, super_admin)] == ["critique"]
+
+    # A deactivated account cannot open a session, so it is not the same exposure.
+    eteint = {"role": "super_admin", "actif": False, "technique": True}
+    assert _alertes(base, eteint) == []
+
+
+def test_l_absence_d_adresse_de_reponse_est_signalee() -> None:
+    """A member answering a notification must not write into a mailbox nobody reads."""
+    alertes = _alertes({"email_from": "envoi@exemple.fr", "email_reply_to": ""}, None)
+    assert [a["titre"] for a in alertes] == ["Aucune adresse de réponse"]
+
+
+def test_sans_expediteur_configure_aucune_alerte_n_est_inventee() -> None:
+    assert _alertes({"email_from": "", "email_reply_to": ""}, None) == []
