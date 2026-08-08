@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import db
-from .direction_analyse import _CONSO, _JOINTURES, _where
+from .direction_analyse import _CONSO, _FILTRES_ENUMERES, _JOINTURES, _where
 
 _INCONNU = "Non renseigné"
 
@@ -260,6 +260,14 @@ def _effectif_du_perimetre(filtres: dict[str, Any], role: str | None) -> int:
     params: dict[str, Any] = {}
     for cle, valeur in filtres.items():
         if valeur in (None, ""):
+            continue
+        # The demonstration switch describes people, so it narrows the denominator
+        # too. Excluded, coverage would compare real observed members against a
+        # population that still counted the demonstration profiles.
+        if cle == "donnees":
+            choix = _FILTRES_ENUMERES.get("donnees", {}).get(str(valeur))
+            if choix is not None:
+                morceaux.append(choix)
             continue
         fragment = _FILTRES_EFFECTIF.get(cle)
         if fragment is None:

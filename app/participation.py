@@ -17,7 +17,7 @@ per-member attendance.
 # ruff: noqa: E501
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -76,8 +76,30 @@ def _membre(user: Annotated[UserMe, Depends(current_user)]) -> tuple[str, str]:
 # --- Member: declare / view participation -----------------------------------
 
 class ParticipationIn(BaseModel):
+    """What the member answered.
+
+    The three questions of the form, plus the two legacy fields kept so the versions
+    of the applications already installed keep working while they are updated. A
+    client that sends only ``statut`` and ``modalite`` is understood exactly as before,
+    with one exception that is the whole point of this change: "partiel en présentiel"
+    is now refused rather than silently recorded, because on site you were there or
+    you were not.
+    """
+
+    # Question 1: "Avez-vous suivi cette activité ?"
+    a_suivi: bool | None = None
+    # Question 2: "Comment avez-vous suivi ?" - presentiel | en_ligne
+    mode_suivi: str | None = None
+    # Question 3, online only: "Votre suivi était-il complet ou partiel ?"
+    niveau_en_ligne: str | None = None
+    # Absence branch. The member says why; they never decide whether it is excused.
+    absence_motif: str | None = None
+    absence_commentaire: str | None = None
+
+    # Legacy shape, still accepted.
     statut: str | None = None  # present | partiel | absent
-    modalite: str | None = None  # presentiel | en_ligne (declarative; ignored when scanned)
+    modalite: str | None = None  # presentiel | en_ligne
+
     avis: str | None = None
     note: int | None = None
     valider: bool = False
@@ -94,6 +116,30 @@ def mes_pieces_evenement(
     if not visibilite.evenement_visible_membre(evenement_id, membre_id, role):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     return evenement_pieces.lister_pieces(evenement_id, role)
+
+
+@router.get("/reference/motifs-absence")
+def motifs_absence(user: Annotated[UserMe, Depends(current_user)]) -> list[dict[str, object]]:
+    """The reasons a member may give for not having followed an activity.
+
+    Served rather than hard-coded in each application, so the four fronts offer the
+    same list and an organisation can change it without a deployment. Inactive
+    reasons are withheld: they must stop being offered without erasing the absences
+    that already cite them.
+    """
+    return [
+        {
+            "code": str(r["code"]),
+            "libelle": str(r["libelle"]),
+            "libelle_en": r.get("libelle_en"),
+            "commentaire_requis": bool(r.get("commentaire_requis")),
+        }
+        for r in db.fetch_all(
+            "SELECT code, libelle, libelle_en, commentaire_requis FROM motif_absence "
+            "WHERE actif ORDER BY ordre, libelle",
+            (), role=user.role,
+        )
+    ]
 
 
 @router.get("/membres/me/evenements/{evenement_id}/participation")
@@ -204,27 +250,29 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
 
     scanned = bool(existing) and existing["source"] == "scan"
     if scanned:
-        # A scanned member is present on site; status and modality are strong
-        # proof and cannot be edited. They may add feedback, and validating
-        # finalizes it.
-        new_statut, new_source, new_modalite = "present", "scan", "presentiel"
+        # Their presence was proven at the door. The form cannot move it, and in
+        # particular cannot turn it into an absence: the controller saw this person.
+        reponse = ReponseNormalisee("present", "presentiel", None, "presentiel")
+        new_source = "scan"
+        confiance = "prouvee"
+        motif = commentaire = None
     else:
-        new_statut = payload.statut or (existing["statut"] if existing else None)
-        if new_statut not in _STATUTS:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statut must be present, partiel or absent")
+        reponse = normaliser_reponse(payload, existing)
         new_source = "declaration"
-        # Declarative modality: asked only when there is no scan proof. It is
-        # required to validate an attended/partial declaration, meaningless for
-        # an absence.
-        new_modalite = payload.modalite or (existing.get("modalite") if existing else None)
-        if new_statut == "absent":
-            new_modalite = None
-        elif payload.valider and new_modalite is None:
+        confiance = "declaree"
+        motif = commentaire = None
+        if reponse.statut == "absent":
+            motif = (payload.absence_motif or "").strip() or None
+            commentaire = (payload.absence_commentaire or "").strip() or None
+            if motif:
+                _verifier_motif(motif, commentaire, role)
+        elif payload.valider and reponse.modalite is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Précisez comment vous avez suivi l'activité (présentiel ou en ligne).",
             )
 
+    new_statut, new_modalite = reponse.statut, reponse.modalite
     upsert_participation(
         evenement_id,
         membre_id,
@@ -232,12 +280,129 @@ def declarer_participation(evenement_id: str, payload: ParticipationIn, ctx: Ann
         source=new_source,
         valide=payload.valider,
         modalite=new_modalite,
+        mode_suivi=reponse.mode_suivi,
+        niveau_en_ligne=reponse.niveau_en_ligne,
+        confiance=confiance,
+        absence_motif=motif,
+        absence_commentaire=commentaire,
         role=role,
     )
     # The rating/comment are stored ANONYMOUSLY, in a separate table with no member
     # link, so presence stays identifiable while the evaluation cannot be attributed.
     evalue = soumettre_evaluation(evenement_id, membre_id, note=payload.note, avis=payload.avis, role=role)
-    return {"ok": True, "verrouille": payload.valider, "statut": new_statut, "valide": payload.valider, "modalite": new_modalite, "evaluation_enregistree": evalue}
+    return {
+        "ok": True,
+        "verrouille": payload.valider,
+        "statut": new_statut,
+        "valide": payload.valider,
+        "modalite": new_modalite,
+        "mode_suivi": reponse.mode_suivi,
+        "niveau_en_ligne": reponse.niveau_en_ligne,
+        "confiance": confiance,
+        "absence_motif": motif,
+        "evaluation_enregistree": evalue,
+    }
+
+
+#: The reply, expressed in the platform's own vocabulary.
+class ReponseNormalisee(NamedTuple):
+    statut: str          # present | partiel | absent, kept for every existing reader
+    mode_suivi: str      # presentiel | en_ligne | aucun
+    niveau_en_ligne: str | None   # complet | partiel, online only
+    modalite: str | None          # legacy mirror of mode_suivi
+
+
+def normaliser_reponse(payload: ParticipationIn, existant: dict[str, object] | None) -> ReponseNormalisee:
+    """Turn what the member answered into the one shape the platform records.
+
+    The form asks three questions in sequence, and each one only makes sense given the
+    previous answer. Normalising here rather than at each call site is what stops the
+    combinations from drifting apart: there is exactly one place where "followed
+    online, partially" becomes a stored row.
+
+    Older clients send the flat ``statut`` + ``modalite`` pair, which is mapped onto
+    the same shape. One combination is refused instead of mapped: partial attendance
+    on site. It was accepted before, it produced 109 rows nobody can interpret, and
+    accepting it again would keep producing them.
+    """
+    def _reprendre(champ: str) -> object | None:
+        return existant.get(champ) if existant else None
+
+    # The explicit form wins when it is present; otherwise fall back on the flat pair,
+    # then on what was already recorded as a draft.
+    a_suivi = payload.a_suivi
+    if a_suivi is None and payload.statut:
+        a_suivi = payload.statut != "absent"
+    if a_suivi is None and _reprendre("statut"):
+        a_suivi = str(_reprendre("statut")) != "absent"
+
+    if a_suivi is False:
+        return ReponseNormalisee("absent", "aucun", None, None)
+
+    mode = payload.mode_suivi or payload.modalite or _reprendre("mode_suivi") or _reprendre("modalite")
+    mode = str(mode) if mode else None
+    if mode not in (None, "presentiel", "en_ligne"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Comment avez-vous suivi l'activité : en présentiel ou en ligne ?",
+        )
+
+    niveau = payload.niveau_en_ligne
+    if niveau is None and payload.statut == "partiel":
+        niveau = "partiel"
+    if niveau is None and not payload.statut and _reprendre("niveau_en_ligne"):
+        niveau = str(_reprendre("niveau_en_ligne"))
+    if niveau not in (None, "complet", "partiel"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Votre suivi en ligne était-il complet ou partiel ?",
+        )
+
+    if mode == "presentiel":
+        # The refusal that gives this function its reason to exist.
+        if niveau == "partiel" or payload.statut == "partiel":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Un suivi partiel ne concerne que le suivi en ligne. "
+                    "En présentiel, indiquez si vous avez suivi l'activité ou non."
+                ),
+            )
+        return ReponseNormalisee("present", "presentiel", None, "presentiel")
+
+    if mode == "en_ligne":
+        # Complete unless the member said otherwise: somebody who followed online and
+        # did not flag an interruption followed it.
+        niveau_final = "partiel" if niveau == "partiel" else "complet"
+        statut = "partiel" if niveau_final == "partiel" else "present"
+        return ReponseNormalisee(statut, "en_ligne", niveau_final, "en_ligne")
+
+    # Followed, but the modality is still unanswered. Left incomplete on purpose: the
+    # guard on validation asks for it rather than choosing one.
+    return ReponseNormalisee("present", "presentiel", None, None)
+
+
+def _verifier_motif(motif: str, commentaire: str | None, role: str | None) -> None:
+    """Refuse a reason the catalogue does not contain, and demand the comment it asks for.
+
+    Validated against the table rather than a list in the code, so an organisation can
+    add or retire a reason without a deployment, and a retired reason stops being
+    offered without erasing the absences that already cited it.
+    """
+    row = db.fetch_one(
+        "SELECT code, commentaire_requis FROM motif_absence WHERE code = %s AND actif",
+        (motif,), role=role,
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ce motif d'absence n'est pas proposé.",
+        )
+    if bool(row.get("commentaire_requis")) and not (commentaire or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ce motif demande une précision. Merci d'ajouter un commentaire.",
+        )
 
 
 def upsert_participation(
@@ -248,6 +413,11 @@ def upsert_participation(
     source: str,
     valide: bool,
     modalite: str | None,
+    mode_suivi: str | None = None,
+    niveau_en_ligne: str | None = None,
+    confiance: str | None = None,
+    absence_motif: str | None = None,
+    absence_commentaire: str | None = None,
     role: str | None = None,
 ) -> None:
     """Write a participation row (PRESENCE only), converging every channel onto one
@@ -264,18 +434,42 @@ def upsert_participation(
     """
     db.execute(
         """
-        INSERT INTO participation (evenement_id, membre_id, statut, source, valide, modalite)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO participation (evenement_id, membre_id, statut, source, valide, modalite,
+                                   mode_suivi, niveau_en_ligne, confiance,
+                                   absence_motif, absence_commentaire, absence_qualification)
+        VALUES (%(ev)s, %(m)s, %(statut)s, %(source)s, %(valide)s, %(modalite)s,
+                %(mode)s, %(niveau)s, %(confiance)s,
+                %(motif)s, %(commentaire)s,
+                -- A reason given is a request for a decision, never the decision.
+                -- Both parameters are cast: reused inside a CASE, Postgres cannot
+                -- infer their type from the surrounding expression and refuses.
+                CASE WHEN %(statut)s::text = 'absent' AND %(motif)s::text IS NOT NULL
+                     THEN 'en_attente' ELSE 'sans_objet' END)
         ON CONFLICT (evenement_id, membre_id)
         DO UPDATE SET
             statut = CASE WHEN participation.source = 'scan' THEN 'present' ELSE EXCLUDED.statut END,
             source = CASE WHEN participation.source = 'scan' THEN 'scan' ELSE EXCLUDED.source END,
             modalite = CASE WHEN participation.source = 'scan' THEN 'presentiel' ELSE EXCLUDED.modalite END,
+            mode_suivi = CASE WHEN participation.source = 'scan' THEN 'presentiel' ELSE EXCLUDED.mode_suivi END,
+            niveau_en_ligne = CASE WHEN participation.source = 'scan' THEN NULL ELSE EXCLUDED.niveau_en_ligne END,
+            confiance = CASE WHEN participation.source = 'scan' THEN 'prouvee' ELSE EXCLUDED.confiance END,
+            absence_motif = CASE WHEN participation.source = 'scan' THEN NULL ELSE EXCLUDED.absence_motif END,
+            absence_commentaire = CASE WHEN participation.source = 'scan' THEN NULL ELSE EXCLUDED.absence_commentaire END,
+            absence_qualification = CASE
+                WHEN participation.absence_qualification IN ('excusee', 'non_excusee')
+                    THEN participation.absence_qualification
+                ELSE EXCLUDED.absence_qualification END,
+            legacy_ambigu = false,
             valide = EXCLUDED.valide,
             maj_le = now()
         WHERE NOT participation.valide
         """,
-        (evenement_id, membre_id, statut, source, valide, modalite),
+        {
+            "ev": evenement_id, "m": membre_id, "statut": statut, "source": source,
+            "valide": valide, "modalite": modalite, "mode": mode_suivi,
+            "niveau": niveau_en_ligne, "confiance": confiance,
+            "motif": absence_motif, "commentaire": absence_commentaire,
+        },
         role=role,
     )
 

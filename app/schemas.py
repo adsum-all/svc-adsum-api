@@ -830,6 +830,15 @@ class VerifyResult(BaseModel):
     nom_pastoral_affiche: str | None = None
     photo_url: str | None = None
     titre: str | None = None
+    # The state of the file behind the QR. A valid signature says the badge is
+    # genuine; it says nothing about whether the organisation still counts this
+    # person as a member. The controller has to see both before letting anyone in.
+    verdict: str = "autorise"
+    verdict_raison: str | None = None
+    verdict_code: str | None = None
+    statut: str | None = None
+    statut_inscription: str | None = None
+    identite_verifiee: bool = False
 
 
 class CheckinRequest(BaseModel):
@@ -851,6 +860,9 @@ class CheckinMembre(BaseModel):
     nom_pastoral_affiche: str | None = None
     photo_url: str | None = None
     titre: str | None = None
+    statut: str | None = None
+    statut_inscription: str | None = None
+    identite_verifiee: bool = False
 
 
 class CheckinResult(BaseModel):
@@ -860,6 +872,10 @@ class CheckinResult(BaseModel):
     membre: CheckinMembre
     evenement_id: str
     arrivee: datetime | None = None
+    # Warnings that did not block the check-in but that the controller must see, for
+    # instance a file whose registration is not yet approved. Silence here means the
+    # profile was fully conform.
+    alerte: str | None = None
 
 
 class VerifyRequest(BaseModel):

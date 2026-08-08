@@ -161,6 +161,29 @@ _FILTRES: dict[str, str] = {
     "jusqu_a": "e.debut <= %(f_jusqu_a)s::timestamptz",
 }
 
+#: What makes a member a demonstration profile. Same predicate as the seed script, so
+#: the two cannot drift: a profile the seed can touch is a profile this can exclude.
+#: The accent is folded because the family names were normalised to DEMO.
+_EST_DEMO = (
+    "(translate(upper(m.nom), 'ÉÈÊË', 'EEEE') LIKE '%%DEMO%%' "
+    "OR m.email LIKE '%%@exemple.com' OR m.email LIKE '%%@example.com')"
+)
+
+#: Filters whose value selects a fixed fragment rather than binding a parameter.
+#:
+#: The demonstration switch exists because the base is largely populated with
+#: demonstration profiles while the organisation onboards. A direction reading a
+#: credible attendance rate has no way to know it describes invented people, and
+#: "toutes" stays the default only so that no figure changes silently under somebody
+#: who did not ask for it.
+_FILTRES_ENUMERES: dict[str, dict[str, str]] = {
+    "donnees": {
+        "toutes": "true",
+        "reelles": f"NOT {_EST_DEMO}",
+        "demonstration": _EST_DEMO,
+    },
+}
+
 
 class DimensionInconnue(ValueError):
     """A dimension or filter the platform does not compute. Refused, never guessed."""
@@ -176,7 +199,12 @@ def dimensions_disponibles() -> list[dict[str, str]]:
 
 def filtres_disponibles() -> list[str]:
     """The filter keys a screen may send."""
-    return sorted(_FILTRES)
+    return sorted([*_FILTRES, *_FILTRES_ENUMERES])
+
+
+def valeurs_enumerees() -> dict[str, list[str]]:
+    """The accepted values of the filters that are a choice rather than an identifier."""
+    return {cle: sorted(vals) for cle, vals in _FILTRES_ENUMERES.items()}
 
 
 def _expr(dimension: str) -> str:
@@ -197,6 +225,17 @@ def _where(filtres: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     params: dict[str, Any] = {}
     for cle, valeur in filtres.items():
         if valeur in (None, ""):
+            continue
+        # A choice filter selects one of a fixed set of fragments. The value never
+        # reaches the SQL, so an unexpected one is refused rather than interpolated.
+        choix = _FILTRES_ENUMERES.get(cle)
+        if choix is not None:
+            fragment = choix.get(str(valeur))
+            if fragment is None:
+                raise DimensionInconnue(
+                    f"{cle} : valeur inconnue « {valeur} ». Attendu : {', '.join(sorted(choix))}."
+                )
+            morceaux.append(fragment)
             continue
         fragment = _FILTRES.get(cle)
         if fragment is None:
