@@ -42,6 +42,8 @@ from .consentement import router as consentement_router
 from .consultations import router as consultations_router
 from .controle import router as controle_router
 from .demandes import router as demandes_router
+from .direction_rapport import router as direction_rapport_router
+from .direction_routes import router as direction_router
 from .doublons import router as doublons_router
 from .email_webhook import router as email_webhook_router
 from .emargement import router as emargement_router
@@ -162,6 +164,8 @@ app.include_router(calendrier_institutionnel_router)
 app.include_router(communication_centre_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
+app.include_router(direction_router)
+app.include_router(direction_rapport_router)
 app.include_router(pilotage_router)
 app.include_router(consultations_router)
 app.include_router(tags_router)
