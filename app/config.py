@@ -41,13 +41,21 @@ class Settings(BaseSettings):
     # address is NOT a validated Brevo sender (Brevo rejects it with "sender not
     # valid"), so it must never be the fallback: use the validated single sender.
     # The live value is admin-managed in integration_config and overrides this.
-    email_from: str = "saintgabrielsacerdoceroyal@gmail.com"
+    #
+    # Now a mailbox dedicated to the platform rather than the personal address of an
+    # administrator. The two had been the same, so a full inbox stopped every send AND
+    # locked its owner out of their own account, since the codes went to the mailbox
+    # that could no longer receive them.
+    email_from: str = "adsum.sr@gmail.com"
     email_from_name: str = "Sacerdoce Royal"
     email_api_key: str = ""
     email_smtp_host: str = ""
     email_smtp_port: int = 587
     email_smtp_user: str = ""
     email_smtp_password: str = ""
+    # Where a member should write back. Left empty, replies land on the sending
+    # mailbox, which nobody reads. Admin-managed in integration_config like the rest.
+    email_reply_to: str = ""
     # Supabase Storage (S3) for member files: profile photos, identity documents,
     # signed consents. Files are private; the API mints short-lived signed URLs.
     supabase_url: str = ""
