@@ -217,3 +217,33 @@ def test_le_suivi_nominatif_borne_sa_pagination():
     r = direction_membres.suivi_assiduite({}, None, limite=10_000)
     assert r["limite"] <= 500
     assert len(r["membres"]) <= 500
+
+
+def test_la_couverture_compare_au_perimetre_filtre():
+    """The coverage denominator follows the organisational scope, not the whole base.
+
+    Left global, narrowing to a coordination collapsed the rate: seven observed
+    members against sixty-four active in the whole organisation reads as eleven per
+    cent, and a leader would conclude their coordination reports almost nothing.
+    """
+    coord = fetch_one("SELECT id FROM coordination ORDER BY nom LIMIT 1", ())
+    if not coord:
+        pytest.skip("aucune coordination en base")
+    globale = pilotage.synthese({}, None)
+    ciblee = pilotage.synthese({"coordination": str(coord["id"])}, None)
+    assert ciblee["membres_actifs"] <= globale["membres_actifs"]
+    assert ciblee["membres_vus"] <= ciblee["membres_actifs"], (
+        "plus de membres observés que le périmètre n'en contient : "
+        "le dénominateur ne suit pas le filtre"
+    )
+
+
+def test_restreindre_la_periode_ne_reduit_pas_l_effectif():
+    """Looking at one quarter does not make the organisation smaller.
+
+    Letting the period narrow the denominator would make coverage climb simply
+    because the window shrank, which is the opposite of what the figure is for.
+    """
+    globale = pilotage.synthese({}, None)
+    fenetre = pilotage.synthese({"depuis": "2026-08-01"}, None)
+    assert fenetre["membres_actifs"] == globale["membres_actifs"]
