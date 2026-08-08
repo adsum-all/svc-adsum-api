@@ -129,7 +129,7 @@ _GUIDE = {
     },
     "email_smtp_host": {
         "titre": "Serveur SMTP (envoi via votre boîte mail)",
-        "aide": "Serveur d'envoi de votre fournisseur de boîte mail. Pour ikmail / ik.me (Infomaniak) : mail.infomaniak.com. Utilisé quand email_provider = smtp.",
+        "aide": "Serveur d'envoi de votre fournisseur de boîte mail. Infomaniak : mail.infomaniak.com. Bouygues : smtp.bbox.fr. Free : smtp.free.fr. Utilisé quand email_provider contient smtp. Attention : un fournisseur d'accès impose un quota journalier bas, n'accepte d'envoyer que depuis sa propre adresse (voir Expéditeur SMTP) et ne remonte aucun statut de livraison. Convient au secours, pas à un envoi général.",
         "roter": "Renseignez le serveur SMTP de votre fournisseur (Gmail : smtp.gmail.com ; Infomaniak : mail.infomaniak.com).",
     },
     "email_smtp_port": {
@@ -141,6 +141,22 @@ _GUIDE = {
         "titre": "Identifiant SMTP",
         "aide": "En général l'adresse e-mail complète (ex. saintgabrielsacerdoceroyal@ikmail.com).",
         "roter": "C'est l'adresse de la boîte qui envoie.",
+    },
+    "email_reply_to": {
+        "libelle": "Adresse de réponse",
+        "aide": "Où arrivent les réponses des membres. Laissez vide et elles tombent dans la boîte d'envoi, que personne ne lit. Renseignez une adresse réellement relevée.",
+    },
+    "email_api_key_brevo": {
+        "libelle": "Clé API Brevo",
+        "aide": "Clé propre à Brevo (commence par xkeysib). Distincte de la clé SMTP Brevo. Renseignez-la pour pouvoir armer une chaîne de secours vers un autre fournisseur.",
+    },
+    "email_api_key_resend": {
+        "libelle": "Clé API Resend",
+        "aide": "Clé propre à Resend. Chaque fournisseur a désormais sa clé : sans cela, une chaîne « brevo,resend » enverrait la clé Brevo à Resend, qui la refuserait.",
+    },
+    "email_smtp_from": {
+        "libelle": "Expéditeur SMTP",
+        "aide": "À renseigner si le serveur SMTP n'accepte d'envoyer que depuis sa propre adresse, ce qui est le cas des fournisseurs d'accès (Bouygues, Free). Laissez vide pour utiliser l'expéditeur habituel.",
     },
     "email_smtp_password": {
         "titre": "Mot de passe SMTP",

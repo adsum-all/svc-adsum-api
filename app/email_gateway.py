@@ -53,7 +53,28 @@ def _sender() -> tuple[str, str]:
     return email, name
 
 
-def _api_key() -> str:
+def _reply_to() -> str:
+    """Where a member should write back, when it is not the sending mailbox.
+
+    A notification mailbox is written to and never read. Without a reply address, a
+    member answering a message writes into a void, which is worse than a no-reply
+    that says so.
+    """
+    return _config_value("email_reply_to", settings.email_reply_to)
+
+
+def _api_key(fournisseur: str = "") -> str:
+    """The API key of one provider, falling back to the historical single key.
+
+    One key used to serve every HTTP provider, so a chain of ``brevo,resend`` handed
+    Brevo's key to Resend, which rejected it: the fallback failed at precisely the
+    moment it existed for. Each provider now reads its own key, and the old shared
+    key remains the fallback so nothing changes for a base configured before this.
+    """
+    if fournisseur:
+        propre = _config_value(f"email_api_key_{fournisseur}", "")
+        if propre:
+            return propre
     return _config_value("email_api_key", settings.email_api_key)
 
 
@@ -186,9 +207,21 @@ class SMTPProvider:
 
     def send(self, to: str, subject: str, text: str, html: str) -> None:
         sender_email, sender_name = _sender()
+        # Most relays refuse to send as an address they do not own, and a residential
+        # provider (Bouygues, Free) accepts only its own account address. Sending
+        # "from" a Gmail address through such a relay is rejected or silently
+        # rewritten, which is worse: the message leaves under an address the
+        # organisation did not choose. This override lets the SMTP path carry its own
+        # sender without disturbing the one the API providers use.
+        propre = _config_value("email_smtp_from", "")
+        if propre:
+            sender_email = propre
         msg = EmailMessage()
         msg["From"] = f"{sender_name} <{sender_email}>"
         msg["To"] = to
+        reply = _reply_to()
+        if reply:
+            msg["Reply-To"] = reply
         msg["Subject"] = subject
         msg.set_content(text)
         msg.add_alternative(html, subtype="html")
@@ -212,26 +245,33 @@ class BrevoProvider:
 
     def send(self, to: str, subject: str, text: str, html: str) -> None:
         sender_email, sender_name = _sender()
-        _http_post(
-            "https://api.brevo.com/v3/smtp/email",
-            {"api-key": _api_key()},
-            {
-                "sender": {"email": sender_email, "name": sender_name},
-                "to": [{"email": to}],
-                "subject": subject,
-                "textContent": text,
-                "htmlContent": html,
-            },
-        )
+        corps: dict[str, object] = {
+            "sender": {"email": sender_email, "name": sender_name},
+            "to": [{"email": to}],
+            "subject": subject,
+            "textContent": text,
+            "htmlContent": html,
+        }
+        reply = _reply_to()
+        if reply:
+            corps["replyTo"] = {"email": reply}
+        _http_post("https://api.brevo.com/v3/smtp/email", {"api-key": _api_key("brevo")}, corps)
 
 
 class ResendProvider:
     def send(self, to: str, subject: str, text: str, html: str) -> None:
         sender_email, sender_name = _sender()
+        corps: dict[str, object] = {
+            "from": f"{sender_name} <{sender_email}>",
+            "to": [to], "subject": subject, "text": text, "html": html,
+        }
+        reply = _reply_to()
+        if reply:
+            corps["reply_to"] = reply
         _http_post(
             "https://api.resend.com/emails",
-            {"Authorization": f"Bearer {_api_key()}"},
-            {"from": f"{sender_name} <{sender_email}>", "to": [to], "subject": subject, "text": text, "html": html},
+            {"Authorization": f"Bearer {_api_key('resend')}"},
+            corps,
         )
 
 
@@ -248,6 +288,28 @@ def _provider_chain() -> list[str]:
     raw = (_config_value("email_provider", settings.email_provider) or "console").lower()
     names = [n.strip() for n in raw.split(",") if n.strip()]
     return names or ["console"]
+
+
+def send_via(nom: str, to: str, subject: str, text: str, html: str) -> tuple[bool, str]:
+    """Send through one named provider only, and return why it failed.
+
+    Switching provider blind is how an organisation discovers, one week later and
+    from a member, that nothing has left the building. This lets the back office
+    prove a provider works BEFORE it is made the active one, and it deliberately
+    does not fall back: a fallback here would report success for a provider that
+    is in fact broken, which is the opposite of what a test is for.
+
+    Returns ``(True, "")`` or ``(False, <provider error>)``.
+    """
+    cls = _PROVIDERS.get(nom)
+    if cls is None:
+        return False, f"fournisseur inconnu : {nom}"
+    try:
+        cls().send(to, subject, text, html)
+    except Exception as exc:  # noqa: BLE001 - the reason is the payload of this call
+        logger.warning("test send via %s to %s failed: %s", nom, to, exc)
+        return False, str(exc)
+    return True, ""
 
 
 def send_email(to: str, subject: str, text: str, html: str) -> tuple[bool, str]:

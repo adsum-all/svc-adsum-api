@@ -45,6 +45,7 @@ from .demandes import router as demandes_router
 from .direction_rapport import router as direction_rapport_router
 from .direction_routes import router as direction_router
 from .doublons import router as doublons_router
+from .email_fournisseurs import router as email_fournisseurs_router
 from .email_webhook import router as email_webhook_router
 from .emargement import router as emargement_router
 from .engagement import public_router as engagement_public_router
@@ -221,6 +222,7 @@ app.include_router(integrations_router)
 app.include_router(fonctions_router)
 app.include_router(niveaux_router)
 app.include_router(gestion_router)
+app.include_router(email_fournisseurs_router)
 app.include_router(technical_admin_router)
 app.include_router(groupes_router)
 app.include_router(groupes_fiche_router)
