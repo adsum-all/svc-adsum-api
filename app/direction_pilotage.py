@@ -230,6 +230,54 @@ def cohortes_assiduite(filtres: dict[str, Any], role: str | None) -> dict[str, A
     }
 
 
+#: Filters that describe the PEOPLE rather than the activities. Only these narrow the
+#: coverage denominator: restricting to one quarter does not make the organisation
+#: smaller, but restricting to one coordination does.
+_FILTRES_EFFECTIF: dict[str, str] = {
+    "coordination": "coalesce(i.coordination_id, m.coordination_id) = %(f_coordination)s",
+    "intendance": "m.intendance_id = %(f_intendance)s",
+    "commission": "m.commission_id = %(f_commission)s",
+    "tribu": "m.tribu_id = %(f_tribu)s",
+    "pays": "m.pays = %(f_pays)s",
+    "genre": "m.genre = %(f_genre)s",
+    "type_membre": "m.type_membre = %(f_type_membre)s",
+}
+
+
+def _effectif_du_perimetre(filtres: dict[str, Any], role: str | None) -> int:
+    """How many active members the current organisational scope contains.
+
+    Counted under the same organisational filters as the numerator. Left global, the
+    coverage rate collapsed the moment anybody narrowed: seven observed members in a
+    coordination against sixty-four active in the whole organisation reads as eleven
+    per cent, and a leader would conclude their coordination reports almost nothing.
+
+    Period, volet and activity filters are deliberately ignored here. Looking at one
+    quarter does not reduce the number of people the organisation has, and letting it
+    would make coverage rise simply because the window narrowed.
+    """
+    morceaux: list[str] = []
+    params: dict[str, Any] = {}
+    for cle, valeur in filtres.items():
+        if valeur in (None, ""):
+            continue
+        fragment = _FILTRES_EFFECTIF.get(cle)
+        if fragment is None:
+            continue
+        morceaux.append(fragment)
+        params[f"f_{cle}"] = valeur
+    where = " AND ".join(morceaux) if morceaux else "true"
+
+    r = db.fetch_one(
+        "SELECT count(*) AS n FROM membre m "
+        "LEFT JOIN intendance i ON i.id = m.intendance_id "
+        "WHERE m.statut = 'actif' AND m.statut_inscription = 'approuve' "
+        f"AND {where}",
+        params, role=role,
+    )
+    return int((r or {}).get("n", 0) or 0)
+
+
 def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
     """The headline figures, computed from the same rows as every panel below them.
 
@@ -255,10 +303,7 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
         params, role=role,
     ) or {}
 
-    membres_actifs = (db.fetch_one(
-        "SELECT count(*) AS n FROM membre WHERE statut = 'actif' AND statut_inscription = 'approuve'",
-        (), role=role,
-    ) or {}).get("n", 0)
+    membres_actifs = _effectif_du_perimetre(filtres, role)
 
     observations = int(r.get("observations") or 0)
     presents = int(r.get("presents") or 0)
