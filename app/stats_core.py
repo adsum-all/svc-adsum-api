@@ -378,10 +378,17 @@ def serie_evenements(role: str | None, limite: int = 30) -> list[dict[str, objec
             SELECT id, titre, debut, volet FROM evenement ORDER BY debut DESC NULLS LAST LIMIT %(lim)s
         ),
         brut AS (
-            SELECT pr.evenement_id, pr.membre_id, 'present'::text AS statut
+            SELECT pr.evenement_id, pr.membre_id, 'present'::text AS statut,
+                   CASE WHEN pr.mode = 'en_ligne' THEN 'en_ligne' ELSE 'presentiel' END AS modalite,
+                   (pr.methode IN ('qr', 'manuelle')) AS scanne,
+                   NULL::text AS niveau_en_ligne, false AS ambigu
             FROM presence pr JOIN evs ON evs.id = pr.evenement_id
             UNION ALL
-            SELECT pa.evenement_id, pa.membre_id, pa.statut
+            SELECT pa.evenement_id, pa.membre_id, pa.statut,
+                   CASE WHEN pa.source = 'scan' THEN 'presentiel'
+                        WHEN pa.modalite IN ('presentiel', 'en_ligne') THEN pa.modalite ELSE NULL END,
+                   (pa.source = 'scan'),
+                   pa.niveau_en_ligne, coalesce(pa.legacy_ambigu, false)
             FROM participation pa JOIN evs ON evs.id = pa.evenement_id
             WHERE {COMPTE} AND pa.statut IN ('present', 'partiel', 'absent')
         ),
@@ -389,7 +396,13 @@ def serie_evenements(role: str | None, limite: int = 30) -> list[dict[str, objec
             SELECT evenement_id, membre_id,
                    bool_or(statut = 'present') AS present,
                    bool_or(statut = 'partiel') AS partiel,
-                   bool_or(statut = 'absent') AS absent
+                   bool_or(statut = 'absent') AS absent,
+                   coalesce(bool_or(scanne), false) AS scanne,
+                   coalesce(bool_or(modalite = 'presentiel'), false) AS a_presentiel,
+                   coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne,
+                   coalesce(bool_or(niveau_en_ligne = 'complet'), false) AS en_ligne_complet,
+                   coalesce(bool_or(niveau_en_ligne = 'partiel'), false) AS en_ligne_partiel,
+                   coalesce(bool_or(ambigu), false) AS ambigu
             FROM brut GROUP BY evenement_id, membre_id
         ),
         cible AS (
@@ -401,14 +414,20 @@ def serie_evenements(role: str | None, limite: int = 30) -> list[dict[str, objec
         ),
         agg AS (
             SELECT c.evenement_id,
-                   count(*) FILTER (WHERE c.present) AS presents,
-                   count(*) FILTER (WHERE c.partiel AND NOT c.present) AS partiels,
-                   count(*) FILTER (WHERE c.absent AND NOT c.present AND NOT c.partiel) AS absents
+                   count(*) FILTER (WHERE {ax.a_suivi('c')}) AS suivis,
+                   count(*) FILTER (WHERE {ax.sur_place('c')}) AS presents,
+                   count(*) FILTER (WHERE {ax.sur_place('c')}) AS presentiel,
+                   count(*) FILTER (WHERE {ax.a_distance('c')}) AS en_ligne,
+                   count(*) FILTER (WHERE {ax.en_ligne_partiel('c')}) AS partiels,
+                   count(*) FILTER (WHERE {ax.n_a_pas_suivi('c')}) AS absents
             FROM conso c JOIN cible ci ON ci.evenement_id = c.evenement_id AND ci.membre_id = c.membre_id
             GROUP BY c.evenement_id
         )
         SELECT evs.id, evs.titre, evs.debut, evs.volet,
+               coalesce(agg.suivis, 0) AS suivis,
                coalesce(agg.presents, 0) AS presents,
+               coalesce(agg.presentiel, 0) AS presentiel,
+               coalesce(agg.en_ligne, 0) AS en_ligne,
                coalesce(agg.partiels, 0) AS partiels,
                coalesce(agg.absents, 0) AS absents
         FROM evs LEFT JOIN agg ON agg.evenement_id = evs.id
@@ -418,8 +437,18 @@ def serie_evenements(role: str | None, limite: int = 30) -> list[dict[str, objec
         role=role,
     )
     return [
-        {"id": str(r["id"]), "titre": r["titre"], "debut": r["debut"].isoformat() if r["debut"] else None,
-         "volet": r["volet"], "presents": int(r["presents"]), "partiels": int(r["partiels"]), "absents": int(r["absents"])}
+        {
+            "id": str(r["id"]), "titre": r["titre"],
+            "debut": r["debut"].isoformat() if r["debut"] else None,
+            "volet": r["volet"],
+            # The three axes, so a screen never has to add two of them to guess a third.
+            "suivis": int(r["suivis"] or 0),
+            "presentiel": int(r["presentiel"] or 0),
+            "en_ligne": int(r["en_ligne"] or 0),
+            "presents": int(r["presents"] or 0),
+            "partiels": int(r["partiels"] or 0),
+            "absents": int(r["absents"] or 0),
+        }
         for r in rows
     ]
 
