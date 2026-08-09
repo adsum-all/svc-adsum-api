@@ -1,10 +1,10 @@
 """ADSUM API application entrypoint."""
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import db, organisation_courante
+from . import db, modules_souscrits, organisation_courante
 from .activites_membre import router as activites_membre_router
 from .admin import router as admin_router
 from .ai_config import router as ai_config_router
@@ -151,12 +151,20 @@ app.add_middleware(
 # without closing an import cycle.
 db.installer_resolveur_dsn(organisation_courante.dsn_courant)
 
+# A module the organisation has not subscribed to must not merely be hidden: its API
+# refuses. Applied on the router rather than on each route, because a rule written
+# endpoint by endpoint is a rule forgotten on the next endpoint.
+_MODULE = {
+    code: [Depends(modules_souscrits.exiger(code))]
+    for code in ("direction", "pilotage", "collaboration", "controleur")
+}
+
 app.include_router(auth_router)
 app.include_router(mfa_router)
 app.include_router(membres_router)
 app.include_router(admin_router)
 app.include_router(evenements_series_router)
-app.include_router(controle_router)
+app.include_router(controle_router, dependencies=_MODULE["controleur"])
 app.include_router(organisation_router)
 app.include_router(equipes_speciales_router)
 app.include_router(equipe_dirigeante_router)
@@ -182,10 +190,10 @@ app.include_router(calendrier_institutionnel_router)
 app.include_router(communication_centre_router)
 app.include_router(organisation_admin_router)
 app.include_router(participation_router)
-app.include_router(direction_router)
-app.include_router(direction_rapport_router)
-app.include_router(pilotage_router)
-app.include_router(pilotage_absences_router)
+app.include_router(direction_router, dependencies=_MODULE["direction"])
+app.include_router(direction_rapport_router, dependencies=_MODULE["direction"])
+app.include_router(pilotage_router, dependencies=_MODULE["pilotage"])
+app.include_router(pilotage_absences_router, dependencies=_MODULE["pilotage"])
 app.include_router(consultations_router)
 app.include_router(tags_router)
 app.include_router(analytics_router)
@@ -200,22 +208,22 @@ app.include_router(cibles_activite_router)
 # WITHOUT per-space membership checks (require_espace_role), bypassing the space
 # isolation enforced by the space-scoped router (collaboration_tableaux.py) and
 # leaking cards across spaces. The space-scoped router fully supersedes it.
-app.include_router(collaboration_canal_router)
-app.include_router(collaboration_canal_notes_router)
-app.include_router(collaboration_telegram_ingest_router)
-app.include_router(collaboration_canal_workflow_router)
-app.include_router(collaboration_canal_config_router)
-app.include_router(collaboration_corbeille_router)
+app.include_router(collaboration_canal_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_canal_notes_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_telegram_ingest_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_canal_workflow_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_canal_config_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_corbeille_router, dependencies=_MODULE["collaboration"])
 app.include_router(ai_config_router)
-app.include_router(collaboration_espaces_router)
-app.include_router(collaboration_modeles_router)
-app.include_router(collaboration_tableaux_router)
-app.include_router(collaboration_cartes_router)
-app.include_router(collaboration_cartes_social_router)
-app.include_router(collaboration_pieces_router)
-app.include_router(collaboration_checklists_router)
-app.include_router(collaboration_presence_router)
-app.include_router(collaboration_transverse_router)
+app.include_router(collaboration_espaces_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_modeles_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_tableaux_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_cartes_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_cartes_social_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_pieces_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_checklists_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_presence_router, dependencies=_MODULE["collaboration"])
+app.include_router(collaboration_transverse_router, dependencies=_MODULE["collaboration"])
 app.include_router(demandes_router)
 app.include_router(doublons_router)
 app.include_router(fichiers_router)
