@@ -170,3 +170,80 @@ class BodySizeLimitMiddleware:
             }
         )
         await send({"type": "http.response.body", "body": body})
+
+
+class OrganisationMiddleware:
+    """Decide which organisation's database this request belongs to, before anything runs.
+
+    One database per organisation is the isolation model, and this is where it takes
+    effect. The organisation comes from the host the request arrived on, and it is
+    resolved here so no handler ever chooses: there is nothing for a handler to choose
+    from, and a query cannot reach another client because the connection does not lead
+    there.
+
+    An unmatched host is refused rather than served from a default. Falling back would
+    mean a misconfigured domain quietly hands one organisation's data out under another
+    organisation's address, which is the precise failure the whole design prevents.
+    While no host is registered the platform is in transition and the historical
+    connection is used, so production keeps running.
+
+    Health and the OpenAPI document answer without resolving: a probe must not fail
+    because a client is suspended, and a suspended client must still be able to read
+    the API's shape.
+    """
+
+    #: Paths that describe the server rather than serve an organisation.
+    HORS_PORTEE = ("/health", "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect")
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("path", "") in self.HORS_PORTEE:
+            await self.app(scope, receive, send)
+            return
+
+        from . import organisation_courante as oc
+
+        entetes = Headers(scope=scope)
+        # X-Forwarded-Host first: behind a proxy the Host header is the proxy's own, and
+        # resolving on it would send every organisation to the same database.
+        hote = entetes.get("x-forwarded-host") or entetes.get("host") or ""
+
+        try:
+            organisation = oc.resoudre(hote)
+        except oc.OrganisationSuspendue as suspendue:
+            await self._refuser(
+                send, 403,
+                f"L'accès de cette organisation est suspendu ({suspendue}). "
+                "Contactez l'éditeur pour le rétablir.",
+            )
+            return
+        except oc.OrganisationInconnue:
+            await self._refuser(
+                send, 421,
+                "Ce domaine n'est rattaché à aucune organisation. "
+                "Aucune donnée ne peut être servie sans savoir à qui elle appartient.",
+            )
+            return
+
+        jeton = oc.definir(organisation)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            oc.restaurer(jeton)
+
+    async def _refuser(self, send: Send, code: int, message: str) -> None:
+        corps = json.dumps({"detail": message}).encode()
+        await send({
+            "type": "http.response.start",
+            "status": code,
+            "headers": [
+                (b"content-type", b"application/json; charset=utf-8"),
+                (b"content-length", str(len(corps)).encode()),
+                # CORS is added by the outer middleware on the way out; without a body
+                # the browser would report a network error instead of this message.
+                (b"cache-control", b"no-store"),
+            ],
+        })
+        await send({"type": "http.response.body", "body": corps})
