@@ -56,6 +56,8 @@ brut AS (
            'present'::text AS statut,
            (pr.methode IN ('qr', 'manuelle')) AS scanne,
            NULL::text AS niveau_en_ligne,
+           NULL::text AS absence_motif,
+           NULL::text AS absence_qualification,
            false AS ambigu
     FROM presence pr
     UNION ALL
@@ -67,6 +69,8 @@ brut AS (
            pa.statut,
            (pa.source = 'scan') AS scanne,
            pa.niveau_en_ligne,
+           pa.absence_motif,
+           pa.absence_qualification,
            coalesce(pa.legacy_ambigu, false) AS ambigu
     FROM participation pa
     WHERE {COMPTE} AND pa.statut IN ('present', 'partiel', 'absent')
@@ -85,6 +89,12 @@ conso AS (
            -- A row the old model cannot express. Counted apart, never inside a rate:
            -- nobody knows whether "partial, on site" meant arriving late or following
            -- intermittently, and averaging a guess is how a dashboard lies quietly.
+           -- Why the person did not follow, and whether a habilitated responsible has
+           -- ruled on it. max() over the group because a member has at most one
+           -- declaration per activity: the two attendance tables cannot disagree here,
+           -- only one of them carries a reason at all.
+           max(absence_motif) AS absence_motif,
+           max(absence_qualification) AS absence_qualification,
            coalesce(bool_or(ambigu), false) AS ambigu
     FROM brut GROUP BY membre_id, evenement_id
 )
@@ -129,6 +139,24 @@ DIMENSIONS: dict[str, dict[str, str]] = {
             "WHEN 'mission' THEN 'Mission' ELSE 'Non rattaché' END"
         ),
         "libelle": "Type d'unité", "famille": "membre",
+    },
+    "motif_absence": {
+        "expr": (
+            "CASE WHEN cc.present OR cc.partiel THEN 'A suivi' "
+            "     WHEN cc.absence_motif IS NULL THEN 'Absence sans motif indiqué' "
+            "     ELSE coalesce((SELECT ma.libelle FROM motif_absence ma WHERE ma.code = cc.absence_motif), cc.absence_motif) END"
+        ),
+        "libelle": "Motif de non-suivi", "famille": "suivi",
+    },
+    "qualification_absence": {
+        "expr": (
+            "CASE WHEN cc.present OR cc.partiel THEN 'A suivi' "
+            "     WHEN cc.absence_qualification = 'excusee' THEN 'Absence excusée' "
+            "     WHEN cc.absence_qualification = 'non_excusee' THEN 'Absence non excusée' "
+            "     WHEN cc.absence_qualification = 'en_attente' THEN 'En attente de décision' "
+            "     ELSE 'Non qualifiée' END"
+        ),
+        "libelle": "Qualification de l'absence", "famille": "suivi",
     },
     "intendance": {"expr": f"coalesce(i.nom, '{_INCONNU}')", "libelle": "Intendance", "famille": "membre"},
     "coordination": {"expr": f"coalesce(co.nom, cod.nom, '{_INCONNU}')", "libelle": "Coordination", "famille": "membre"},
