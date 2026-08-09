@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import db, organisation_courante
 from .activites_membre import router as activites_membre_router
 from .admin import router as admin_router
 from .ai_config import router as ai_config_router
@@ -82,6 +83,7 @@ from .mfa import router as mfa_router
 from .middleware import (
     BodySizeLimitMiddleware,
     CorsSafeErrorBoundaryMiddleware,
+    OrganisationMiddleware,
     SecurityHeadersMiddleware,
 )
 from .modifications import router as modifications_router
@@ -130,6 +132,9 @@ app = FastAPI(
 # out through CORS and receives the Access-Control-Allow-Origin header. Without
 # this ordering an unhandled 500 reaches the browser with no CORS header and is
 # misreported as a generic network error, masking the true cause.
+# Resolved before the error boundary, so a handler that fails still fails inside the
+# right organisation, and before CORS so a refusal still carries its header.
+app.add_middleware(OrganisationMiddleware)
 app.add_middleware(CorsSafeErrorBoundaryMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
@@ -140,6 +145,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# One database per organisation: every query of a request goes to the database the
+# middleware resolved. Installed once, here, because db.py cannot import the resolver
+# without closing an import cycle.
+db.installer_resolveur_dsn(organisation_courante.dsn_courant)
 
 app.include_router(auth_router)
 app.include_router(mfa_router)
