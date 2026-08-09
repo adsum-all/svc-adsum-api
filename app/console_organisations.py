@@ -277,3 +277,163 @@ def historique_licences(
             role=user.role,
         )
     ]
+
+# --- Provisioning -------------------------------------------------------------
+
+class CibleIn(BaseModel):
+    #: Connection string of the organisation's own database.
+    dsn: str = Field(min_length=10, max_length=500)
+
+
+def _organisation_ou_404(organisation_id: str, role: str | None) -> None:
+    if not db.fetch_one("SELECT id FROM organisation_cliente WHERE id = %s", (organisation_id,), role=role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation introuvable.")
+
+
+@router.post("/{organisation_id}/provisionnement/diagnostic")
+def diagnostic_provisionnement(
+    organisation_id: str,
+    payload: CibleIn,
+    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+) -> dict[str, object]:
+    """Where a target database stands, step by step. Changes nothing.
+
+    Read-only on purpose: an operator must be able to ask what is missing as often as
+    they like, including about a database they are unsure of.
+    """
+    from . import provisionnement
+
+    _organisation_ou_404(organisation_id, user.role)
+    return provisionnement.diagnostiquer(payload.dsn.strip())
+
+
+@router.post("/{organisation_id}/provisionnement/referentiels")
+def semer_referentiels(
+    organisation_id: str,
+    payload: CibleIn,
+    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+) -> dict[str, object]:
+    """Seed the reference tables into a target that has the schema and no members.
+
+    Refuses a database that already holds members: a connection string pasted with a
+    typo can easily point at a live organisation, and seeding into it would mix two
+    clients in the one place the architecture exists to keep apart.
+    """
+    from . import provisionnement
+
+    _organisation_ou_404(organisation_id, user.role)
+    resultat = provisionnement.semer_referentiels(payload.dsn.strip(), user.role)
+    if not resultat.get("fait"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(resultat.get("motif")))
+    audit.log(
+        user.id, user.role, "semer_referentiels", "organisation_cliente", organisation_id,
+        {"tables": list(resultat.get("copiees", {}))},
+    )
+    return resultat
+
+
+class HoteIn(BaseModel):
+    hote: str = Field(min_length=3, max_length=253)
+    #: Empty keeps the organisation on the historical database, which is the transition.
+    dsn: str = Field(default="", max_length=500)
+
+
+@router.post("/{organisation_id}/hotes", status_code=status.HTTP_201_CREATED)
+def rattacher_hote(
+    organisation_id: str,
+    payload: HoteIn,
+    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+) -> dict[str, object]:
+    """Make a domain resolve to this organisation.
+
+    This is the switch that ends the transition: from the first host registered, an
+    unmatched domain stops being served instead of falling back on the historical
+    database. Said plainly in the answer, because it changes how the whole platform
+    behaves and an operator should not discover it from a support call.
+    """
+    from . import organisation_courante as oc
+
+    _organisation_ou_404(organisation_id, user.role)
+    hote = oc.normaliser_hote(payload.hote)
+    if not hote or len(hote) < 3:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domaine invalide.")
+    pris = db.fetch_one(
+        "SELECT o.code FROM organisation_hote h JOIN organisation_cliente o ON o.id = h.organisation_id "
+        "WHERE lower(h.hote) = %s",
+        (hote,), role=user.role,
+    )
+    if pris:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Le domaine {hote} sert deja l'organisation {pris['code']}. Un domaine ne peut en servir qu'une.",
+        )
+    avant = oc.mode()
+    db.execute(
+        "INSERT INTO organisation_hote (organisation_id, hote, dsn) VALUES (%s, %s, %s)",
+        (organisation_id, hote, payload.dsn.strip() or None),
+        role=user.role,
+    )
+    audit.log(user.id, user.role, "rattacher_hote", "organisation_hote", hote, {"organisation": organisation_id})
+    avertissement = None
+    if avant == "transition":
+        avertissement = (
+            "Premier domaine enregistre : la plateforme quitte le mode transition. "
+            "Tout domaine non rattache sera desormais refuse, y compris ceux qui fonctionnaient."
+        )
+    return {"ok": True, "hote": hote, "mode_avant": avant, "mode_apres": oc.mode(), "avertissement": avertissement}
+
+
+@router.get("/{organisation_id}/hotes")
+def lister_hotes(
+    organisation_id: str,
+    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+) -> list[dict[str, object]]:
+    """Domains serving this organisation. The connection string is never returned."""
+    return [
+        {"id": str(r["id"]), "hote": str(r["hote"]), "base_propre": bool(r["dsn"]), "note": r["note"]}
+        for r in db.fetch_all(
+            "SELECT id, hote, dsn, note FROM organisation_hote WHERE organisation_id = %s ORDER BY hote",
+            (organisation_id,), role=user.role,
+        )
+    ]
+
+
+class ModulesIn(BaseModel):
+    codes: list[str]
+
+
+@router.put("/{organisation_id}/modules")
+def definir_modules(
+    organisation_id: str,
+    payload: ModulesIn,
+    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+) -> dict[str, object]:
+    """Set exactly which modules the licence in force covers.
+
+    Written as a whole rather than added one by one: a contract is a list, and applying
+    it as a series of additions leaves whatever was removed still in force.
+    """
+    from . import modules_souscrits
+
+    licence = db.fetch_one(
+        "SELECT id FROM licence WHERE organisation_id = %s AND remplacee_le IS NULL",
+        (organisation_id,), role=user.role,
+    )
+    if not licence:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cette organisation n'a pas de licence en vigueur. Accordez-en une avant de choisir ses modules.",
+        )
+    codes = modules_souscrits.definir_modules(str(licence["id"]), payload.codes, user.role)
+    audit.log(user.id, user.role, "definir_modules", "licence", str(licence["id"]), {"modules": codes})
+    return {"ok": True, "modules": codes}
+
+
+@router.get("/catalogue/modules")
+def catalogue_modules(
+    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+) -> list[dict[str, object]]:
+    """Every module the platform can sell, with whether it is currently subscribed."""
+    from . import modules_souscrits
+
+    return modules_souscrits.catalogue()
