@@ -169,67 +169,23 @@ _BANDES = (
 
 
 def cohortes_assiduite(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
-    """Members grouped by how often they actually attend.
+    """Assiduity per member, over the occasions each was actually expected at.
 
-    Measured per member across the filtered activities, not as a global average: an
-    overall seventy per cent hides whether seven people in ten attend everything or
-    everybody attends seven times in ten. Those are different organisations and call
-    for different action.
+    The rate used to divide by the number of activities for which a record happened to
+    exist, which measures answering rather than attending and rewards silence: a member
+    with one record who followed it read as one hundred percent while ignoring twenty
+    eight activities they were expected at. Fifty of seventy two members moved by ten
+    points or more once the denominator became eligibility, and eleven members who never
+    left a trace stopped being invisible.
 
-    Members with fewer than two records are set apart rather than banded. Putting
-    somebody in "decrochés" on the strength of a single absence is a judgement the
-    data does not support, and it is the kind of figure a leader would act on.
+    The whole method lives in :mod:`assiduite`, with its exposure floor, its confidence
+    interval and its separation of excused from unexcused, so no screen can quietly
+    apply a different one.
     """
+    from . import assiduite
+
     where, params = _where(filtres)
-    rows = db.fetch_all(
-        f"WITH {_CONSO} SELECT cc.membre_id, "
-        f"count(*) FILTER (WHERE {_EXPLOITABLE}) AS observees, "
-        f"count(*) FILTER (WHERE (cc.present OR cc.partiel) AND {_EXPLOITABLE}) AS suivies "
-        f"FROM conso cc {_JOINTURES} WHERE {where} "
-        "GROUP BY cc.membre_id",
-        params, role=role,
-    )
-
-    compte = {cle: 0 for cle, _, _, _ in _BANDES}
-    insuffisant = 0
-    taux_membres: list[float] = []
-    for r in rows:
-        observees = int(r["observees"] or 0)
-        if observees < 2:
-            insuffisant += 1
-            continue
-        taux = 100.0 * int(r["suivies"] or 0) / observees
-        taux_membres.append(taux)
-        for cle, _, bas, haut in _BANDES:
-            if bas <= taux < haut:
-                compte[cle] += 1
-                break
-
-    classes = sum(compte.values())
-    ordonnes = sorted(taux_membres)
-    mediane = 0.0
-    if ordonnes:
-        milieu = len(ordonnes) // 2
-        mediane = (
-            ordonnes[milieu] if len(ordonnes) % 2
-            else (ordonnes[milieu - 1] + ordonnes[milieu]) / 2
-        )
-    return {
-        "cohortes": [
-            {
-                "cle": cle,
-                "label": libelle,
-                "membres": compte[cle],
-                "part": _taux(compte[cle], classes),
-            }
-            for cle, libelle, _, _ in _BANDES
-        ],
-        "membres_classes": classes,
-        "membres_donnees_insuffisantes": insuffisant,
-        "taux_moyen": round(sum(taux_membres) / len(taux_membres), 1) if taux_membres else 0.0,
-        "taux_median": round(mediane, 1),
-    }
-
+    return assiduite.cohortes(filtres, role, where, params)
 
 #: Filters that describe the PEOPLE rather than the activities. Only these narrow the
 #: coverage denominator: restricting to one quarter does not make the organisation
