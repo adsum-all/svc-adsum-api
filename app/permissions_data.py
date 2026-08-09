@@ -372,6 +372,8 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/admin/email/fournisseurs': 'integrations.administrer',
     'GET /api/v1/admin/formulaire-pointage': 'evenements.gerer',
     'GET /api/v1/support/console/agents': 'support.traiter',
+    'GET /api/v1/support/console/envois': 'support.traiter',
+    'GET /api/v1/support/console/envois/destinataires': 'support.traiter',
     'GET /api/v1/support/console/fils': 'support.traiter',
     'GET /api/v1/support/console/fils/{fil_id}': 'support.traiter',
     'GET /api/v1/support/console/synthese': 'support.traiter',
