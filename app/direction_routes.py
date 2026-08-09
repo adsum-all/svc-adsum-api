@@ -115,6 +115,20 @@ def referentiels(user: _Lecteur) -> dict[str, Any]:
     return direction_referentiels.referentiels(user.role)
 
 
+@router.get("/regles-calcul")
+def regles_calcul(user: _Lecteur, filtres: _Filtres) -> dict[str, Any]:
+    """Every figure the platform publishes, with its definition, its formula and its audit.
+
+    Served so an organisation can check the arithmetic instead of being asked to trust
+    it. The same filters apply as everywhere else, so the table describes the selection
+    on screen and not the whole base.
+    """
+    try:
+        return pilotage.regles_calcul(filtres, user.role)
+    except analyse.DimensionInconnue as err:
+        raise _refuser(err) from err
+
+
 @router.get("/synthese")
 def synthese(user: _Lecteur, filtres: _Filtres) -> dict[str, Any]:
     """Headline figures for the current filter set."""
