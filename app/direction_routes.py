@@ -129,6 +129,12 @@ def regles_calcul(user: _Lecteur, filtres: _Filtres) -> dict[str, Any]:
         raise _refuser(err) from err
 
 
+@router.get("/activites/{evenement_id}/arrivees")
+def arrivees(evenement_id: str, user: _Lecteur) -> dict[str, Any]:
+    """Recorded arrival times for one activity, bucketed by quarter hour."""
+    return pilotage.arrivees(evenement_id, user.role)
+
+
 @router.get("/synthese")
 def synthese(user: _Lecteur, filtres: _Filtres) -> dict[str, Any]:
     """Headline figures for the current filter set."""
