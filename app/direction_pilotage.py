@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import axes_suivi as ax
 from . import db
 from .direction_analyse import _CONSO, _EXPLOITABLE, _FILTRES_ENUMERES, _JOINTURES, _where
 
@@ -126,33 +127,44 @@ def serie_temporelle(filtres: dict[str, Any], role: str | None) -> list[dict[str
     rows = db.fetch_all(
         f"WITH {_CONSO} SELECT e.id, e.titre, e.debut, "
         f"coalesce(e.volet, '{_INCONNU}') AS volet, "
-        f"count(*) FILTER (WHERE cc.present AND {_EXPLOITABLE}) AS presents, "
-        f"count(*) FILTER (WHERE cc.partiel AND NOT cc.present AND {_EXPLOITABLE}) AS partiels, "
-        f"count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel AND {_EXPLOITABLE}) AS absents, "
-        f"count(*) FILTER (WHERE cc.scanne AND {_EXPLOITABLE}) AS scannes, "
-        "count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_enligne "
-        "AND NOT cc.a_presentiel AND NOT cc.scanne) AS en_ligne "
+        f"count(*) FILTER (WHERE {ax.a_suivi()} AND {_EXPLOITABLE}) AS suivis, "
+        f"count(*) FILTER (WHERE {ax.n_a_pas_suivi()} AND {_EXPLOITABLE}) AS absents, "
+        f"count(*) FILTER (WHERE {ax.sur_place()} AND {_EXPLOITABLE}) AS presentiel, "
+        f"count(*) FILTER (WHERE {ax.a_distance()} AND {_EXPLOITABLE}) AS en_ligne, "
+        f"count(*) FILTER (WHERE {ax.canal_inconnu()} AND {_EXPLOITABLE}) AS canal_inconnu, "
+        f"count(*) FILTER (WHERE {ax.prouve()} AND {_EXPLOITABLE}) AS scannes, "
+        f"count(*) FILTER (WHERE {ax.en_ligne_partiel()} AND {_EXPLOITABLE}) AS partiels "
         f"FROM conso cc {_JOINTURES} WHERE {where} "
         "GROUP BY e.id, e.titre, e.debut, e.volet ORDER BY e.debut",
         params, role=role,
     )
     serie = []
     for r in rows:
-        p, pa, ab = int(r["presents"] or 0), int(r["partiels"] or 0), int(r["absents"] or 0)
-        total = p + pa + ab
+        suivis = int(r["suivis"] or 0)
+        absents = int(r["absents"] or 0)
+        presentiel = int(r["presentiel"] or 0)
+        en_ligne = int(r["en_ligne"] or 0)
+        total = suivis + absents
         serie.append({
             "evenement_id": str(r["id"]),
             "titre": r["titre"],
             "date": r["debut"].isoformat() if r["debut"] else None,
             "volet": r["volet"],
-            "presents": p,
-            "partiels": pa,
-            "absents": ab,
+            "suivis": suivis,
+            "presentiel": presentiel,
+            "en_ligne": en_ligne,
+            "canal_inconnu": int(r["canal_inconnu"] or 0),
+            # "presents" holds the on-site count, which is what the word means. It used
+            # to hold everyone whose status said they had followed, online included,
+            # so the lower curve of the trend chart was not the one it was labelled.
+            "presents": presentiel,
+            "partiels": int(r["partiels"] or 0),
+            "absents": absents,
             "total": total,
             "scannes": int(r["scannes"] or 0),
-            "en_ligne": int(r["en_ligne"] or 0),
-            "taux_presence": _taux(p, total),
-            "taux_participation": _taux(p + pa, total),
+            "taux_presence": _taux(presentiel, total),
+            "taux_suivi": _taux(suivis, total),
+            "taux_participation": _taux(suivis, total),
         })
     return serie
 

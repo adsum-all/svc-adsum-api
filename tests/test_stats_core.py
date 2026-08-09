@@ -58,12 +58,19 @@ def test_invariants_on_every_real_event() -> None:
             cur.execute(stats_core._STATS_EVENEMENT_SQL, {"ev": ev})
             s = cur.fetchone()
             eff = int(s["effectif_attendu"])
-            pres, part, abse = int(s["presents"]), int(s["partiels"]), int(s["absents"])
+            suivis, abse = int(s["suivis"]), int(s["absents"])
+            pres = int(s["presents"])
             rep = int(s["repondants"])
-            assert pres + part + abse == rep, ev
+            # Axis 1 is exhaustive over those who answered. The previous version added
+            # "presents" and "partiels" to reach the same total, which held only while
+            # "presents" quietly included people who had followed online.
+            assert suivis + abse == rep, ev
             assert rep <= eff, ev
-            assert pres <= eff, ev
-            assert int(s["presents_presentiel"]) + int(s["presents_enligne"]) + int(s["presents_modalite_inconnue"]) == pres, ev
+            assert pres <= suivis <= eff, ev
+            # Axis 2 splits the follows, not the on-site count.
+            assert int(s["presents_presentiel"]) + int(s["presents_enligne"]) + int(s["presents_modalite_inconnue"]) == suivis, ev
+            # Proof splits the on-site population.
+            assert int(s["presents_scan"]) + int(s["presents_declare"]) == pres, ev
     finally:
         conn.close()
 
@@ -122,7 +129,7 @@ def test_controlled_scenario_dedup_targeting_bounding() -> None:
         # The denominator is the commission's active population, not the whole base.
         assert int(s["effectif_attendu"]) == eff_attendu
         # ma and mb are present; the out-of-scope member never inflates the numerator.
-        assert int(s["presents"]) <= int(s["effectif_attendu"])
+        assert int(s["presents"]) <= int(s["suivis"]) <= int(s["effectif_attendu"])
         assert int(s["hors_cible"]) >= 1
         # ma appears in both tables but is counted once (dedup): presents counts distinct members.
         cur.execute(
@@ -134,7 +141,7 @@ def test_controlled_scenario_dedup_targeting_bounding() -> None:
         raw = cur.fetchone()
         assert raw["tot"] > raw["d"]  # ma contributes 2 raw rows
         # reconciliation and modality split
-        assert int(s["presents_presentiel"]) + int(s["presents_enligne"]) + int(s["presents_modalite_inconnue"]) == int(s["presents"])
+        assert int(s["presents_presentiel"]) + int(s["presents_enligne"]) + int(s["presents_modalite_inconnue"]) == int(s["suivis"])
     finally:
         conn.rollback()  # never write anything
         conn.close()

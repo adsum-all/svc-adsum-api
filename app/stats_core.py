@@ -25,6 +25,7 @@ yields the same number.
 # ruff: noqa: E501 - long, readable SQL lines
 from __future__ import annotations
 
+from . import axes_suivi as ax
 from . import db
 from .visibilite import CIBLE_PREDICATE
 
@@ -57,7 +58,9 @@ brut AS (
     SELECT pr.membre_id,
            CASE WHEN pr.mode = 'en_ligne' THEN 'en_ligne' ELSE 'presentiel' END AS modalite,
            'present'::text AS statut,
-           (pr.methode IN ('qr', 'manuelle')) AS scanne
+           (pr.methode IN ('qr', 'manuelle')) AS scanne,
+           NULL::text AS niveau_en_ligne,
+           false AS ambigu
     FROM presence pr
     WHERE pr.evenement_id = %(ev)s
     UNION ALL
@@ -66,7 +69,9 @@ brut AS (
                 WHEN pa.modalite IN ('presentiel', 'en_ligne') THEN pa.modalite
                 ELSE NULL END AS modalite,
            pa.statut,
-           (pa.source = 'scan') AS scanne
+           (pa.source = 'scan') AS scanne,
+           pa.niveau_en_ligne,
+           coalesce(pa.legacy_ambigu, false) AS ambigu
     FROM participation pa
     WHERE pa.evenement_id = %(ev)s AND {COMPTE}
       AND pa.statut IN ('present', 'partiel', 'absent')
@@ -82,7 +87,10 @@ conso AS (
            -- the split would not sum back to the present total. NULL means "unknown",
            -- which is the "modalite_inconnue" bucket, i.e. a_presentiel = a_enligne = false.
            coalesce(bool_or(modalite = 'presentiel'), false) AS a_presentiel,
-           coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne
+           coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne,
+           coalesce(bool_or(niveau_en_ligne = 'complet'), false) AS en_ligne_complet,
+           coalesce(bool_or(niveau_en_ligne = 'partiel'), false) AS en_ligne_partiel,
+           coalesce(bool_or(ambigu), false) AS ambigu
     FROM brut
     GROUP BY membre_id
 ),
@@ -97,14 +105,22 @@ _STATS_EVENEMENT_SQL = f"""
 WITH {_CONSO_CTES}
 SELECT
     (SELECT count(*) FROM cible) AS effectif_attendu,
-    count(*) FILTER (WHERE dans_cible AND present) AS presents,
-    count(*) FILTER (WHERE dans_cible AND partiel AND NOT present) AS partiels,
-    count(*) FILTER (WHERE dans_cible AND absent AND NOT present AND NOT partiel) AS absents,
+    -- The shared vocabulary, applied to one activity. The event dashboard and the
+    -- direction dashboard therefore count the same thing by construction, which they
+    -- did not: this one called anyone with a "present" status a presence, online
+    -- included, exactly as the aggregate one did.
+    count(*) FILTER (WHERE dans_cible AND {ax.a_suivi('conso_cible')}) AS suivis,
+    count(*) FILTER (WHERE dans_cible AND {ax.n_a_pas_suivi('conso_cible')}) AS absents,
+    count(*) FILTER (WHERE dans_cible AND {ax.sur_place('conso_cible')}) AS presents,
+    count(*) FILTER (WHERE dans_cible AND {ax.en_ligne_partiel('conso_cible')}) AS partiels,
     count(*) FILTER (WHERE dans_cible) AS repondants,
-    count(*) FILTER (WHERE dans_cible AND present AND a_presentiel) AS presents_presentiel,
-    count(*) FILTER (WHERE dans_cible AND present AND a_enligne AND NOT a_presentiel) AS presents_enligne,
-    count(*) FILTER (WHERE dans_cible AND present AND NOT a_presentiel AND NOT a_enligne) AS presents_modalite_inconnue,
-    count(*) FILTER (WHERE dans_cible AND present AND scanne) AS presents_scan,
+    count(*) FILTER (WHERE dans_cible AND {ax.sur_place('conso_cible')}) AS presents_presentiel,
+    count(*) FILTER (WHERE dans_cible AND {ax.a_distance('conso_cible')}) AS presents_enligne,
+    count(*) FILTER (WHERE dans_cible AND {ax.canal_inconnu('conso_cible')}) AS presents_modalite_inconnue,
+    count(*) FILTER (WHERE dans_cible AND {ax.prouve('conso_cible')}) AS presents_scan,
+    count(*) FILTER (WHERE dans_cible AND {ax.declare('conso_cible')}) AS presents_declare,
+    count(*) FILTER (WHERE dans_cible AND {ax.en_ligne_entier('conso_cible')}) AS en_ligne_complet,
+    count(*) FILTER (WHERE dans_cible AND {ax.en_ligne_sans_degre('conso_cible')}) AS en_ligne_sans_degre,
     count(*) FILTER (WHERE NOT dans_cible) AS hors_cible
 FROM conso_cible
 """
@@ -135,7 +151,7 @@ def stats_evenement(evenement_id: str, role: str | None) -> dict[str, object]:
         targeted active population, for transparency) and every derived rate in
         percent. By construction ``presents + partiels + absents == repondants``,
         ``repondants + non_repondants == effectif_attendu``,
-        ``presents_presentiel + presents_enligne + presents_modalite_inconnue == presents``
+        ``presents_presentiel + presents_enligne + presents_modalite_inconnue == suivis``
         and every rate is in [0, 100].
     """
     row = db.fetch_one(_STATS_EVENEMENT_SQL, {"ev": evenement_id}, role=role) or {}
@@ -148,8 +164,17 @@ def stats_evenement(evenement_id: str, role: str | None) -> dict[str, object]:
     presentiel = int(row.get("presents_presentiel") or 0)
     enligne = int(row.get("presents_enligne") or 0)
     modalite_inconnue = int(row.get("presents_modalite_inconnue") or 0)
+    suivis = int(row.get("suivis") or 0)
     return {
         "effectif_attendu": effectif,
+        # The three axes, named. "presents" now holds the on-site count, so a screen
+        # reading it gets what the word says; "suivis" is the participation axis.
+        "suivis": suivis,
+        "presentiel": presentiel,
+        "en_ligne": enligne,
+        "presents_declare": int(row.get("presents_declare") or 0),
+        "en_ligne_complet": int(row.get("en_ligne_complet") or 0),
+        "en_ligne_sans_degre": int(row.get("en_ligne_sans_degre") or 0),
         "presents": presents,
         "partiels": partiels,
         "absents": absents,
@@ -160,8 +185,14 @@ def stats_evenement(evenement_id: str, role: str | None) -> dict[str, object]:
         "presents_modalite_inconnue": modalite_inconnue,
         "presents_scan": int(row.get("presents_scan") or 0),
         "hors_cible": int(row.get("hors_cible") or 0),
-        "taux_presence": _taux(presents, effectif),
-        "taux_participation": _taux(presents + partiels, effectif),
+        # Presence is the on-site count over the targeted population. Following is the
+        # participation axis over the same base. Deriving one from the other by adding
+        # partiel is what produced a figure that was neither.
+        "taux_presence": _taux(presentiel, effectif),
+        "taux_presence_physique": _taux(presentiel, effectif),
+        "taux_suivi": _taux(suivis, effectif),
+        "taux_participation": _taux(suivis, effectif),
+        "taux_a_distance": _taux(enligne, effectif),
         "taux_reponse": _taux(repondants, effectif),
         "taux_non_reponse": _taux(non_repondants, effectif),
         "taux_absence": _taux(absents, effectif),
