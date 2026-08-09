@@ -320,13 +320,15 @@ def repartition_globale(role: str | None) -> dict[str, int]:
         WITH brut AS (
             SELECT pr.membre_id, pr.evenement_id,
                    CASE WHEN pr.mode = 'en_ligne' THEN 'en_ligne' ELSE 'presentiel' END AS modalite,
-                   'present'::text AS statut, (pr.methode IN ('qr', 'manuelle')) AS scanne
+                   'present'::text AS statut, (pr.methode IN ('qr', 'manuelle')) AS scanne,
+                   NULL::text AS niveau_en_ligne, false AS ambigu
             FROM presence pr
             UNION ALL
             SELECT pa.membre_id, pa.evenement_id,
                    CASE WHEN pa.source = 'scan' THEN 'presentiel'
                         WHEN pa.modalite IN ('presentiel', 'en_ligne') THEN pa.modalite ELSE NULL END,
-                   pa.statut, (pa.source = 'scan')
+                   pa.statut, (pa.source = 'scan'),
+                   pa.niveau_en_ligne, coalesce(pa.legacy_ambigu, false)
             FROM participation pa
             WHERE {COMPTE} AND pa.statut IN ('present', 'partiel', 'absent')
         ),
@@ -336,24 +338,34 @@ def repartition_globale(role: str | None) -> dict[str, int]:
                    bool_or(statut = 'partiel') AS partiel,
                    bool_or(statut = 'absent') AS absent,
                    coalesce(bool_or(scanne), false) AS scanne,
-                   coalesce(bool_or(modalite = 'presentiel'), false) AS a_pres,
-                   coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enl
+                   coalesce(bool_or(modalite = 'presentiel'), false) AS a_presentiel,
+                   coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne,
+                   coalesce(bool_or(niveau_en_ligne = 'complet'), false) AS en_ligne_complet,
+                   coalesce(bool_or(niveau_en_ligne = 'partiel'), false) AS en_ligne_partiel,
+                   coalesce(bool_or(ambigu), false) AS ambigu
             FROM brut GROUP BY membre_id, evenement_id
         )
         SELECT
-            count(*) FILTER (WHERE present) AS presents,
-            count(*) FILTER (WHERE partiel AND NOT present) AS partiels,
-            count(*) FILTER (WHERE absent AND NOT present AND NOT partiel) AS absents,
-            count(*) FILTER (WHERE present AND scanne) AS presentiel,
-            count(*) FILTER (WHERE present AND a_pres AND NOT scanne) AS presentiel_declare,
-            count(*) FILTER (WHERE present AND a_enl AND NOT a_pres) AS en_ligne,
-            count(*) FILTER (WHERE present AND NOT a_pres AND NOT a_enl) AS modalite_inconnue
+            count(*) FILTER (WHERE {ax.a_suivi('conso')}) AS suivis,
+            count(*) FILTER (WHERE {ax.n_a_pas_suivi('conso')}) AS absents,
+            count(*) FILTER (WHERE {ax.sur_place('conso')}) AS presents,
+            count(*) FILTER (WHERE {ax.prouve('conso')}) AS presentiel,
+            count(*) FILTER (WHERE {ax.declare('conso')}) AS presentiel_declare,
+            count(*) FILTER (WHERE {ax.a_distance('conso')}) AS en_ligne,
+            count(*) FILTER (WHERE {ax.en_ligne_partiel('conso')}) AS partiels,
+            count(*) FILTER (WHERE {ax.canal_inconnu('conso')}) AS modalite_inconnue
         FROM conso
         """,
         (),
         role=role,
     ) or {}
-    return {k: int(row.get(k) or 0) for k in ("presents", "partiels", "absents", "presentiel", "presentiel_declare", "en_ligne", "modalite_inconnue")}
+    return {
+        k: int(row.get(k) or 0)
+        for k in (
+            "suivis", "presents", "partiels", "absents",
+            "presentiel", "presentiel_declare", "en_ligne", "modalite_inconnue",
+        )
+    }
 
 
 def serie_evenements(role: str | None, limite: int = 30) -> list[dict[str, object]]:

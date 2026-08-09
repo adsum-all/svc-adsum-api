@@ -735,6 +735,11 @@ def participation_global(user: Annotated[UserMe, Depends(require_permission("par
     return {
         "nb_evenements": total_ev,
         "repartition_globale": {
+            # The three axes, passed through rather than re-derived: this endpoint used
+            # to publish only the status split, so the back-office card could not tell
+            # on site from online at all.
+            "suivis": int(split.get("suivis") or 0),
+            "presentiel_total": int(split.get("presentiel") or 0) + int(split.get("presentiel_declare") or 0),
             "presents": int(split.get("presents") or 0),
             "partiels": int(split.get("partiels") or 0),
             "absents": int(split.get("absents") or 0),
