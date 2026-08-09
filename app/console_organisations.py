@@ -437,3 +437,19 @@ def catalogue_modules(
     from . import modules_souscrits
 
     return modules_souscrits.catalogue()
+
+
+@router.get("/parc/schema")
+def etat_du_parc(
+    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+) -> dict[str, object]:
+    """Where every organisation stands against the expected schema version.
+
+    Running many databases brings a failure the single-tenant platform never had: a
+    migration applied to some and not others. Nothing shows it, because each client works
+    fine on its own version until a feature written for the new schema reaches an old
+    one, and the symptom is then a five hundred on one client and nowhere else.
+    """
+    from . import provisionnement
+
+    return provisionnement.etat_du_parc(user.role)
