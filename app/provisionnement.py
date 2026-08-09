@@ -236,3 +236,72 @@ def semer_referentiels(dsn: str, role: str | None = None) -> dict[str, Any]:
             copiees[table] = len(lignes)
         cible.commit()
     return {"fait": True, "copiees": copiees, "jamais_copie": list(JAMAIS_COPIE)}
+
+
+def etat_du_parc(role: str | None = None) -> dict[str, Any]:
+    """Where every registered organisation stands against the expected schema version.
+
+    A platform running many databases has a new failure the single-tenant one never had:
+    a migration applied to some and not others. Nothing shows it, because each client's
+    application works fine on its own version until a feature written for the new schema
+    reaches an old one. By then the symptom is a five hundred on one client and nowhere
+    else, which is the hardest kind of fault to diagnose.
+
+    Read-only, and every target is probed independently: one unreachable database must
+    not hide the state of the others, so a failure is reported as that organisation's
+    state rather than as an error for the whole answer.
+    """
+    attendue = version_attendue()
+    lignes = db.fetch_all(
+        "SELECT o.code, o.nom, o.etat, h.hote, h.dsn "
+        "FROM organisation_cliente o LEFT JOIN organisation_hote h ON h.organisation_id = o.id "
+        "WHERE o.etat <> 'resiliee' ORDER BY o.nom, h.hote",
+        (),
+        role=role,
+    )
+
+    bases: list[dict[str, Any]] = []
+    vues: set[str] = set()
+    for r in lignes:
+        dsn = str(r["dsn"] or "").strip()
+        # An organisation with no dedicated connection is on the historical database,
+        # which this process is already connected to and therefore already at head.
+        cible = dsn or "(base historique)"
+        if cible in vues:
+            continue
+        vues.add(cible)
+        if not dsn:
+            bases.append({
+                "code": r["code"], "nom": r["nom"], "hote": r["hote"],
+                "base": cible, "version": attendue, "a_jour": True, "joignable": True,
+            })
+            continue
+        try:
+            with _ouvrir(dsn) as conn, conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.alembic_version') IS NOT NULL AS a")
+                if not (cur.fetchone() or {}).get("a"):
+                    version = ""
+                else:
+                    cur.execute("SELECT version_num FROM alembic_version")
+                    version = str((cur.fetchone() or {}).get("version_num") or "")
+            bases.append({
+                "code": r["code"], "nom": r["nom"], "hote": r["hote"], "base": "dédiée",
+                "version": version or "aucune", "a_jour": version == attendue, "joignable": True,
+            })
+        except Exception as erreur:  # noqa: BLE001 - one unreachable target must not hide the rest
+            bases.append({
+                "code": r["code"], "nom": r["nom"], "hote": r["hote"], "base": "dédiée",
+                "version": "inconnue", "a_jour": False, "joignable": False,
+                "erreur": str(erreur)[:160],
+            })
+
+    en_retard = [b for b in bases if b["joignable"] and not b["a_jour"]]
+    return {
+        "version_attendue": attendue,
+        "bases": bases,
+        "total": len(bases),
+        "a_jour": sum(1 for b in bases if b["a_jour"]),
+        "en_retard": len(en_retard),
+        "injoignables": sum(1 for b in bases if not b["joignable"]),
+        "commande": "Depuis deployment/database : DATABASE_URL=<dsn> python -m alembic upgrade head",
+    }

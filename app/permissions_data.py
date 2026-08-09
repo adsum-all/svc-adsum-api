@@ -375,6 +375,7 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/support/console/envois': 'support.traiter',
     'GET /api/v1/support/console/organisations': 'support.traiter',
     'GET /api/v1/support/console/organisations/catalogue/modules': 'support.traiter',
+    'GET /api/v1/support/console/organisations/parc/schema': 'support.traiter',
     'GET /api/v1/support/console/organisations/{organisation_id}/hotes': 'support.traiter',
     'POST /api/v1/support/console/organisations/{organisation_id}/hotes': 'support.traiter',
     'POST /api/v1/support/console/organisations/{organisation_id}/provisionnement/diagnostic': 'support.traiter',
