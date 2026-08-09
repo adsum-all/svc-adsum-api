@@ -137,3 +137,58 @@ def test_un_fil_clos_qui_recoit_une_reponse_est_rouvert() -> None:
         assert etat["ferme_le"] is None
     finally:
         db.execute("DELETE FROM support_fil WHERE demandeur_email = %s", (adresse,))
+
+
+@pytestmark_db
+def test_un_demandeur_ne_voit_jamais_le_fil_d_un_autre() -> None:
+    """Isolation proven by exercise, not by reading the WHERE clause.
+
+    A support queue holds what people write when something goes wrong, which is often
+    more candid than anything else they put in the platform. One member reading
+    another's thread would be a disclosure, not an inconvenience.
+    """
+    from fastapi.testclient import TestClient
+
+    from app import db
+    from app.main import app
+    from app.security import create_access_token
+
+    comptes = db.fetch_all(
+        "SELECT id, role, email FROM utilisateur WHERE role = 'membre' AND actif AND email IS NOT NULL LIMIT 2", ()
+    )
+    if len(comptes) < 2:
+        pytest.skip("deux comptes membres actifs sont nécessaires")
+    un, deux = comptes[0], comptes[1]
+
+    client = TestClient(app)
+    entete_un = {"Authorization": "Bearer " + create_access_token(str(un["id"]), str(un["role"]))}
+    entete_deux = {"Authorization": "Bearer " + create_access_token(str(deux["id"]), str(deux["role"]))}
+
+    sujet = "Contrôle d'isolation des fils de support"
+    db.execute("DELETE FROM support_fil WHERE sujet = %s", (sujet,))
+    try:
+        ouverture = client.post(
+            "/api/v1/support/demandes",
+            headers=entete_un,
+            json={"sujet": sujet, "message": "Message du premier demandeur, à ne pas divulguer."},
+        )
+        assert ouverture.status_code == 201, ouverture.text
+        fil = ouverture.json()["id"]
+
+        # The owner reads it.
+        assert client.get(f"/api/v1/support/demandes/{fil}", headers=entete_un).status_code == 200
+
+        # Anyone else gets 404, not 403: a 403 would confirm the thread exists.
+        assert client.get(f"/api/v1/support/demandes/{fil}", headers=entete_deux).status_code == 404
+
+        # And it does not appear in their list.
+        siennes = client.get("/api/v1/support/demandes", headers=entete_deux).json()
+        assert all(f["id"] != fil for f in siennes)
+
+        # Nor can they add to it.
+        ajout = client.post(
+            f"/api/v1/support/demandes/{fil}/messages", headers=entete_deux, json={"message": "intrusion"}
+        )
+        assert ajout.status_code == 404
+    finally:
+        db.execute("DELETE FROM support_fil WHERE sujet = %s", (sujet,))
