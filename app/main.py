@@ -40,6 +40,7 @@ from .comptage import router as comptage_router
 from .config import settings
 from .consentement import router as consentement_router
 from .console_observabilite import router as console_observabilite_router
+from .console_organisations import router as console_organisations_router
 from .consultations import router as consultations_router
 from .controle import router as controle_router
 from .demandes import router as demandes_router
@@ -233,6 +234,7 @@ app.include_router(support_router)
 app.include_router(support_entrant_router)
 app.include_router(support_console_router)
 app.include_router(console_observabilite_router)
+app.include_router(console_organisations_router)
 app.include_router(technical_admin_router)
 app.include_router(groupes_router)
 app.include_router(groupes_fiche_router)
