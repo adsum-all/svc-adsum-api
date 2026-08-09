@@ -51,11 +51,19 @@ def test_les_axes_donnent_le_meme_total():
 
 
 def test_la_synthese_egale_la_repartition():
-    """The headline card and the chart under it come from the same rows."""
+    """The headline card and the chart under it come from the same rows.
+
+    Compared on the three axes rather than on a single "presents" figure, because that
+    figure used to mean two things at once: the status said the person had followed,
+    and the word said they were in the room.
+    """
     s = pilotage.synthese({}, None)
     lignes = analyse.repartition("commission", {}, None)
     assert s["observations"] == sum(x["total"] for x in lignes)
-    assert s["presents"] == sum(x["presents"] for x in lignes)
+    assert s["suivis"] == sum(x["suivis"] for x in lignes)
+    assert s["presentiel"] == sum(x["presentiel"] for x in lignes)
+    assert s["en_ligne"] == sum(x["en_ligne"] for x in lignes)
+    assert s["absents"] == sum(x["absents"] for x in lignes)
 
 
 def test_le_croisement_boucle_sur_ses_marges():
@@ -177,10 +185,31 @@ def test_un_filtre_inconnu_est_refuse():
 # --- Honesty of the rates ---------------------------------------------------
 
 def test_les_taux_restent_dans_leurs_bornes():
+    """Bounds, ordering, and the partition each rate divides by.
+
+    The partition asserted here is the corrected one. The previous version added
+    "presents" to "partiels" and expected the total, which held only while "presents"
+    silently included people who had followed online: on site plus partial online is
+    not a population anybody names, and it left the complete online followers out of
+    the sum entirely.
+    """
     for ligne in analyse.repartition("commission", {}, None):
         assert 0.0 <= ligne["taux_presence"] <= 100.0
-        assert ligne["taux_presence"] <= ligne["taux_participation"] <= 100.0
-        assert ligne["presents"] + ligne["partiels"] + ligne["absents"] == ligne["total"]
+        # On site can never exceed following: it is one of its channels.
+        assert ligne["taux_presence"] <= ligne["taux_suivi"] <= 100.0
+        assert ligne["taux_participation"] == ligne["taux_suivi"]
+        # Axis 1 is exhaustive over the observations.
+        assert ligne["suivis"] + ligne["absents"] == ligne["total"], f"axe suivi incohérent : {ligne['label']}"
+        # Axis 2 is exhaustive over the follows.
+        assert (
+            ligne["presentiel"] + ligne["en_ligne"] + ligne["suivi_modalite_inconnue"] == ligne["suivis"]
+        ), f"axe canal incohérent : {ligne['label']}"
+        # Proof splits the on-site population and nothing else.
+        assert ligne["presentiel_prouve"] + ligne["presentiel_declare"] == ligne["presentiel"]
+        # Completeness splits the online population and nothing else.
+        assert (
+            ligne["en_ligne_complet"] + ligne["en_ligne_partiel"] + ligne["en_ligne_sans_degre"] == ligne["en_ligne"]
+        ), f"axe complétude incohérent : {ligne['label']}"
 
 
 def test_un_membre_trop_peu_observe_n_est_pas_classe():

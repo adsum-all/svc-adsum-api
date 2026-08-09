@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import axes_suivi as ax
 from . import db
 from .stats_core import COMPTE
 
@@ -318,13 +319,19 @@ def _ligne(r: dict[str, Any], cle: str = "cle") -> dict[str, Any]:
     two screens dividing the same numbers their own way is how a dashboard starts
     contradicting itself.
     """
-    presents = int(r.get("presents") or 0)
-    partiels = int(r.get("partiels") or 0)
+    # The counts now come straight from the shared vocabulary, so the three axes stay
+    # separate here too. "presents" is the on-site count, not the follow count: adding
+    # partiel to it used to produce a "suivis" that was really "on site plus partial
+    # online", which is not a population anybody names.
+    suivis = int(r.get("suivis") or 0)
     absents = int(r.get("absents") or 0)
-    total = presents + partiels + absents
+    total = suivis + absents
+    presentiel = int(r.get("presentiel") or 0)
+    en_ligne = int(r.get("en_ligne") or 0)
     prouve = int(r.get("presentiel_prouve") or 0)
     declare = int(r.get("presentiel_declare") or 0)
-    suivis = presents + partiels
+    presents = presentiel
+    partiels = int(r.get("partiels") or 0)
     return {
         "label": r.get(cle) or _INCONNU,
         "presents": presents,
@@ -335,8 +342,10 @@ def _ligne(r: dict[str, Any], cle: str = "cle") -> dict[str, Any]:
         # made entirely of such rows shows its size instead of reading as empty.
         "total": total,
         "lignes": total + int(r.get("non_interpretables") or 0),
-        "presentiel": int(r.get("presentiel") or 0),
-        "en_ligne": int(r.get("en_ligne") or 0),
+        "suivis": suivis,
+        "presentiel": presentiel,
+        "en_ligne": en_ligne,
+        "en_ligne_sans_degre": int(r.get("en_ligne_sans_degre") or 0),
         "scannes": prouve,
         # The four buckets a follow can fall into, each named for what it is. They sum
         # to the number of people who followed, so a reader can check the breakdown
@@ -348,8 +357,14 @@ def _ligne(r: dict[str, Any], cle: str = "cle") -> dict[str, Any]:
         "suivi_modalite_inconnue": int(r.get("suivi_modalite_inconnue") or 0),
         # Excluded from every rate above, reported so the exclusion is visible.
         "non_interpretables": int(r.get("non_interpretables") or 0),
-        "taux_presence": _taux(presents, total),
+        # Presence is the channel axis: on site, and nothing else. Following is the
+        # participation axis. Both are published so a screen never has to derive one
+        # from the other and get it wrong.
+        "taux_presence": _taux(presentiel, total),
+        "taux_presence_physique": _taux(presentiel, total),
+        "taux_suivi": _taux(suivis, total),
         "taux_participation": _taux(suivis, total),
+        "taux_a_distance": _taux(en_ligne, total),
         "taux_absence": _taux(absents, total),
         # How much of the attendance is evidence rather than assertion. A unit at
         # eighty per cent on declarations alone is a different situation from one at
@@ -362,21 +377,25 @@ def _ligne(r: dict[str, Any], cle: str = "cle") -> dict[str, Any]:
 #: card cannot disagree. Every count excludes the ambiguous legacy rows, which are
 #: reported separately: a rate over rows nobody can interpret is not a rate.
 _AGREGATS = f"""
-    count(*) FILTER (WHERE cc.present AND {_EXPLOITABLE}) AS presents,
-    count(*) FILTER (WHERE cc.partiel AND NOT cc.present AND {_EXPLOITABLE}) AS partiels,
-    count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel AND {_EXPLOITABLE}) AS absents,
-    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND (cc.scanne OR cc.a_presentiel) AND {_EXPLOITABLE}) AS presentiel,
-    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_enligne AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne,
-    count(*) FILTER (WHERE cc.scanne AND {_EXPLOITABLE}) AS scannes,
-    -- Proven on site, versus asserted on site. Kept apart because acting on the two
-    -- as if they were one is what the direction asked to stop.
-    count(*) FILTER (WHERE cc.scanne AND {_EXPLOITABLE}) AS presentiel_prouve,
-    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS presentiel_declare,
-    count(*) FILTER (WHERE cc.a_enligne AND NOT cc.en_ligne_partiel AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne_complet,
-    count(*) FILTER (WHERE cc.a_enligne AND cc.en_ligne_partiel AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne_partiel,
-    -- The residual. Explicit rather than implied: a breakdown whose parts do not
-    -- add up to its whole leaves the reader to guess where the difference went.
-    count(*) FILTER (WHERE (cc.present OR cc.partiel) AND NOT cc.a_presentiel AND NOT cc.a_enligne AND NOT cc.scanne AND {_EXPLOITABLE}) AS suivi_modalite_inconnue,
+    -- Every count comes from the shared vocabulary in axes_suivi. Six modules each
+    -- wrote their own version of these predicates and drifted: one counted a scan as
+    -- on site without checking the person had followed, another folded "online with no
+    -- stated degree" into "complete". There is nothing to write here any more.
+    count(*) FILTER (WHERE {ax.a_suivi()} AND {_EXPLOITABLE}) AS suivis,
+    count(*) FILTER (WHERE {ax.n_a_pas_suivi()} AND {_EXPLOITABLE}) AS absents,
+    count(*) FILTER (WHERE {ax.sur_place()} AND {_EXPLOITABLE}) AS presentiel,
+    count(*) FILTER (WHERE {ax.a_distance()} AND {_EXPLOITABLE}) AS en_ligne,
+    count(*) FILTER (WHERE {ax.canal_inconnu()} AND {_EXPLOITABLE}) AS suivi_modalite_inconnue,
+    count(*) FILTER (WHERE {ax.prouve()} AND {_EXPLOITABLE}) AS presentiel_prouve,
+    count(*) FILTER (WHERE {ax.declare()} AND {_EXPLOITABLE}) AS presentiel_declare,
+    count(*) FILTER (WHERE {ax.en_ligne_entier()} AND {_EXPLOITABLE}) AS en_ligne_complet,
+    count(*) FILTER (WHERE {ax.en_ligne_partiel()} AND {_EXPLOITABLE}) AS en_ligne_partiel,
+    count(*) FILTER (WHERE {ax.en_ligne_sans_degre()} AND {_EXPLOITABLE}) AS en_ligne_sans_degre,
+    -- Kept for the screens that still read them. "presents" no longer means anyone
+    -- whose status says so: it means on site, which is what the word says.
+    count(*) FILTER (WHERE {ax.sur_place()} AND {_EXPLOITABLE}) AS presents,
+    count(*) FILTER (WHERE {ax.en_ligne_partiel()} AND {_EXPLOITABLE}) AS partiels,
+    count(*) FILTER (WHERE {ax.prouve()} AND {_EXPLOITABLE}) AS scannes,
     count(*) FILTER (WHERE cc.ambigu) AS non_interpretables
 """
 
