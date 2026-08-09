@@ -334,6 +334,10 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
     partiel_en_ligne = int(r.get("en_ligne_partiel") or 0)
     modalite_inconnue = int(r.get("suivi_modalite_inconnue") or 0)
     suivis = presents + partiels
+    # The two channels, counted from the channel axis rather than inferred from the
+    # status. A status says whether someone followed; it never says where they were.
+    presentiel = prouve + declare
+    en_ligne = complet + partiel_en_ligne
     return {
         "observations": observations,
         "activites": activites,
@@ -352,8 +356,18 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
         "suivi_modalite_inconnue": modalite_inconnue,
         "suivis": suivis,
         "non_interpretables": int(r.get("non_interpretables") or 0),
-        "taux_presence": _taux(presents, observations),
+        # "Présence" now means what the word means: physically on site. It used to be
+        # the count of statut='present', which the database sets for anyone who
+        # followed, whichever way. Sixty three people who never came were counted
+        # present, turning a real 55,0 percent into a displayed 60,7.
+        "taux_presence": _taux(presentiel, observations),
+        "taux_presence_physique": _taux(presentiel, observations),
+        # Kept under its old name so no screen breaks, and duplicated under an
+        # unambiguous one so no reader has to guess.
+        "taux_suivi": _taux(suivis, observations),
         "taux_participation": _taux(suivis, observations),
+        "presentiel": presentiel,
+        "en_ligne": en_ligne,
         # What share of the attendance is evidence rather than assertion. Eighty per
         # cent proven at the door and eighty per cent asserted in a form are different
         # situations, and the attendance rate alone cannot tell them apart.
@@ -363,3 +377,20 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
         "taux_couverture": _taux(membres_vus, int(membres_actifs or 0)),
         "moyenne_par_activite": round(presents / activites, 1) if activites else 0.0,
     }
+
+
+def regles_calcul(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
+    """Every published figure with its definition, its formula and its arithmetic check.
+
+    The same filters as every other panel, applied by the same builder: a transparency
+    table that described a different selection than the dashboard beside it would be
+    worse than no table at all.
+    """
+    from . import indicateurs
+
+    where, params = _where(filtres)
+    resultat = indicateurs.calculer(where, params)
+    # The organisational reach is not a count of rows and cannot come from the same
+    # pass, but a reader comparing the table to the dashboard will look for it.
+    resultat["membres_du_perimetre"] = int(_effectif_du_perimetre(filtres, role) or 0)
+    return resultat
