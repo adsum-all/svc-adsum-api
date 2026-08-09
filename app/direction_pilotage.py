@@ -362,3 +362,58 @@ def regles_calcul(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
     # pass, but a reader comparing the table to the dashboard will look for it.
     resultat["membres_du_perimetre"] = int(_effectif_du_perimetre(filtres, role) or 0)
     return resultat
+
+
+def arrivees(evenement_id: str, role: str | None) -> dict[str, Any]:
+    """When people actually arrived at one activity, from the recorded times.
+
+    This replaces a simulated curve. The component drew a Gaussian calibrated on the
+    total and labelled it "indicative", which is a fabricated shape presented as a
+    measurement: a reader saw a smooth arrival flow that nothing had observed, and the
+    peak sat at fifty five percent of the slot because that is where the formula put it.
+
+    The times exist and always did (``presence.arrivee``, filled on every one of the
+    five hundred and eleven rows). Where they carry no spread, because a seeder wrote
+    them all at the start, the answer says so instead of drawing a curve over it.
+    """
+    ev = db.fetch_one("SELECT debut, fin FROM evenement WHERE id = %s", (evenement_id,), role=role)
+    if not ev or not ev["debut"]:
+        return {"disponible": False, "motif": "L'activité n'a pas d'heure de début enregistrée.", "tranches": []}
+
+    lignes = db.fetch_all(
+        "SELECT floor(extract(epoch FROM (p.arrivee - e.debut)) / 900)::int AS quart, count(*) AS n "
+        "FROM presence p JOIN evenement e ON e.id = p.evenement_id "
+        "WHERE p.evenement_id = %s AND p.arrivee IS NOT NULL "
+        "GROUP BY 1 ORDER BY 1",
+        (evenement_id,),
+        role=role,
+    )
+    if not lignes:
+        return {"disponible": False, "motif": "Aucun pointage horodaté pour cette activité.", "tranches": []}
+
+    total = sum(int(r["n"]) for r in lignes)
+    cumul = 0
+    tranches = []
+    for r in lignes:
+        cumul += int(r["n"])
+        minutes = int(r["quart"]) * 15
+        tranches.append({
+            "minutes": minutes,
+            "libelle": f"{minutes:+d} min" if minutes else "à l'heure",
+            "arrivees": int(r["n"]),
+            "cumul": cumul,
+            "part_cumulee": round(100.0 * cumul / total, 1) if total else 0.0,
+        })
+    # One bucket means every recorded arrival shares the same quarter hour. A curve over
+    # a single point is a line drawn between one value and itself.
+    etale = len(tranches) > 1
+    return {
+        "disponible": etale,
+        "motif": None if etale else (
+            "Tous les pointages portent le même horodatage, celui du début de l'activité. "
+            "Il n'y a pas d'étalement à représenter : le contrôle a enregistré les passages "
+            "sans horaire distinct."
+        ),
+        "total": total,
+        "tranches": tranches,
+    }
