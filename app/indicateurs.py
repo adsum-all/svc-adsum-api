@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from . import axes_suivi as ax
 from . import db
 from .direction_analyse import _CONSO, _EXPLOITABLE
 
@@ -60,54 +61,54 @@ COMPTES: tuple[Indicateur, ...] = (
     Indicateur(
         "suivis", "Ont suivi l'activité",
         "Le membre déclare avoir suivi, ou son passage a été scanné. Sur place ou à distance, indifféremment.",
-        f"(cc.present OR cc.partiel) AND {_EXPLOITABLE}", "observations", "suivi",
+        f"{ax.a_suivi()} AND {_EXPLOITABLE}", "observations", "suivi",
     ),
     Indicateur(
         "absences", "N'ont pas suivi l'activité",
         "Le membre déclare ne pas avoir suivi. Un suivi partiel en ligne n'entre jamais ici.",
-        f"cc.absent AND NOT cc.present AND NOT cc.partiel AND {_EXPLOITABLE}", "observations", "suivi",
+        f"{ax.n_a_pas_suivi()} AND {_EXPLOITABLE}", "observations", "suivi",
     ),
     Indicateur(
         "presentiel", "Sur place",
         "Parmi ceux qui ont suivi, ceux qui étaient physiquement présents. C'est la seule lecture du mot présence.",
-        f"(cc.present OR cc.partiel) AND cc.a_presentiel AND {_EXPLOITABLE}", "suivis", "canal",
+        f"{ax.sur_place()} AND {_EXPLOITABLE}", "suivis", "canal",
     ),
     Indicateur(
         "en_ligne", "À distance",
         "Parmi ceux qui ont suivi, ceux qui l'ont fait en ligne sans venir sur place.",
-        f"(cc.present OR cc.partiel) AND cc.a_enligne AND NOT cc.a_presentiel AND {_EXPLOITABLE}", "suivis", "canal",
+        f"{ax.a_distance()} AND {_EXPLOITABLE}", "suivis", "canal",
     ),
     Indicateur(
         "canal_inconnu", "Suivi sans canal précisé",
         "A suivi, sans que le mode soit renseigné. Compté à part plutôt que réparti au jugé.",
-        f"(cc.present OR cc.partiel) AND NOT cc.a_presentiel AND NOT cc.a_enligne AND {_EXPLOITABLE}", "suivis", "canal",
+        f"{ax.canal_inconnu()} AND {_EXPLOITABLE}", "suivis", "canal",
     ),
     Indicateur(
         "presentiel_prouve", "Sur place, prouvé par un scan",
         "Le passage a été scanné au contrôle. C'est une preuve, pas une déclaration.",
-        f"(cc.present OR cc.partiel) AND cc.a_presentiel AND cc.scanne AND {_EXPLOITABLE}", "presentiel", "preuve",
+        f"{ax.prouve()} AND {_EXPLOITABLE}", "presentiel", "preuve",
     ),
     Indicateur(
         "presentiel_declare", "Sur place, déclaré par le membre",
         "Le membre affirme être venu, sans scan à l'appui.",
-        f"(cc.present OR cc.partiel) AND cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}", "presentiel", "preuve",
+        f"{ax.declare()} AND {_EXPLOITABLE}", "presentiel", "preuve",
     ),
     Indicateur(
         "en_ligne_complet", "À distance, en entier",
         "A suivi toute l'activité à distance.",
-        f"(cc.present OR cc.partiel) AND cc.a_enligne AND NOT cc.a_presentiel AND cc.en_ligne_complet AND {_EXPLOITABLE}",
+        f"{ax.en_ligne_entier()} AND {_EXPLOITABLE}",
         "en_ligne", "completude",
     ),
     Indicateur(
         "en_ligne_partiel", "À distance, en partie",
         "N'a suivi qu'une partie de l'activité à distance. Ce n'est pas une absence : la personne a suivi.",
-        f"(cc.present OR cc.partiel) AND cc.a_enligne AND NOT cc.a_presentiel AND cc.en_ligne_partiel AND {_EXPLOITABLE}",
+        f"{ax.en_ligne_partiel()} AND {_EXPLOITABLE}",
         "en_ligne", "completude",
     ),
     Indicateur(
         "en_ligne_sans_niveau", "À distance, degré non précisé",
         "A suivi à distance sans dire si c'était en entier. Compté à part.",
-        f"(cc.present OR cc.partiel) AND cc.a_enligne AND NOT cc.a_presentiel AND NOT cc.en_ligne_complet AND NOT cc.en_ligne_partiel AND {_EXPLOITABLE}",
+        f"{ax.en_ligne_sans_degre()} AND {_EXPLOITABLE}",
         "en_ligne", "completude",
     ),
     Indicateur(

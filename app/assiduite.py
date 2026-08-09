@@ -42,6 +42,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from . import axes_suivi as ax
 from . import db
 from .direction_analyse import _CONSO, _EXPLOITABLE
 from .visibilite import CIBLE_PREDICATE
@@ -100,11 +101,9 @@ attendu AS (
 ),
 fait AS (
     SELECT cc.membre_id,
-           count(*) FILTER (WHERE (cc.present OR cc.partiel) AND {_EXPLOITABLE}) AS suivies,
-           count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel
-                              AND cc.absence_qualification = 'excusee' AND {_EXPLOITABLE}) AS excusees,
-           count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel
-                              AND cc.absence_qualification <> 'excusee' AND {_EXPLOITABLE}) AS non_excusees,
+           count(*) FILTER (WHERE {ax.a_suivi()} AND {_EXPLOITABLE}) AS suivies,
+           count(*) FILTER (WHERE {ax.n_a_pas_suivi()} AND cc.absence_qualification = 'excusee' AND {_EXPLOITABLE}) AS excusees,
+           count(*) FILTER (WHERE {ax.n_a_pas_suivi()} AND cc.absence_qualification IS DISTINCT FROM 'excusee' AND {_EXPLOITABLE}) AS non_excusees,
            count(*) FILTER (WHERE {_EXPLOITABLE}) AS avec_trace
     FROM conso cc
     WHERE {where}
