@@ -12,7 +12,7 @@ moving the API there is the way to remove the per-request connection handshake.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -20,6 +20,34 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .config import settings
+
+
+#: How the connection string is chosen for the current unit of work.
+#:
+#: A plain callable rather than an import, because the resolver needs the database to
+#: read its registry and importing it here would close the cycle. It defaults to the
+#: configured connection, so a process that never installs one behaves exactly as this
+#: module always has: nothing changes until something is installed.
+#:
+#: One database per organisation is the isolation model the platform is built on, and
+#: this is the single point where that choice is applied. A query cannot reach another
+#: organisation because the connection does not lead there.
+def _dsn_configure() -> str:
+    return settings.database_dsn
+
+
+_resolveur_dsn: Callable[[], str] = _dsn_configure
+
+
+def installer_resolveur_dsn(resolveur: Callable[[], str]) -> None:
+    """Install the per-request connection resolver. Called once, at startup."""
+    global _resolveur_dsn
+    _resolveur_dsn = resolveur
+
+
+def dsn_actuel() -> str:
+    """The connection string this unit of work must use."""
+    return _resolveur_dsn()
 
 
 @contextmanager
@@ -51,7 +79,7 @@ def connection(
             # Checked before connecting, so a programming error costs no handshake.
             raise ValueError(f"local setting outside the adsum namespace: {nom}")
     extra = {"connect_timeout": connect_timeout_s} if connect_timeout_s else {}
-    conn = psycopg.connect(settings.database_dsn, row_factory=dict_row, **extra)
+    conn = psycopg.connect(dsn_actuel(), row_factory=dict_row, **extra)
     try:
         with conn.cursor() as cur:
             if role:
