@@ -27,82 +27,12 @@ from __future__ import annotations
 
 from . import axes_suivi as ax
 from . import db
+from .stats_conso import COMPTE, CONSO_CTES, POPULATION_CIBLE_CTE
+from .stats_dimensions import _REPARTITION_JOINS
 from .visibilite import CIBLE_PREDICATE
 
-# A self-declared participation is counted only when scanned or validated. Kept
-# identical to app.participation._COMPTE so the two modules never diverge.
-COMPTE = "(source = 'scan' OR valide)"
-
-# The targeted active population of an event: the denominator of every rate. It is
-# the SAME population the event actually reaches (agenda visibility, J-1 reminders,
-# survey audience), so a targeted activity is measured against the members it aims
-# at, not the whole base. Requires the outer query to bind %(ev)s to the event id.
-POPULATION_CIBLE_CTE = f"""
-cible AS (
-    SELECT m.id AS membre_id
-    FROM membre m
-    LEFT JOIN intendance mi ON mi.id = m.intendance_id
-    JOIN evenement e ON e.id = %(ev)s
-    WHERE m.statut = 'actif' AND {CIBLE_PREDICATE}
-)
-"""
-
-# Consolidated, deduplicated attendance for one event: one row per member across
-# BOTH tables, with the strongest status kept and the modality resolved. A scan is
-# on-site proof; an online-link participation is online; a declaration carries its
-# own modality (or unknown). ``dans_cible`` flags whether the member belongs to the
-# targeted active population, so the caller can bound numerators to it.
-_CONSO_CTES = f"""
-{POPULATION_CIBLE_CTE},
-brut AS (
-    SELECT pr.membre_id,
-           CASE WHEN pr.mode = 'en_ligne' THEN 'en_ligne' ELSE 'presentiel' END AS modalite,
-           'present'::text AS statut,
-           (pr.methode IN ('qr', 'manuelle')) AS scanne,
-           NULL::text AS niveau_en_ligne,
-           false AS ambigu
-    FROM presence pr
-    WHERE pr.evenement_id = %(ev)s
-    UNION ALL
-    SELECT pa.membre_id,
-           CASE WHEN pa.source = 'scan' THEN 'presentiel'
-                WHEN pa.modalite IN ('presentiel', 'en_ligne') THEN pa.modalite
-                ELSE NULL END AS modalite,
-           pa.statut,
-           (pa.source = 'scan') AS scanne,
-           pa.niveau_en_ligne,
-           coalesce(pa.legacy_ambigu, false) AS ambigu
-    FROM participation pa
-    WHERE pa.evenement_id = %(ev)s AND {COMPTE}
-      AND pa.statut IN ('present', 'partiel', 'absent')
-),
-conso AS (
-    SELECT membre_id,
-           bool_or(statut = 'present') AS present,
-           bool_or(statut = 'partiel') AS partiel,
-           bool_or(statut = 'absent') AS absent,
-           coalesce(bool_or(scanne), false) AS scanne,
-           -- coalesce to false: a member whose only record has an unknown modality
-           -- (NULL) would otherwise yield NULL and fall into no modality bucket, so
-           -- the split would not sum back to the present total. NULL means "unknown",
-           -- which is the "modalite_inconnue" bucket, i.e. a_presentiel = a_enligne = false.
-           coalesce(bool_or(modalite = 'presentiel'), false) AS a_presentiel,
-           coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne,
-           coalesce(bool_or(niveau_en_ligne = 'complet'), false) AS en_ligne_complet,
-           coalesce(bool_or(niveau_en_ligne = 'partiel'), false) AS en_ligne_partiel,
-           coalesce(bool_or(ambigu), false) AS ambigu
-    FROM brut
-    GROUP BY membre_id
-),
-conso_cible AS (
-    SELECT c.*, (ci.membre_id IS NOT NULL) AS dans_cible
-    FROM conso c
-    LEFT JOIN cible ci ON ci.membre_id = c.membre_id
-)
-"""
-
 _STATS_EVENEMENT_SQL = f"""
-WITH {_CONSO_CTES}
+WITH {CONSO_CTES}
 SELECT
     (SELECT count(*) FROM cible) AS effectif_attendu,
     -- The shared vocabulary, applied to one activity. The event dashboard and the
@@ -205,38 +135,6 @@ def stats_evenement(evenement_id: str, role: str | None) -> dict[str, object]:
 # Member joins for the breakdown dimensions. The coordination is resolved from BOTH
 # the member's intendance AND a direct coordination membership, so a member attached
 # straight to a coordination (no intendance) is no longer classed "Sans coordination".
-_REPARTITION_JOINS = (
-    "JOIN membre m ON m.id = cc.membre_id "
-    "LEFT JOIN commission c ON c.id = m.commission_id "
-    "LEFT JOIN intendance i ON i.id = m.intendance_id "
-    "LEFT JOIN coordination co ON co.id = i.coordination_id "
-    "LEFT JOIN coordination cod ON cod.id = m.coordination_id "
-    "LEFT JOIN tribu t ON t.id = m.tribu_id"
-)
-
-_AGE_EXPR = (
-    "CASE WHEN m.date_naissance IS NULL THEN 'Non renseigne' "
-    "WHEN extract(year FROM age(m.date_naissance)) < 18 THEN 'moins de 18' "
-    "WHEN extract(year FROM age(m.date_naissance)) < 26 THEN '18-25' "
-    "WHEN extract(year FROM age(m.date_naissance)) < 36 THEN '26-35' "
-    "WHEN extract(year FROM age(m.date_naissance)) < 51 THEN '36-50' "
-    "ELSE '51 et plus' END"
-)
-
-REPARTITION_DIMENSIONS: dict[str, str] = {
-    "genre": "coalesce(m.genre, 'Non renseigne')",
-    "tranche_age": _AGE_EXPR,
-    "commission": "coalesce(c.nom, 'Sans commission')",
-    "intendance": "coalesce(i.nom, 'Sans intendance')",
-    "coordination": "coalesce(co.nom, cod.nom, 'Sans coordination')",
-    "tribu": "coalesce(t.nom, 'Sans tribu')",
-    "pays": "coalesce(m.pays, 'Non renseigne')",
-    "region": "coalesce(m.region, 'Non renseigne')",
-    "type_membre": "coalesce(m.type_membre, 'Non renseigne')",
-    "cheminement": "coalesce(m.cheminement_pastoral, 'Non renseigne')",
-}
-
-
 def repartition_evenement(evenement_id: str, dimension_expr: str, role: str | None) -> list[dict[str, object]]:
     """Break the CONSOLIDATED, targeted attendance of an event down by a dimension.
 
@@ -253,7 +151,7 @@ def repartition_evenement(evenement_id: str, dimension_expr: str, role: str | No
     """
     rows = db.fetch_all(
         f"""
-        WITH {_CONSO_CTES}
+        WITH {CONSO_CTES}
         SELECT {dimension_expr} AS cle,
                count(*) FILTER (WHERE dans_cible AND {ax.sur_place('cc')}) AS presentiel,
                count(*) FILTER (WHERE dans_cible AND {ax.a_distance('cc')}) AS en_ligne,
@@ -528,7 +426,7 @@ def presents_membre_ids(evenement_id: str, role: str | None) -> list[str]:
     population), from the consolidated attendance. Used to cross-check that two
     screens or an export never disagree on who attended."""
     rows = db.fetch_all(
-        f"WITH {_CONSO_CTES} SELECT membre_id FROM conso_cible WHERE dans_cible AND present",
+        f"WITH {CONSO_CTES} SELECT membre_id FROM conso_cible WHERE dans_cible AND present",
         {"ev": evenement_id},
         role=role,
     )
