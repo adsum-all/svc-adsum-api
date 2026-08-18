@@ -115,18 +115,16 @@ def referentiels(user: _Lecteur) -> dict[str, Any]:
     return direction_referentiels.referentiels(user.role)
 
 
-@router.get("/regles-calcul")
-def regles_calcul(user: _Lecteur, filtres: _Filtres) -> dict[str, Any]:
-    """Every figure the platform publishes, with its definition, its formula and its audit.
-
-    Served so an organisation can check the arithmetic instead of being asked to trust
-    it. The same filters apply as everywhere else, so the table describes the selection
-    on screen and not the whole base.
-    """
-    try:
-        return pilotage.regles_calcul(filtres, user.role)
-    except analyse.DimensionInconnue as err:
-        raise _refuser(err) from err
+# La route « regles-calcul » a été retirée. Elle publiait à une organisation cliente
+# la mécanique interne de calcul de la plateforme, et un diagnostic d'arithmétique
+# qui affichait « incohérence détectée » sur un écran de client. Ni l'une ni l'autre
+# ne le regardent : la mécanique appartient à l'éditeur, et un client à qui l'on
+# annonce une incohérence sans qu'il puisse rien y faire perd confiance sans gagner
+# quoi que ce soit.
+#
+# Le contrôle lui-même n'a pas disparu, il a changé de nature : il est devenu un test
+# qui échoue en intégration (voir tests/test_indicateurs_coherence.py). C'est là qu'il
+# sert, parce qu'il empêche une régression au lieu de l'afficher.
 
 
 @router.get("/activites/{evenement_id}/arrivees")

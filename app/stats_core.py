@@ -240,25 +240,50 @@ REPARTITION_DIMENSIONS: dict[str, str] = {
 def repartition_evenement(evenement_id: str, dimension_expr: str, role: str | None) -> list[dict[str, object]]:
     """Break the CONSOLIDATED, targeted attendance of an event down by a dimension.
 
-    Same source of truth as :func:`stats_evenement`: one member counted once, bounded
-    to the targeted active population, present/partial/absent mutually exclusive. So
-    the sum of ``presents`` over the breakdown equals the ``presents`` KPI."""
+    Four counts that do not overlap and add to the targeted population, so a reader
+    can check the row by adding it up: on site, online, followed by an unrecorded
+    channel, did not follow.
+
+    This used to count as ``presents`` everyone whose status said "present", which
+    includes the people who followed a whole session online without leaving home. A
+    breakdown of who came, that counted people who did not come, is what produced an
+    on-site figure of 60,7 percent where the truth was 55,0. The predicates now come
+    from :mod:`axes_suivi`, the same ones every other scope uses, so the four columns
+    mean here exactly what they mean elsewhere.
+    """
     rows = db.fetch_all(
         f"""
         WITH {_CONSO_CTES}
         SELECT {dimension_expr} AS cle,
-               count(*) FILTER (WHERE dans_cible AND present) AS presents,
-               count(*) FILTER (WHERE dans_cible AND partiel AND NOT present) AS partiels,
-               count(*) FILTER (WHERE dans_cible AND absent AND NOT present AND NOT partiel) AS absents
+               count(*) FILTER (WHERE dans_cible AND {ax.sur_place('cc')}) AS presentiel,
+               count(*) FILTER (WHERE dans_cible AND {ax.a_distance('cc')}) AS en_ligne,
+               count(*) FILTER (WHERE dans_cible AND {ax.canal_inconnu('cc')}) AS canal_inconnu,
+               count(*) FILTER (WHERE dans_cible AND {ax.a_suivi('cc')}) AS suivis,
+               count(*) FILTER (WHERE dans_cible AND {ax.n_a_pas_suivi('cc')}) AS absents
         FROM conso_cible cc {_REPARTITION_JOINS}
         WHERE dans_cible
         GROUP BY {dimension_expr}
-        ORDER BY presents DESC, cle ASC
+        ORDER BY suivis DESC, cle ASC
         """,
         {"ev": evenement_id},
         role=role,
     )
-    return [{"cle": r["cle"], "presents": int(r["presents"]), "partiels": int(r["partiels"]), "absents": int(r["absents"])} for r in rows]
+    return [
+        {
+            "cle": r["cle"],
+            "presentiel": int(r["presentiel"]),
+            "en_ligne": int(r["en_ligne"]),
+            "canal_inconnu": int(r["canal_inconnu"]),
+            "suivis": int(r["suivis"]),
+            "absents": int(r["absents"]),
+            # "presents" means on site, which is what the word means and what every
+            # other scope returns under it. Kept so a screen reading the old name gets
+            # the right figure rather than a missing one.
+            "presents": int(r["presentiel"]),
+            "partiels": int(r["en_ligne"]),
+        }
+        for r in rows
+    ]
 
 
 

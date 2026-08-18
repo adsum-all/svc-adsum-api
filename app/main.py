@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import db, modules_souscrits, organisation_courante
+from . import db, modules_souscrits, organisation_courante, validation_sans_fuite
 from .activites_membre import router as activites_membre_router
 from .admin import router as admin_router
 from .ai_config import router as ai_config_router
@@ -76,6 +76,7 @@ from .inscriptions_reparation import router as inscriptions_reparation_router
 from .institutionnel import router as institutionnel_router
 from .integrations import router as integrations_router
 from .interim import router as interim_router
+from .interne_courriel import router as interne_courriel_router
 from .marque_publique import router as marque_publique_router
 from .matrice_pays import router as matrice_pays_router
 from .membres import router as membres_router
@@ -159,6 +160,11 @@ _MODULE = {
     for code in ("direction", "pilotage", "collaboration", "controleur")
 }
 
+# Avant tout routeur : un 422 par défaut recopie la valeur soumise dans sa réponse,
+# et sur la route de connexion cette valeur est un mot de passe en clair.
+validation_sans_fuite.installer(app)
+
+app.include_router(interne_courriel_router)
 app.include_router(auth_router)
 app.include_router(mfa_router)
 app.include_router(membres_router)

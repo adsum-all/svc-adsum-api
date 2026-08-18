@@ -98,6 +98,27 @@ def en_ligne_sans_degre(a: str = "cc") -> str:
     return f"({a_distance(a)} AND NOT {a}.en_ligne_complet AND NOT {a}.en_ligne_partiel)"
 
 
+def sans_information(a: str = "cc") -> str:
+    """Expected, and no trace at all: no scan, no survey answer, nothing.
+
+    This is not an absence. Nobody knows whether the person came. Counting them as
+    having not followed turns silence into a fact about somebody, and counting them
+    nowhere makes them vanish from the denominator, which flatters every rate: the
+    people who never answer are exactly the ones who attend least, so dropping them
+    raises the figure without anything changing on the ground.
+
+    So they get a state of their own, visible on every chart. It is the honest answer
+    and it also makes the coverage problem impossible to overlook, which a separate
+    coverage indicator on another card never managed.
+    """
+    return f"(NOT {a}.present AND NOT {a}.partiel AND NOT {a}.absent)"
+
+
+def a_repondu(a: str = "cc") -> str:
+    """Left a trace of some kind. The complement of sans_information."""
+    return f"({a}.present OR {a}.partiel OR {a}.absent)"
+
+
 def exploitable(a: str = "cc") -> str:
     """Rows the current model can express. The ambiguous legacy ones are excluded.
 
@@ -111,6 +132,16 @@ def exploitable(a: str = "cc") -> str:
 #: over its parent, which is what makes the published equalities hold rather than
 #: happen to hold.
 PARTITIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    # The whole expected audience, in five states that cannot overlap. This is the one
+    # partition a screen should draw: it adds up to the people the activity concerned,
+    # so a reader checks it by adding the columns.
+    "assistance": (
+        ("sur_place", "Sur place"),
+        ("a_distance", "En ligne"),
+        ("canal_inconnu", "A suivi, moyen non précisé"),
+        ("n_a_pas_suivi", "N'a pas suivi"),
+        ("sans_information", "Sans information"),
+    ),
     "suivi": (("a_suivi", "A suivi"), ("n_a_pas_suivi", "N'a pas suivi")),
     "canal": (("sur_place", "Sur place"), ("a_distance", "À distance"), ("canal_inconnu", "Canal non précisé")),
     "preuve": (("prouve", "Prouvé par un scan"), ("declare", "Déclaré par le membre")),
@@ -134,6 +165,8 @@ PREDICATS = {
     "en_ligne_entier": en_ligne_entier,
     "en_ligne_partiel": en_ligne_partiel,
     "en_ligne_sans_degre": en_ligne_sans_degre,
+    "sans_information": sans_information,
+    "a_repondu": a_repondu,
 }
 
 

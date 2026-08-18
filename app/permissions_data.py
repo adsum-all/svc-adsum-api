@@ -461,7 +461,6 @@ ENDPOINT_PERMISSION: dict[str, str] = {
     'GET /api/v1/direction/referentiels': 'statistiques.consulter',
     'GET /api/v1/direction/comparaison': 'statistiques.consulter',
     'GET /api/v1/direction/activites/{evenement_id}/arrivees': 'statistiques.consulter',
-    'GET /api/v1/direction/regles-calcul': 'statistiques.consulter',
     'GET /api/v1/direction/synthese': 'statistiques.consulter',
     'GET /api/v1/direction/repartition': 'statistiques.consulter',
     'GET /api/v1/direction/croisement': 'statistiques.consulter',

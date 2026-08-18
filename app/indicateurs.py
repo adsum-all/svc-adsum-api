@@ -69,6 +69,13 @@ COMPTES: tuple[Indicateur, ...] = (
         f"{ax.n_a_pas_suivi()} AND {_EXPLOITABLE}", "observations", "suivi",
     ),
     Indicateur(
+        "sans_trace", "Attendus, sans réponse",
+        "Ni suivi, ni absence déclarée : la personne était attendue et rien n'a été "
+        "enregistré. Un état à part entière, jamais réparti d'office dans l'un des "
+        "deux autres.",
+        f"{ax.sans_information()} AND {_EXPLOITABLE}", "observations", "suivi",
+    ),
+    Indicateur(
         "presentiel", "Sur place",
         "Parmi ceux qui ont suivi, ceux qui étaient physiquement présents. C'est la seule lecture du mot présence.",
         f"{ax.sur_place()} AND {_EXPLOITABLE}", "suivis", "canal",
@@ -142,8 +149,15 @@ TAUX: tuple[tuple[str, str, str, str, str], ...] = (
 #: Equalities that must hold at all times. They are published with the figures: an
 #: organisation should be able to see that the arithmetic closes, not be told that it does.
 CONTROLES: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
-    ("suivi_plus_absence", ("suivis", "absences"), "observations",
-     "Chaque observation est un suivi ou une absence, jamais les deux, jamais ni l'un ni l'autre."),
+    # L'énoncé disait « un suivi ou une absence », et il manquait le troisième cas :
+    # la personne attendue dont personne n'a rien enregistré. Quatre cent soixante-deux
+    # observations tombaient dans ce trou sur la base réelle, ce qui affichait une
+    # alerte d'incohérence alors que les chiffres étaient justes et l'égalité fausse.
+    # Le silence est un état, pas une anomalie : le compter à part est ce qui permet
+    # de le voir au lieu de le répartir d'office.
+    ("suivi_absence_silence", ("suivis", "absences", "sans_trace"), "observations",
+     "Chaque observation est un suivi, une absence déclarée, ou une attente restée "
+     "sans réponse. Ces trois cas se partagent la population, sans recouvrement."),
     ("canaux", ("presentiel", "en_ligne", "canal_inconnu"), "suivis",
      "Tout suivi passe par un canal, ou est explicitement compté sans canal."),
     ("preuve", ("presentiel_prouve", "presentiel_declare"), "presentiel",

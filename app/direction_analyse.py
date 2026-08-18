@@ -36,6 +36,7 @@ from typing import Any
 from . import axes_suivi as ax
 from . import db
 from .stats_core import COMPTE
+from .visibilite import CIBLE_PREDICATE
 
 # ---------------------------------------------------------------------------
 # Consolidation: the single source every figure below is cut from.
@@ -76,11 +77,39 @@ brut AS (
     FROM participation pa
     WHERE {COMPTE} AND pa.statut IN ('present', 'partiel', 'absent')
 ),
+-- Everybody the activity concerned, whether or not they left a trace.
+--
+-- Without this the denominator was "people who answered". Roughly a third of the
+-- expected audience never answers, and they are the least likely to attend, so
+-- excluding them raised every rate without anything changing on the ground. They now
+-- appear in a state of their own, `sans_information`, which is neither an attendance
+-- nor an absence: nobody knows.
+--
+-- Bounded by the activity's own targeting and by the date the member joined, so a
+-- person who arrived in June is not counted missing from March.
+cible AS (
+    SELECT e.id AS evenement_id, m.id AS membre_id
+    FROM evenement e
+    JOIN membre m ON m.statut = 'actif'
+    LEFT JOIN intendance mi ON mi.id = m.intendance_id
+    WHERE coalesce(e.annule, false) = false
+      AND e.debut <= now()
+      AND e.debut >= coalesce(m.date_entree::timestamptz, m.cree_le, '-infinity')
+      AND {CIBLE_PREDICATE}
+),
+-- Union rather than the target alone: a record belonging to somebody outside the
+-- target, an inactive member scanned at the door for instance, is still a fact and
+-- must not be dropped by the very query meant to widen the denominator.
+paires AS (
+    SELECT evenement_id, membre_id FROM brut
+    UNION
+    SELECT evenement_id, membre_id FROM cible
+),
 conso AS (
-    SELECT membre_id, evenement_id,
-           bool_or(statut = 'present') AS present,
-           bool_or(statut = 'partiel') AS partiel,
-           bool_or(statut = 'absent') AS absent,
+    SELECT p.membre_id, p.evenement_id,
+           coalesce(bool_or(statut = 'present'), false) AS present,
+           coalesce(bool_or(statut = 'partiel'), false) AS partiel,
+           coalesce(bool_or(statut = 'absent'), false) AS absent,
            coalesce(bool_or(scanne), false) AS scanne,
            coalesce(bool_or(modalite = 'presentiel'), false) AS a_presentiel,
            coalesce(bool_or(modalite = 'en_ligne'), false) AS a_enligne,
@@ -97,7 +126,9 @@ conso AS (
            max(absence_motif) AS absence_motif,
            max(absence_qualification) AS absence_qualification,
            coalesce(bool_or(ambigu), false) AS ambigu
-    FROM brut GROUP BY membre_id, evenement_id
+    FROM paires p
+    LEFT JOIN brut b ON b.membre_id = p.membre_id AND b.evenement_id = p.evenement_id
+    GROUP BY p.membre_id, p.evenement_id
 )
 """
 
@@ -325,7 +356,16 @@ def _ligne(r: dict[str, Any], cle: str = "cle") -> dict[str, Any]:
     # online", which is not a population anybody names.
     suivis = int(r.get("suivis") or 0)
     absents = int(r.get("absents") or 0)
-    total = suivis + absents
+    sans_info = int(r.get("sans_information") or 0)
+    # The denominator is the whole expected audience: those who followed, those who
+    # said they did not, and those who never answered. It used to stop at the first
+    # two, which is the "people who answered" denominator. That one flatters, because
+    # the people who never answer are the least likely to have attended.
+    total = suivis + absents + sans_info
+    # Kept because some questions are genuinely about the people who did answer, such
+    # as "of those who told us, how many gave a reason". Published under its own name
+    # so no screen can mistake one for the other.
+    repondants = suivis + absents
     presentiel = int(r.get("presentiel") or 0)
     en_ligne = int(r.get("en_ligne") or 0)
     prouve = int(r.get("presentiel_prouve") or 0)
@@ -337,10 +377,13 @@ def _ligne(r: dict[str, Any], cle: str = "cle") -> dict[str, Any]:
         "presents": presents,
         "partiels": partiels,
         "absents": absents,
+        "sans_information": sans_info,
         # `total` is the denominator of every rate here and therefore excludes the
         # uninterpretable rows. `lignes` is what the base actually holds, so a group
         # made entirely of such rows shows its size instead of reading as empty.
         "total": total,
+        "repondants": repondants,
+        "taux_reponse": _taux(repondants, total),
         "lignes": total + int(r.get("non_interpretables") or 0),
         "suivis": suivis,
         "presentiel": presentiel,
@@ -383,6 +426,10 @@ _AGREGATS = f"""
     -- stated degree" into "complete". There is nothing to write here any more.
     count(*) FILTER (WHERE {ax.a_suivi()} AND {_EXPLOITABLE}) AS suivis,
     count(*) FILTER (WHERE {ax.n_a_pas_suivi()} AND {_EXPLOITABLE}) AS absents,
+    -- Expected, and no trace of any kind. Neither an attendance nor an absence: a
+    -- state of its own, so silence is visible instead of being absorbed by one of the
+    -- other two or quietly dropped from the denominator.
+    count(*) FILTER (WHERE {ax.sans_information()} AND {_EXPLOITABLE}) AS sans_information,
     count(*) FILTER (WHERE {ax.sur_place()} AND {_EXPLOITABLE}) AS presentiel,
     count(*) FILTER (WHERE {ax.a_distance()} AND {_EXPLOITABLE}) AS en_ligne,
     count(*) FILTER (WHERE {ax.canal_inconnu()} AND {_EXPLOITABLE}) AS suivi_modalite_inconnue,

@@ -129,11 +129,17 @@ def serie_temporelle(filtres: dict[str, Any], role: str | None) -> list[dict[str
         f"coalesce(e.volet, '{_INCONNU}') AS volet, "
         f"count(*) FILTER (WHERE {ax.a_suivi()} AND {_EXPLOITABLE}) AS suivis, "
         f"count(*) FILTER (WHERE {ax.n_a_pas_suivi()} AND {_EXPLOITABLE}) AS absents, "
+        f"count(*) FILTER (WHERE {ax.sans_information()} AND {_EXPLOITABLE}) AS sans_information, "
         f"count(*) FILTER (WHERE {ax.sur_place()} AND {_EXPLOITABLE}) AS presentiel, "
         f"count(*) FILTER (WHERE {ax.a_distance()} AND {_EXPLOITABLE}) AS en_ligne, "
         f"count(*) FILTER (WHERE {ax.canal_inconnu()} AND {_EXPLOITABLE}) AS canal_inconnu, "
         f"count(*) FILTER (WHERE {ax.prouve()} AND {_EXPLOITABLE}) AS scannes, "
-        f"count(*) FILTER (WHERE {ax.en_ligne_partiel()} AND {_EXPLOITABLE}) AS partiels "
+        # Level three: how complete the remote attendance was. Computed over the people
+        # who attended remotely and nobody else, because a partial follow-up does not
+        # exist on site: somebody who came for half an hour came.
+        f"count(*) FILTER (WHERE {ax.en_ligne_entier()} AND {_EXPLOITABLE}) AS complet, "
+        f"count(*) FILTER (WHERE {ax.en_ligne_partiel()} AND {_EXPLOITABLE}) AS partiels, "
+        f"count(*) FILTER (WHERE {ax.en_ligne_sans_degre()} AND {_EXPLOITABLE}) AS distanciel_sans_degre "
         f"FROM conso cc {_JOINTURES} WHERE {where} "
         "GROUP BY e.id, e.titre, e.debut, e.volet ORDER BY e.debut",
         params, role=role,
@@ -142,9 +148,13 @@ def serie_temporelle(filtres: dict[str, Any], role: str | None) -> list[dict[str
     for r in rows:
         suivis = int(r["suivis"] or 0)
         absents = int(r["absents"] or 0)
+        sans_info = int(r["sans_information"] or 0)
         presentiel = int(r["presentiel"] or 0)
         en_ligne = int(r["en_ligne"] or 0)
-        total = suivis + absents
+        # The whole audience the activity concerned. It stopped at suivis + absents,
+        # which is the count of people who answered: an activity where five people
+        # replied out of seventy showed a rate computed on five.
+        total = suivis + absents + sans_info
         serie.append({
             "evenement_id": str(r["id"]),
             "titre": r["titre"],
@@ -154,6 +164,11 @@ def serie_temporelle(filtres: dict[str, Any], role: str | None) -> list[dict[str
             "presentiel": presentiel,
             "en_ligne": en_ligne,
             "canal_inconnu": int(r["canal_inconnu"] or 0),
+            "sans_information": sans_info,
+            "repondants": suivis + absents,
+            # Level three, over the remote attendees only.
+            "complet": int(r["complet"] or 0),
+            "distanciel_sans_degre": int(r["distanciel_sans_degre"] or 0),
             # "presents" holds the on-site count, which is what the word means. It used
             # to hold everyone whose status said they had followed, online included,
             # so the lower curve of the trend chart was not the one it was labelled.
@@ -165,6 +180,7 @@ def serie_temporelle(filtres: dict[str, Any], role: str | None) -> list[dict[str
             "taux_presence": _taux(presentiel, total),
             "taux_suivi": _taux(suivis, total),
             "taux_participation": _taux(suivis, total),
+            "taux_reponse": _taux(suivis + absents, total),
         })
     return serie
 
@@ -271,19 +287,27 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
     # not, and the headline therefore counted the hundred and eleven uninterpretable
     # rows while the charts under it did not: the four buckets no longer added up to
     # the number of people the card said had followed.
+    # Every count comes from the shared vocabulary. These were hand-written here, and
+    # they had already drifted: "presents" counted the status, which the database sets
+    # for anybody who followed by any means, so people who never left home were
+    # counted present.
     r = db.fetch_one(
         f"WITH {_CONSO} SELECT "
-        f"count(*) FILTER (WHERE {_EXPLOITABLE}) AS observations, "
-        f"count(DISTINCT cc.membre_id) FILTER (WHERE {_EXPLOITABLE}) AS membres_vus, "
+        f"count(*) FILTER (WHERE {_EXPLOITABLE}) AS attendues, "
+        f"count(*) FILTER (WHERE {ax.a_repondu()} AND {_EXPLOITABLE}) AS repondants, "
+        f"count(DISTINCT cc.membre_id) FILTER (WHERE {ax.a_repondu()} AND {_EXPLOITABLE}) AS membres_vus, "
         f"count(DISTINCT cc.evenement_id) FILTER (WHERE {_EXPLOITABLE}) AS activites, "
-        f"count(*) FILTER (WHERE cc.present AND {_EXPLOITABLE}) AS presents, "
-        f"count(*) FILTER (WHERE cc.partiel AND NOT cc.present AND {_EXPLOITABLE}) AS partiels, "
-        f"count(*) FILTER (WHERE cc.absent AND NOT cc.present AND NOT cc.partiel AND {_EXPLOITABLE}) AS absents, "
-        f"count(*) FILTER (WHERE cc.scanne AND {_EXPLOITABLE}) AS presentiel_prouve, "
-        f"count(*) FILTER (WHERE (cc.present OR cc.partiel) AND cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS presentiel_declare, "
-        f"count(*) FILTER (WHERE cc.a_enligne AND NOT cc.en_ligne_partiel AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne_complet, "
-        f"count(*) FILTER (WHERE cc.a_enligne AND cc.en_ligne_partiel AND NOT cc.a_presentiel AND NOT cc.scanne AND {_EXPLOITABLE}) AS en_ligne_partiel, "
-        f"count(*) FILTER (WHERE (cc.present OR cc.partiel) AND NOT cc.a_presentiel AND NOT cc.a_enligne AND NOT cc.scanne AND {_EXPLOITABLE}) AS suivi_modalite_inconnue, "
+        f"count(*) FILTER (WHERE {ax.a_suivi()} AND {_EXPLOITABLE}) AS suivis, "
+        f"count(*) FILTER (WHERE {ax.n_a_pas_suivi()} AND {_EXPLOITABLE}) AS absents, "
+        f"count(*) FILTER (WHERE {ax.sans_information()} AND {_EXPLOITABLE}) AS sans_information, "
+        f"count(*) FILTER (WHERE {ax.sur_place()} AND {_EXPLOITABLE}) AS presentiel, "
+        f"count(*) FILTER (WHERE {ax.a_distance()} AND {_EXPLOITABLE}) AS en_ligne, "
+        f"count(*) FILTER (WHERE {ax.prouve()} AND {_EXPLOITABLE}) AS presentiel_prouve, "
+        f"count(*) FILTER (WHERE {ax.declare()} AND {_EXPLOITABLE}) AS presentiel_declare, "
+        f"count(*) FILTER (WHERE {ax.en_ligne_entier()} AND {_EXPLOITABLE}) AS en_ligne_complet, "
+        f"count(*) FILTER (WHERE {ax.en_ligne_partiel()} AND {_EXPLOITABLE}) AS en_ligne_partiel, "
+        f"count(*) FILTER (WHERE {ax.en_ligne_sans_degre()} AND {_EXPLOITABLE}) AS en_ligne_sans_degre, "
+        f"count(*) FILTER (WHERE {ax.canal_inconnu()} AND {_EXPLOITABLE}) AS suivi_modalite_inconnue, "
         "count(*) FILTER (WHERE cc.ambigu) AS non_interpretables "
         f"FROM conso cc {_JOINTURES} WHERE {where}",
         params, role=role,
@@ -291,59 +315,71 @@ def synthese(filtres: dict[str, Any], role: str | None) -> dict[str, Any]:
 
     membres_actifs = _effectif_du_perimetre(filtres, role)
 
-    observations = int(r.get("observations") or 0)
-    presents = int(r.get("presents") or 0)
-    partiels = int(r.get("partiels") or 0)
-    membres_vus = int(r.get("membres_vus") or 0)
-    activites = int(r.get("activites") or 0)
-    prouve = int(r.get("presentiel_prouve") or 0)
-    declare = int(r.get("presentiel_declare") or 0)
-    complet = int(r.get("en_ligne_complet") or 0)
-    partiel_en_ligne = int(r.get("en_ligne_partiel") or 0)
-    modalite_inconnue = int(r.get("suivi_modalite_inconnue") or 0)
-    suivis = presents + partiels
-    # The two channels, counted from the channel axis rather than inferred from the
-    # status. A status says whether someone followed; it never says where they were.
-    presentiel = prouve + declare
-    en_ligne = complet + partiel_en_ligne
+    n = lambda k: int(r.get(k) or 0)  # noqa: E731 - one short reader, used a dozen times
+    # The denominator of every rate below: everybody the activities concerned. Not the
+    # people who answered. The two differ by a third of the base here, and the missing
+    # third attends least, so the narrower denominator flattered every figure.
+    attendues = n("attendues")
+    repondants = n("repondants")
+    sans_info = n("sans_information")
+    suivis = n("suivis")
+    activites = n("activites")
+    prouve = n("presentiel_prouve")
+    presentiel = n("presentiel")
+    en_ligne = n("en_ligne")
     return {
-        "observations": observations,
+        # Kept under its old name because screens read it; it now holds the expected
+        # audience rather than the answer count, which is what the word implies.
+        "observations": attendues,
+        "attendues": attendues,
+        "repondants": repondants,
+        "sans_information": sans_info,
         "activites": activites,
-        "membres_vus": membres_vus,
+        "membres_vus": n("membres_vus"),
         "membres_actifs": int(membres_actifs or 0),
-        "presents": presents,
-        "partiels": partiels,
-        "absents": int(r.get("absents") or 0),
+        # "presents" means on site, which is what the word means.
+        "presents": presentiel,
+        "partiels": n("en_ligne_partiel"),
+        "absents": n("absents"),
         "scannes": prouve,
         # The four ways of having followed. They sum to `suivis`, so the breakdown can
         # be checked against the headline rather than trusted.
         "presentiel_prouve": prouve,
-        "presentiel_declare": declare,
-        "en_ligne_complet": complet,
-        "en_ligne_partiel": partiel_en_ligne,
-        "suivi_modalite_inconnue": modalite_inconnue,
+        "presentiel_declare": n("presentiel_declare"),
+        "en_ligne_complet": n("en_ligne_complet"),
+        "en_ligne_partiel": n("en_ligne_partiel"),
+        "en_ligne_sans_degre": n("en_ligne_sans_degre"),
+        "suivi_modalite_inconnue": n("suivi_modalite_inconnue"),
         "suivis": suivis,
-        "non_interpretables": int(r.get("non_interpretables") or 0),
-        # "Présence" now means what the word means: physically on site. It used to be
-        # the count of statut='present', which the database sets for anyone who
-        # followed, whichever way. Sixty three people who never came were counted
-        # present, turning a real 55,0 percent into a displayed 60,7.
-        "taux_presence": _taux(presentiel, observations),
-        "taux_presence_physique": _taux(presentiel, observations),
-        # Kept under its old name so no screen breaks, and duplicated under an
-        # unambiguous one so no reader has to guess.
-        "taux_suivi": _taux(suivis, observations),
-        "taux_participation": _taux(suivis, observations),
+        "non_interpretables": n("non_interpretables"),
         "presentiel": presentiel,
         "en_ligne": en_ligne,
+        "taux_presence": _taux(presentiel, attendues),
+        "taux_presence_physique": _taux(presentiel, attendues),
+        "taux_suivi": _taux(suivis, attendues),
+        "taux_participation": _taux(suivis, attendues),
+        "taux_a_distance": _taux(en_ligne, attendues),
+        # Level two rates: over the people who attended, not over everybody. Asking
+        # "of those who came, how many came on site" is a different question from
+        # "of everybody expected", and mixing the two denominators on one screen is
+        # what made the mode split unreadable.
+        "part_presentiel": _taux(presentiel, suivis),
+        "part_distanciel": _taux(en_ligne, suivis),
+        "taux_absence": _taux(n("absents"), attendues),
+        "taux_sans_information": _taux(sans_info, attendues),
+        # How often the platform gets an answer at all. It qualifies everything above:
+        # a low response rate does not make the attendance figures wrong, it makes the
+        # unknown share large.
+        "taux_reponse": _taux(repondants, attendues),
         # What share of the attendance is evidence rather than assertion. Eighty per
         # cent proven at the door and eighty per cent asserted in a form are different
         # situations, and the attendance rate alone cannot tell them apart.
         "taux_preuve": _taux(prouve, suivis),
-        # How much of the base the figures above actually describe. Without it, a rate
-        # computed on a handful of people reads exactly like one computed on everybody.
-        "taux_couverture": _taux(membres_vus, int(membres_actifs or 0)),
-        "moyenne_par_activite": round(presents / activites, 1) if activites else 0.0,
+        # How much of the base the figures above actually describe.
+        "taux_couverture": _taux(n("membres_vus"), int(membres_actifs or 0)),
+        # People who followed, per activity. It counted only those on site, under a
+        # label that said "suivis".
+        "moyenne_par_activite": round(suivis / activites, 1) if activites else 0.0,
     }
 
 
