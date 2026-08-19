@@ -244,18 +244,32 @@ def repondre(
 
 @router.get("/agents")
 def agents(user: Annotated[Operateur, Depends(require_capacite("editor.support.consulter"))]) -> list[dict[str, str]]:
-    """Who a thread can be assigned to: the accounts that hold the permission.
+    """À qui un fil peut être affecté : les opérateurs de l'éditeur, et eux seuls.
 
-    Listing every account would offer assignments that cannot act on what they receive.
+    Cette liste se construisait en cherchant les rôles détenant « support.traiter ».
+    Cette permission a quitté le monde client, où elle n'avait rien à faire, et la
+    requête ne rendait donc plus rien : un fil ne pouvait plus être affecté à
+    personne. Le remède n'est pas de rétablir la permission mais de poser la bonne
+    question, qui n'a jamais été « quel rôle de tenant » mais « qui travaille pour
+    l'éditeur ».
+
+    La réponse vient du registre des opérateurs, qui est la source d'autorité. Le
+    courriel affiché est celui que le registre porte, pas celui de l'annuaire client :
+    lister les comptes clients ici exposerait leurs adresses à tous les agents.
     """
-    from .permissions_data import ROLE_PERMISSIONS
+    from .frontiere import capacites_par_role, registre_operateurs
 
-    roles = [r for r, p in ROLE_PERMISSIONS.items() if "support.traiter" in p]
+    peut_traiter = {
+        identifiant for identifiant, role in registre_operateurs().items()
+        if "editor.support.repondre" in capacites_par_role().get(role, ())
+    }
+    if not peut_traiter:
+        return []
     return [
         {"id": str(r["id"]), "email": str(r["email"])}
         for r in db.fetch_all(
-            "SELECT id, email FROM utilisateur WHERE actif AND role = ANY(%s) ORDER BY email",
-            (roles,),
+            "SELECT id, email FROM utilisateur WHERE actif AND id = ANY(%s) ORDER BY email",
+            (sorted(peut_traiter),),
             role=user.role,
         )
     ]

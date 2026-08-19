@@ -217,3 +217,30 @@ class TestLeMondeClientNeConnaitPlusLaPermissionEditeur:
             if permission.startswith("editor.")
         }
         assert fautives == set()
+
+
+class TestUnJetonEditeurNOuvrePasLeMondeClient:
+    """Le sens inverse, qui manquait.
+
+    Toute l'attention portait sur le client atteignant la console. Le trajet inverse
+    compte autant : un opérateur de l'éditeur ne doit pas ouvrir les applications
+    métier d'une organisation parce qu'il travaille pour l'éditeur. Ce chemin existe,
+    il s'appelle assistance exceptionnelle, il se demande et il expire.
+    """
+
+    ROUTES_CLIENTES = [
+        ("GET", "/api/v1/auth/me"),
+        ("GET", "/api/v1/membres/me"),
+    ]
+
+    @pytest.mark.parametrize(("methode", "chemin"), ROUTES_CLIENTES)
+    def test_le_jeton_d_operateur_est_refuse_cote_client(self, monkeypatch, methode, chemin):
+        jeton = _declarer_operateur(monkeypatch, "editor-super-admin")
+        reponse = client.request(methode, chemin, headers=_entete(jeton))
+        assert reponse.status_code == 401, (
+            f"{methode} {chemin} a accepté un jeton d'opérateur : la frontière ne "
+            "tient que dans un sens.")
+
+    def test_les_deux_audiences_different(self):
+        """La propriété dont tout le reste découle."""
+        assert frontiere.AUDIENCE_CLIENT != frontiere.AUDIENCE_EDITEUR
