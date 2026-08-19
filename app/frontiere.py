@@ -47,6 +47,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from .auth import current_user
 from .config import settings
 from .schemas import UserMe
 
@@ -319,18 +320,6 @@ def require_capacite(capacite: str):
 router = APIRouter(prefix="/api/v1/auth", tags=["frontiere"])
 
 
-def _utilisateur_authentifie(creds: Annotated[HTTPAuthorizationCredentials,
-                                              Depends(_bearer)]) -> UserMe:
-    """La dépendance d'authentification cliente, résolue tardivement.
-
-    Importée dans le corps et non en tête : ``auth`` et ce module se citent
-    mutuellement, et l'import différé est la façon la plus simple de le dire sans
-    déplacer une moitié de l'authentification ici.
-    """
-    from .auth import current_user
-
-    return current_user(creds)
-
 
 class SessionEditeur(BaseModel):
     """Le jeton d'opérateur, et ce qu'il ouvre."""
@@ -344,7 +333,7 @@ class SessionEditeur(BaseModel):
 
 @router.post("/session-editeur", response_model=SessionEditeur)
 def session_editeur(
-    user: Annotated[UserMe, Depends(_utilisateur_authentifie)],
+    user: Annotated[UserMe, Depends(current_user)],
 ) -> SessionEditeur:
     """Échanger une session cliente authentifiée contre un jeton d'opérateur.
 

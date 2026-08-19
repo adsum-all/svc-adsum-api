@@ -1525,7 +1525,8 @@
         "server-authorization",
         "conformance-test"
       ],
-      "rationale": "C'est la brèche constatée le 19 août 2026 : les vingt routes de console de l'API étaient gardées par la permission support.traiter, accordée par défaut aux rôles admin et super_admin d'une organisation cliente. Le trésorier d'une paroisse pouvait lister tous les clients d'ADSUM, en créer un et en suspendre un autre."
+      "rationale": "C'est la brèche constatée le 19 août 2026 : les vingt routes de console de l'API étaient gardées par la permission support.traiter, accordée par défaut aux rôles admin et super_admin d'une organisation cliente. Le trésorier d'une paroisse pouvait lister tous les clients d'ADSUM, en créer un et en suspendre un autre.",
+      "test": "adsum-api:tests/test_frontiere_client_editeur.py::TestUnJetonClientNOuvrePasLaConsole::test_le_jeton_d_un_super_admin_de_tenant_est_refuse"
     },
     {
       "id": "acceder-au-commerce-interne",
@@ -1534,7 +1535,8 @@
         "token-audience",
         "server-authorization"
       ],
-      "rationale": "Le portail client appelle le service commerce, mais seulement sur les routes de son propre abonnement. Les routes de gouvernance, de catalogue global et de parc exigent une inscription dans operateur_editeur, que le client n'a pas."
+      "rationale": "Le portail client appelle le service commerce, mais seulement sur les routes de son propre abonnement. Les routes de gouvernance, de catalogue global et de parc exigent une inscription dans operateur_editeur, que le client n'a pas.",
+      "test": "adsum-commerce:tests/test_portail_console.py::TestAutoriteDeLEditeur::test_un_role_super_admin_de_client_n_ouvre_pas_la_console"
     },
     {
       "id": "acceder-a-une-autre-organisation",
@@ -1544,7 +1546,8 @@
         "server-authorization",
         "database-rls"
       ],
-      "rationale": "L'isolation repose sur une base par organisation, décision prise et consignée : ajouter une colonne organisation_id aux tables existantes a été explicitement refusé. L'organisation est résolue par la connexion, que l'appelant ne choisit pas."
+      "rationale": "L'isolation repose sur une base par organisation, décision prise et consignée : ajouter une colonne organisation_id aux tables existantes a été explicitement refusé. L'organisation est résolue par la connexion, que l'appelant ne choisit pas.",
+      "test": "adsum-commerce:tests/test_portail_console.py::TestAutoriteDeLEditeur::test_un_role_admin_de_client_ne_suspend_personne"
     },
     {
       "id": "lire-les-secrets",
@@ -1572,7 +1575,8 @@
         "server-authorization",
         "conformance-test"
       ],
-      "rationale": "Le client ouvre un ticket depuis son portail et lit ses propres échanges. La console de support voit les fils de toutes les organisations."
+      "rationale": "Le client ouvre un ticket depuis son portail et lit ses propres échanges. La console de support voit les fils de toutes les organisations.",
+      "test": "adsum-api:tests/test_frontiere_client_editeur.py::TestUnJetonClientNOuvrePasLaConsole"
     },
     {
       "id": "toucher-a-l-infrastructure",
@@ -1618,7 +1622,8 @@
         "server-authorization",
         "conformance-test"
       ],
-      "rationale": "Les fronts filtrent leur menu à partir d'un cache de permissions du navigateur. Ce cache est une commodité d'affichage, modifiable par qui le veut, et il a déjà causé une page réputée disparue alors qu'elle répondait encore."
+      "rationale": "Les fronts filtrent leur menu à partir d'un cache de permissions du navigateur. Ce cache est une commodité d'affichage, modifiable par qui le veut, et il a déjà causé une page réputée disparue alors qu'elle répondait encore.",
+      "test": "adsum-api:tests/test_conformite_politiques.py::TestLesRoutesEditeurSontCellesQueLaPolitiqueDeclare::test_toute_route_de_console_porte_une_garde_editeur"
     },
     {
       "id": "lire-la-mecanique-interne-de-calcul",

@@ -1409,7 +1409,8 @@
         "token-audience",
         "server-authorization"
       ],
-      "rationale": "Un jeton d'audience adsum-editeur est refusé sur les routes clientes. L'inverse de la brèche constatée, et la même mécanique appliquée dans l'autre sens."
+      "rationale": "Un jeton d'audience adsum-editeur est refusé sur les routes clientes. L'inverse de la brèche constatée, et la même mécanique appliquée dans l'autre sens.",
+      "test": "adsum-api:tests/test_frontiere_client_editeur.py::TestUnJetonEditeurNOuvrePasLeMondeClient::test_le_jeton_d_operateur_est_refuse_cote_client"
     },
     {
       "id": "impersonation-permanente",
