@@ -62,6 +62,7 @@ from .fichiers import router as fichiers_router
 from .fonctions import router as fonctions_router
 from .formation import router as formation_router
 from .formulaire_pointage import router as formulaire_pointage_router
+from .frontiere import router as frontiere_router
 from .gestion import router as gestion_router
 from .groupes import router as groupes_router
 from .groupes_fiche import router as groupes_fiche_router
@@ -256,6 +257,7 @@ app.include_router(email_fournisseurs_router)
 app.include_router(formulaire_pointage_router)
 app.include_router(support_router)
 app.include_router(support_entrant_router)
+app.include_router(frontiere_router)
 app.include_router(support_console_router)
 app.include_router(console_observabilite_router)
 app.include_router(console_organisations_router)

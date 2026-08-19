@@ -1,0 +1,1633 @@
+{
+  "metadata": {
+    "side": "client",
+    "version": "1.0.0",
+    "updated_at": "2026-08-19",
+    "functional_owner": "Armand Amoussou, propriétaire du produit ADSUM",
+    "technical_owner": "Armand Amoussou, responsable technique ADSUM",
+    "environment": "production",
+    "status": "en-vigueur",
+    "source_of_truth": "sr-media-ai/adsum/deployment/ci-templates, chemin policies/client-access-policy.json, branche main. Toute autre copie est vérifiée contre celle-ci par la tâche policy:drift.",
+    "compatibility": {
+      "breaking_change_requires": [
+        "Retirer une capacité à un rôle existant est une rupture : elle casse des usages en place et doit passer par une demande de fusion relue.",
+        "Renommer une capacité est une rupture, même à droit constant : les tests de conformité et les gardes du code la citent par son nom."
+      ],
+      "review_required_for": [
+        "Tout ajout de capacité à client-super-admin ou client-admin.",
+        "Toute modification de la section scope, qui porte les invariants dont le reste dépend.",
+        "Toute modification de prohibited_capabilities."
+      ]
+    }
+  },
+  "scope": {
+    "tenant_bound": true,
+    "cross_tenant_forbidden": true,
+    "editor_capabilities_forbidden": true,
+    "least_privilege": {
+      "default": "deny",
+      "statement": "Une permission non détenue est refusée. Le catalogue est fermé : une route dont la permission n'est pas déclarée n'est pas ouverte par défaut, elle est injoignable, ce qui transforme un oubli en panne visible plutôt qu'en trou silencieux."
+    },
+    "separation": [
+      {
+        "plane": "donnees-metier",
+        "statement": "Les membres, les activités, les présences et les documents d'une organisation, qui vivent dans sa propre base."
+      },
+      {
+        "plane": "administration",
+        "statement": "La configuration de l'organisation, ses accès et ses paramètres, séparés de la donnée métier pour qu'un droit de lecture ne se transforme jamais en droit de réglage."
+      },
+      {
+        "plane": "consultation",
+        "statement": "La lecture agrégée pour la direction. Distincte de l'administration : consulter des chiffres ne doit pas ouvrir la modification par commodité d'écran."
+      },
+      {
+        "plane": "controle-terrain",
+        "statement": "Le scan et le pointage, sur un appareil parfois partagé et parfois hors ligne. Volontairement le plan le plus étroit : c'est celui dont l'appareil se perd."
+      },
+      {
+        "plane": "collaboration",
+        "statement": "Les espaces de travail internes à l'organisation, dont l'appartenance à un espace est la limite, pas le rôle global."
+      },
+      {
+        "plane": "facturation",
+        "statement": "L'abonnement, les modules et les factures de l'organisation, tenus dans le portail et non dans les applications métier, pour qu'un administrateur métier n'accède pas au commercial sans y avoir été nommé."
+      }
+    ],
+    "token_audience": "adsum-client"
+  },
+  "roles": [
+    {
+      "id": "client-super-admin",
+      "label": "Super administrateur de l'organisation",
+      "purpose": "Le compte le plus élevé à l'intérieur d'une organisation cliente. Il administre ses membres, ses accès et ses paramètres, et rien au-delà de son organisation. Ce rôle ne confère aucune autorité sur la plateforme : c'est l'exact malentendu que cette politique existe pour lever.",
+      "grants": [
+        "client.acces.administrer",
+        "client.acces.systeme",
+        "client.anniversaires.gerer",
+        "client.attestations.gerer",
+        "client.audit.administrer",
+        "client.bergers.consulter",
+        "client.canal.administrer",
+        "client.canal.traiter",
+        "client.canal.voir",
+        "client.collaboration.gerer",
+        "client.collaboration.modeles",
+        "client.collaboration.superviser",
+        "client.collaboration.template.archive",
+        "client.collaboration.template.create",
+        "client.collaboration.template.delete",
+        "client.collaboration.template.manage-all",
+        "client.collaboration.template.publish",
+        "client.collaboration.template.read",
+        "client.collaboration.template.update",
+        "client.collaboration.template.use",
+        "client.commissions.administrer",
+        "client.commissions.consulter",
+        "client.comptage.controler",
+        "client.comptage.superviser",
+        "client.comptes.administrer",
+        "client.comptes.systeme",
+        "client.consentements.administrer",
+        "client.consentements.consulter",
+        "client.controle.controler",
+        "client.deblocage.superviser",
+        "client.demandes.gerer",
+        "client.demandes.superviser",
+        "client.documents.bibliotheque",
+        "client.documents.gerer",
+        "client.doublons.administrer",
+        "client.doublons.consulter",
+        "client.doublons.gerer",
+        "client.evenements.consulter",
+        "client.evenements.gerer",
+        "client.evenements.superviser",
+        "client.fonctions.consulter",
+        "client.fonctions.gerer",
+        "client.informations.consulter",
+        "client.informations.gerer",
+        "client.inscriptions.administrer",
+        "client.inscriptions.gerer",
+        "client.integrations.administrer",
+        "client.integrations.superviser",
+        "client.matrice-pays.consulter",
+        "client.matrice-pays.gerer",
+        "client.membres.administrer",
+        "client.membres.consulter",
+        "client.membres.gerer",
+        "client.membres.self",
+        "client.modeles.consulter",
+        "client.modeles.gerer",
+        "client.niveaux-engagement.consulter",
+        "client.niveaux-engagement.gerer",
+        "client.notifications.consulter",
+        "client.notifications.gerer",
+        "client.organisation.administrer",
+        "client.organisation.consulter",
+        "client.organisation.equipes",
+        "client.organisation.supervision",
+        "client.parametres.consulter",
+        "client.parametres.gerer",
+        "client.participation.consulter",
+        "client.participation.gerer",
+        "client.statistiques.consulter",
+        "client.tags.administrer",
+        "client.terminaux.administrer",
+        "client.terminaux.consulter",
+        "client.tribus.administrer",
+        "client.tribus.consulter"
+      ],
+      "scope_type": "organisation",
+      "mfa": "obligatoire",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/permissions_data.py:185"
+    },
+    {
+      "id": "client-admin",
+      "label": "Administrateur de l'organisation",
+      "purpose": "Administration courante de l'organisation : membres, événements, inscriptions, paramètres. Se distingue du super administrateur par l'accès système et la gestion des comptes techniques, qu'il n'a pas.",
+      "grants": [
+        "client.acces.administrer",
+        "client.anniversaires.gerer",
+        "client.attestations.gerer",
+        "client.audit.administrer",
+        "client.bergers.consulter",
+        "client.canal.administrer",
+        "client.canal.traiter",
+        "client.canal.voir",
+        "client.collaboration.gerer",
+        "client.collaboration.modeles",
+        "client.collaboration.superviser",
+        "client.collaboration.template.archive",
+        "client.collaboration.template.create",
+        "client.collaboration.template.delete",
+        "client.collaboration.template.manage-all",
+        "client.collaboration.template.publish",
+        "client.collaboration.template.read",
+        "client.collaboration.template.update",
+        "client.collaboration.template.use",
+        "client.commissions.administrer",
+        "client.commissions.consulter",
+        "client.comptage.controler",
+        "client.comptage.superviser",
+        "client.comptes.administrer",
+        "client.consentements.administrer",
+        "client.consentements.consulter",
+        "client.controle.controler",
+        "client.deblocage.superviser",
+        "client.demandes.gerer",
+        "client.demandes.superviser",
+        "client.documents.bibliotheque",
+        "client.documents.gerer",
+        "client.doublons.administrer",
+        "client.doublons.consulter",
+        "client.doublons.gerer",
+        "client.evenements.consulter",
+        "client.evenements.gerer",
+        "client.evenements.superviser",
+        "client.fonctions.consulter",
+        "client.fonctions.gerer",
+        "client.informations.consulter",
+        "client.informations.gerer",
+        "client.inscriptions.administrer",
+        "client.inscriptions.gerer",
+        "client.integrations.administrer",
+        "client.integrations.superviser",
+        "client.matrice-pays.consulter",
+        "client.matrice-pays.gerer",
+        "client.membres.administrer",
+        "client.membres.consulter",
+        "client.membres.gerer",
+        "client.membres.self",
+        "client.modeles.consulter",
+        "client.modeles.gerer",
+        "client.niveaux-engagement.consulter",
+        "client.niveaux-engagement.gerer",
+        "client.notifications.consulter",
+        "client.notifications.gerer",
+        "client.organisation.administrer",
+        "client.organisation.consulter",
+        "client.organisation.equipes",
+        "client.organisation.supervision",
+        "client.parametres.consulter",
+        "client.parametres.gerer",
+        "client.participation.consulter",
+        "client.participation.gerer",
+        "client.statistiques.consulter",
+        "client.tags.administrer",
+        "client.terminaux.administrer",
+        "client.terminaux.consulter",
+        "client.tribus.administrer",
+        "client.tribus.consulter"
+      ],
+      "scope_type": "organisation",
+      "mfa": "obligatoire",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/permissions_data.py:184"
+    },
+    {
+      "id": "client-manager",
+      "label": "Gestionnaire de périmètre",
+      "purpose": "Gestion déléguée sur un périmètre : une coordination, une intendance, une commission, une tribu. Le périmètre est la limite, pas une préférence d'affichage : le serveur refuse hors de lui.",
+      "grants": [
+        "client.anniversaires.gerer",
+        "client.attestations.gerer",
+        "client.bergers.consulter",
+        "client.canal.traiter",
+        "client.canal.voir",
+        "client.collaboration.gerer",
+        "client.collaboration.superviser",
+        "client.collaboration.template.read",
+        "client.collaboration.template.use",
+        "client.commissions.consulter",
+        "client.comptage.controler",
+        "client.comptage.superviser",
+        "client.consentements.consulter",
+        "client.controle.controler",
+        "client.deblocage.superviser",
+        "client.demandes.gerer",
+        "client.demandes.superviser",
+        "client.documents.gerer",
+        "client.doublons.consulter",
+        "client.doublons.gerer",
+        "client.evenements.consulter",
+        "client.evenements.gerer",
+        "client.evenements.superviser",
+        "client.fonctions.consulter",
+        "client.fonctions.gerer",
+        "client.informations.consulter",
+        "client.informations.gerer",
+        "client.inscriptions.gerer",
+        "client.integrations.superviser",
+        "client.matrice-pays.consulter",
+        "client.matrice-pays.gerer",
+        "client.membres.consulter",
+        "client.membres.gerer",
+        "client.membres.self",
+        "client.modeles.consulter",
+        "client.modeles.gerer",
+        "client.niveaux-engagement.consulter",
+        "client.niveaux-engagement.gerer",
+        "client.notifications.consulter",
+        "client.notifications.gerer",
+        "client.organisation.consulter",
+        "client.parametres.consulter",
+        "client.parametres.gerer",
+        "client.participation.consulter",
+        "client.participation.gerer",
+        "client.statistiques.consulter",
+        "client.terminaux.consulter",
+        "client.tribus.consulter"
+      ],
+      "scope_type": "perimetre",
+      "mfa": "recommande",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/permissions_data.py:182"
+    },
+    {
+      "id": "client-direction",
+      "label": "Direction de l'organisation",
+      "purpose": "Lecture agrégée pour la direction de l'organisation. Consulte des chiffres et des tendances, n'administre rien. Séparer la lecture de l'écriture évite qu'un tableau de bord devienne un outil de modification par commodité.",
+      "grants": [
+        "client.bergers.consulter",
+        "client.canal.voir",
+        "client.collaboration.superviser",
+        "client.collaboration.template.read",
+        "client.collaboration.template.use",
+        "client.commissions.consulter",
+        "client.comptage.superviser",
+        "client.consentements.consulter",
+        "client.deblocage.superviser",
+        "client.demandes.superviser",
+        "client.documents.bibliotheque",
+        "client.doublons.consulter",
+        "client.evenements.consulter",
+        "client.evenements.superviser",
+        "client.fonctions.consulter",
+        "client.informations.consulter",
+        "client.integrations.superviser",
+        "client.matrice-pays.consulter",
+        "client.membres.consulter",
+        "client.membres.self",
+        "client.modeles.consulter",
+        "client.niveaux-engagement.consulter",
+        "client.notifications.consulter",
+        "client.organisation.consulter",
+        "client.organisation.supervision",
+        "client.parametres.consulter",
+        "client.participation.consulter",
+        "client.statistiques.consulter",
+        "client.terminaux.consulter",
+        "client.tribus.consulter"
+      ],
+      "scope_type": "organisation",
+      "mfa": "recommande",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/permissions_data.py:183"
+    },
+    {
+      "id": "client-controller",
+      "label": "Contrôleur terrain",
+      "purpose": "Contrôle terrain : scan, pointage, émargement. N'ouvre ni le dossier d'un membre ni la moindre donnée qui ne serve pas au pointage en cours.",
+      "grants": [
+        "client.bergers.consulter",
+        "client.commissions.consulter",
+        "client.comptage.controler",
+        "client.consentements.consulter",
+        "client.controle.controler",
+        "client.doublons.consulter",
+        "client.evenements.consulter",
+        "client.fonctions.consulter",
+        "client.informations.consulter",
+        "client.matrice-pays.consulter",
+        "client.membres.consulter",
+        "client.membres.self",
+        "client.modeles.consulter",
+        "client.niveaux-engagement.consulter",
+        "client.notifications.consulter",
+        "client.organisation.consulter",
+        "client.parametres.consulter",
+        "client.participation.consulter",
+        "client.statistiques.consulter",
+        "client.terminaux.consulter",
+        "client.tribus.consulter"
+      ],
+      "scope_type": "perimetre",
+      "mfa": "recommande",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/permissions_data.py:181"
+    },
+    {
+      "id": "client-member",
+      "label": "Membre",
+      "purpose": "La personne elle-même. Voit sa carte, ses activités, ses informations, et uniquement ses propres données.",
+      "grants": [
+        "client.membres.self"
+      ],
+      "scope_type": "personnel",
+      "mfa": "recommande",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/permissions_data.py:180"
+    },
+    {
+      "id": "client-owner",
+      "label": "Propriétaire du compte de l'organisation",
+      "purpose": "La personne qui a créé le compte de l'organisation sur le portail. Elle seule ne peut pas être retirée par un autre administrateur du portail, sans quoi une organisation pourrait se retrouver sans personne pour y entrer.",
+      "grants": [
+        "client.portail.administrateurs",
+        "client.portail.abonnement",
+        "client.portail.facturation",
+        "client.portail.personnalisation",
+        "client.portail.deploiement",
+        "client.portail.ressources",
+        "client.portail.support",
+        "client.portail.assistance-autoriser"
+      ],
+      "scope_type": "organisation",
+      "mfa": "obligatoire",
+      "exists_in_code": true,
+      "code_reference": "adsum-commerce:migrations/versions/0002_administrateurs_portail.sql:24"
+    },
+    {
+      "id": "client-portal-admin",
+      "label": "Administrateur du portail client",
+      "purpose": "Invité par le propriétaire pour gérer l'abonnement et la configuration commerciale de l'organisation. Distinct des rôles métier : gérer une facture n'est pas gérer des membres, et confondre les deux donnerait le commercial à tout administrateur métier.",
+      "grants": [
+        "client.portail.abonnement",
+        "client.portail.facturation",
+        "client.portail.personnalisation",
+        "client.portail.deploiement",
+        "client.portail.ressources",
+        "client.portail.support"
+      ],
+      "scope_type": "organisation",
+      "mfa": "obligatoire",
+      "exists_in_code": true,
+      "code_reference": "adsum-commerce:migrations/versions/0002_administrateurs_portail.sql:12"
+    },
+    {
+      "id": "client-finance-admin",
+      "label": "Responsable financier de l'organisation",
+      "purpose": "Voit les factures et les échéances de son organisation sans pouvoir modifier l'abonnement. Séparer la lecture financière de la décision d'achat est la demande la plus fréquente des structures où le trésorier n'est pas le président.",
+      "grants": [
+        "client.portail.facturation"
+      ],
+      "scope_type": "organisation",
+      "mfa": "obligatoire",
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-PORTAIL-ROLES : le portail ne distingue aujourd'hui que propriétaire et administrateur, par le booléen principal."
+    },
+    {
+      "id": "client-security-admin",
+      "label": "Responsable sécurité de l'organisation",
+      "purpose": "Gère les accès, les sessions et l'authentification forte à l'intérieur de l'organisation, sans accéder aux données métier. Une structure qui confie la sécurité à quelqu'un ne lui confie pas pour autant le fichier de ses membres.",
+      "grants": [
+        "client.acces.administrer",
+        "client.comptes.administrer",
+        "client.audit.administrer"
+      ],
+      "scope_type": "organisation",
+      "mfa": "obligatoire",
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-RBAC-SECURITE : ces trois permissions existent mais ne sont pas isolées en un rôle propre ; elles sont aujourd'hui incluses dans admin et super_admin."
+    },
+    {
+      "id": "client-support-contact",
+      "label": "Contact support de l'organisation",
+      "purpose": "La personne que l'éditeur contacte, et la seule autorisée à ouvrir un ticket au nom de l'organisation. Nommer ce contact évite que l'éditeur réponde à qui écrit le premier.",
+      "grants": [
+        "client.portail.support"
+      ],
+      "scope_type": "organisation",
+      "mfa": "recommande",
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-PORTAIL-ROLES"
+    },
+    {
+      "id": "client-commission-manager",
+      "label": "Responsable de commission",
+      "purpose": "Gestion déléguée bornée à une commission. Existe dans le code sous forme d'appartenance de groupe à portée, et non de rôle global : la portée est la limite que le serveur applique.",
+      "grants": [
+        "client.commissions.consulter",
+        "client.commissions.administrer"
+      ],
+      "scope_type": "perimetre",
+      "mfa": "recommande",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/perimetre.py"
+    },
+    {
+      "id": "client-group-manager",
+      "label": "Responsable de groupe",
+      "purpose": "Gestion déléguée bornée à un groupe ou une tribu. Même mécanique de portée que la commission, appliquée à un autre découpage de l'organisation.",
+      "grants": [
+        "client.tribus.consulter",
+        "client.tribus.administrer"
+      ],
+      "scope_type": "perimetre",
+      "mfa": "recommande",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/perimetre.py"
+    },
+    {
+      "id": "client-event-manager",
+      "label": "Responsable des activités",
+      "purpose": "Crée et pilote les activités de l'organisation, et relève la participation. N'administre ni les membres ni les accès : organiser une rencontre ne demande pas d'ouvrir le fichier.",
+      "grants": [
+        "client.evenements.consulter",
+        "client.evenements.gerer",
+        "client.evenements.superviser",
+        "client.participation.consulter",
+        "client.participation.gerer"
+      ],
+      "scope_type": "perimetre",
+      "mfa": "recommande",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/permissions_data.py"
+    },
+    {
+      "id": "client-collaborator",
+      "label": "Collaborateur d'un espace de travail",
+      "purpose": "Travaille dans les espaces de collaboration de l'organisation. L'appartenance à l'espace est la limite : un collaborateur d'un espace n'est rien dans un autre.",
+      "grants": [
+        "client.collaboration.gerer",
+        "client.collaboration.template.read",
+        "client.collaboration.template.use"
+      ],
+      "scope_type": "perimetre",
+      "mfa": "optionnel",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/collaboration_espaces.py"
+    },
+    {
+      "id": "client-auditor-readonly",
+      "label": "Auditeur interne de l'organisation, lecture seule",
+      "purpose": "Lit le journal d'audit de son organisation sans rien pouvoir y changer. Une organisation soumise à un contrôle a besoin de montrer ses traces sans donner les clés.",
+      "grants": [
+        "client.audit.administrer"
+      ],
+      "scope_type": "organisation",
+      "mfa": "obligatoire",
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-RBAC-AUDITEUR : audit.administrer mélange aujourd'hui la lecture et le réglage de l'audit ; il faut la scinder pour que ce rôle existe sans donner l'écriture."
+    },
+    {
+      "id": "client-guest",
+      "label": "Invité",
+      "purpose": "Une personne sans compte qui accomplit un geste ponctuel autorisé : émarger à une activité par un jeton à usage unique, ou remplir un formulaire d'engagement. Aucun accès persistant, aucune session.",
+      "grants": [],
+      "scope_type": "personnel",
+      "mfa": "optionnel",
+      "exists_in_code": true,
+      "code_reference": "adsum-api:app/emargement.py"
+    }
+  ],
+  "applications": [
+    {
+      "id": "adsum-back-office",
+      "label": "Back-office de l'organisation, administration métier",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-back-office",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-super-admin",
+        "client-admin",
+        "client-manager",
+        "client-security-admin",
+        "client-event-manager"
+      ],
+      "requires_module": null,
+      "degraded_when_suspended": "lecture-seule"
+    },
+    {
+      "id": "adsum-pilotage",
+      "label": "Pilotage métier par périmètre délégué",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-pilotage",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-manager",
+        "client-commission-manager",
+        "client-group-manager",
+        "client-admin",
+        "client-super-admin"
+      ],
+      "requires_module": "pilotage",
+      "degraded_when_suspended": "lecture-seule"
+    },
+    {
+      "id": "adsum-direction",
+      "label": "Tableaux de bord de la direction de l'organisation",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-direction",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-direction",
+        "client-super-admin"
+      ],
+      "requires_module": "direction",
+      "degraded_when_suspended": "lecture-seule"
+    },
+    {
+      "id": "adsum-collaboration",
+      "label": "Espaces de travail collaboratif de l'organisation",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-collaboration",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-collaborator",
+        "client-manager",
+        "client-admin",
+        "client-super-admin"
+      ],
+      "requires_module": "collaboration",
+      "degraded_when_suspended": "lecture-seule"
+    },
+    {
+      "id": "adsum-web-membre",
+      "label": "Espace personnel du membre",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-web-membre",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-member"
+      ],
+      "requires_module": null,
+      "degraded_when_suspended": "lecture-seule"
+    },
+    {
+      "id": "adsum-controleur",
+      "label": "Contrôle terrain, scan et pointage",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-controleur",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-controller"
+      ],
+      "requires_module": "controle",
+      "degraded_when_suspended": "disponible"
+    },
+    {
+      "id": "adsum-mobile",
+      "label": "Applications mobiles Android et iOS de l'organisation",
+      "repository": "sr-media-ai/adsum/applications/app-version-android/adsum-mobile",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-member",
+        "client-controller"
+      ],
+      "requires_module": null,
+      "degraded_when_suspended": "lecture-seule"
+    },
+    {
+      "id": "adsum-portail",
+      "label": "Portail client, abonnement et configuration de l'organisation",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-portail",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-owner",
+        "client-portal-admin",
+        "client-finance-admin",
+        "client-support-contact"
+      ],
+      "requires_module": null,
+      "degraded_when_suspended": "disponible",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/portail/abonnement",
+          "capability": "client.portail.abonnement",
+          "note": "L'abonnement de l'organisation appelante, jamais celui d'une autre."
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/portail/factures",
+          "capability": "client.portail.facturation"
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/portail/modules",
+          "capability": "client.portail.abonnement",
+          "note": "Demande d'activation. Le portail ne provisionne rien lui-même : il dépose une demande que le domaine commercial valide."
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/portail/assistance",
+          "capability": "client.portail.assistance-autoriser",
+          "note": "L'organisation autorise, pour une durée bornée, un accès d'assistance de l'éditeur. C'est le seul endroit d'où cette autorisation peut venir."
+        }
+      ]
+    },
+    {
+      "id": "adsum-public",
+      "label": "Parcours publics de l'organisation, émargement et engagement",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-public",
+      "audience": "adsum-client",
+      "roles_allowed": [
+        "client-guest"
+      ],
+      "requires_module": null,
+      "degraded_when_suspended": "bloquee"
+    }
+  ],
+  "data_boundaries": [
+    {
+      "role": "client-super-admin",
+      "may_read": [
+        "Tout le contenu métier de son organisation",
+        "Le journal d'audit de son organisation"
+      ],
+      "may_write": [
+        "Membres, activités, inscriptions, paramètres, accès de son organisation"
+      ],
+      "may_export": [
+        "Les données de son organisation, au format prévu par la fonction d'export"
+      ],
+      "never": [
+        "Les données d'une autre organisation, quelle qu'elle soit",
+        "Le registre des clients de l'éditeur",
+        "Les journaux techniques bruts de la plateforme",
+        "Les secrets, jetons et clés de la plateforme"
+      ],
+      "organisational_limit": "Son organisation, résolue par la base à laquelle son jeton donne accès, jamais par un paramètre de requête."
+    },
+    {
+      "role": "client-manager",
+      "may_read": [
+        "Les membres et activités de son périmètre"
+      ],
+      "may_write": [
+        "Les activités et la participation de son périmètre"
+      ],
+      "may_export": [
+        "Les listes de son périmètre"
+      ],
+      "never": [
+        "Les membres hors de son périmètre",
+        "Les paramètres de l'organisation",
+        "Le journal d'audit"
+      ],
+      "organisational_limit": "Le périmètre attaché à son appartenance de groupe, appliqué côté serveur par require_perimetre."
+    },
+    {
+      "role": "client-direction",
+      "may_read": [
+        "Des agrégats et des tendances sur l'organisation"
+      ],
+      "may_write": [],
+      "may_export": [
+        "Les rapports agrégés"
+      ],
+      "never": [
+        "Une donnée nominative sous le seuil d'anonymat retenu par l'organisation",
+        "Les pièces d'identité et photos des membres",
+        "Toute écriture, quelle qu'elle soit"
+      ],
+      "temporal_limit": "Les rapports portent sur des périodes closes ; la direction ne consulte pas une activité en cours nominativement."
+    },
+    {
+      "role": "client-controller",
+      "may_read": [
+        "L'éligibilité au pointage de la personne scannée, pour l'activité en cours"
+      ],
+      "may_write": [
+        "La présence relevée pour l'activité en cours"
+      ],
+      "may_export": [],
+      "never": [
+        "Le dossier d'un membre",
+        "Les coordonnées d'un membre",
+        "Les activités auxquelles il n'est pas affecté"
+      ],
+      "temporal_limit": "La fenêtre de pointage de l'activité, au-delà de laquelle l'appareil ne relève plus rien."
+    },
+    {
+      "role": "client-member",
+      "may_read": [
+        "Ses propres données, sa carte, ses activités, les informations qui lui sont diffusées"
+      ],
+      "may_write": [
+        "Son profil, ses préférences, ses déclarations de participation"
+      ],
+      "may_export": [
+        "Ses propres données, au titre du droit d'accès"
+      ],
+      "never": [
+        "Les données d'un autre membre",
+        "Toute vue d'administration"
+      ]
+    },
+    {
+      "role": "client-owner",
+      "may_read": [
+        "L'abonnement, les factures, les modules et la configuration de son organisation"
+      ],
+      "may_write": [
+        "Les administrateurs du portail, la personnalisation, les demandes de module et de ressources"
+      ],
+      "may_export": [
+        "Ses factures"
+      ],
+      "never": [
+        "Les données métier des membres de son organisation, qu'il n'obtient qu'avec un rôle métier distinct",
+        "Le catalogue global de l'éditeur en écriture",
+        "Les abonnements d'autres organisations"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "client.acces.administrer",
+      "label": "Accès et groupes - administrer , Ne permet pas de créer, modifier ou supprimer les groupes eux-mêmes, ce qui relève de acces.systeme.",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.acces.systeme",
+      "label": "Accès et groupes - administration système , Ne couvre pas l'affectation des membres aux groupes, qui relève de acces.administrer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-super-admin"
+    },
+    {
+      "id": "client.anniversaires.gerer",
+      "label": "Anniversaires - gérer , Ne permet pas d'éditer le modèle de message d'anniversaire, qui relève de modeles.gerer, et reste borné au périmètre attribué.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.attestations.gerer",
+      "label": "Attestations - gérer , Aucune action au-delà de la validation n'est exposée, et l'accès reste borné au périmètre attribué.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.audit.administrer",
+      "label": "Journal d'audit - administrer , Lecture seule: aucune modification ni suppression des entrées d'audit n'est possible.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.bergers.consulter",
+      "label": "Bergers - consulter , Lecture seule bornée au périmètre: aucune création ni modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.canal.administrer",
+      "label": "Canal - administrer , Le tri et le traitement des instructions relèvent de canal.traiter, la simple lecture de canal.voir.",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.canal.traiter",
+      "label": "Canal - traiter les instructions , La configuration du canal relève de canal.administrer.",
+      "kind": "sensible",
+      "minimum_role": "client-manager",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.canal.voir",
+      "label": "Canal - voir les instructions , Ne permet ni de prendre en charge, ni d'affecter, ni d'éditer, ce qui relève de canal.traiter.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.collaboration.gerer",
+      "label": "Collaboration - gérer , L'action reste bornée à l'appartenance de chaque espace collaboratif (membre de l'espace), et non à un périmètre organisationnel.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.collaboration.modeles",
+      "label": "Collaboration - modèles de tableaux , Ne donne aucun droit sur le contenu des espaces; l'usage d'un modèle pour créer un tableau reste régi par collaboration.gerer et l'appartenance à l'espace.",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.collaboration.superviser",
+      "label": "Collaboration - superviser , Ne permet pas de créer ni de modifier espaces, tableaux ou cartes, ce qui relève de collaboration.gerer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.collaboration.template.archive",
+      "label": "Modèles de collaboration - archiver , Les tableaux déjà créés à partir de ce modèle ne sont pas affectés : leurs colonnes ont été copiées.",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.collaboration.template.create",
+      "label": "Modèles de collaboration - créer , Ne permet pas de publier : la mise à disposition relève de collaboration.template.publish.",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.collaboration.template.delete",
+      "label": "Modèles de collaboration - supprimer , Irréversible. Les tableaux issus du modèle restent intacts.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.collaboration.template.manage-all",
+      "label": "Modèles de collaboration - administrer , Ne donne aucun droit sur le contenu des espaces collaboratifs.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.collaboration.template.publish",
+      "label": "Modèles de collaboration - publier , Ne permet pas de créer ni de modifier un modèle, afin de séparer la préparation de l'approbation.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.collaboration.template.read",
+      "label": "Modèles de collaboration - consulter , Ne permet ni de créer un tableau à partir d'un modèle, ni de modifier un modèle.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.collaboration.template.update",
+      "label": "Modèles de collaboration - modifier , Ne permet ni de publier, ni d'archiver, ni de supprimer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.collaboration.template.use",
+      "label": "Modèles de collaboration - utiliser , Ne donne aucun droit sur le modèle lui-même, qui reste inchangé.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.commissions.administrer",
+      "label": "Commissions et missions - administrer , Aucun endpoint de suppression n'est exposé; la simple consultation relève de commissions.consulter et l'action reste bornée au périmètre.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.commissions.consulter",
+      "label": "Commissions et missions - consulter , Lecture seule: aucune création ni modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.comptage.controler",
+      "label": "Comptage - contrôler , Ne donne pas accès à la consultation consolidée du comptage (comptage.superviser) et reste borné au périmètre.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.comptage.superviser",
+      "label": "Comptage - superviser , Lecture seule: ne permet pas de saisir un comptage, ce qui relève de comptage.controler.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.comptes.administrer",
+      "label": "Comptes - administrer , Ne permet pas de créer ni de modifier un compte, ce qui relève de comptes.systeme.",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.comptes.systeme",
+      "label": "Comptes - administration système , Aucun endpoint de suppression de compte n'est exposé; la consultation de la liste relève de comptes.administrer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-super-admin"
+    },
+    {
+      "id": "client.consentements.administrer",
+      "label": "Consentements - administrer , La consultation relève de consentements.consulter et aucune suppression n'est exposée.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.consentements.consulter",
+      "label": "Consentements - consulter , Lecture seule, mais le relevé nomme les signataires (nom, adresse, matricule) sur toute la plateforme : ne l'accordez qu'à qui doit voir l'annuaire.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.controle.controler",
+      "label": "Contrôle - contrôler , Borné aux événements du périmètre de contrôle: ne donne accès ni à la gestion des membres ni aux statistiques.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.deblocage.superviser",
+      "label": "Déblocage - superviser , Lecture seule bornée au périmètre: aucune action de déblocage n'est exposée.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.demandes.gerer",
+      "label": "Demandes - gérer , La consultation de la liste et du détail des demandes relève de demandes.superviser, et le traitement reste borné au périmètre.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.demandes.superviser",
+      "label": "Demandes - superviser , Lecture seule: aucune action de traitement, qui relève de demandes.gerer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.documents.bibliotheque",
+      "label": "Documents - bibliothèque institutionnelle , Une version publiée n'est jamais modifiée : une correction ouvre la version suivante, pour que ce qui a été signé reste lisible tel quel.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.documents.gerer",
+      "label": "Documents - gérer , Aucun endpoint de suppression de document n'est exposé, et l'accès reste borné au périmètre.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.doublons.administrer",
+      "label": "Doublons - administrer , Le tri d'une détection (confirmer, demander des documents, personnes distinctes) relève de doublons.gerer et la consultation de la liste de doublons.consulter.",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.doublons.consulter",
+      "label": "Doublons - consulter , Lecture seule: ne lance aucun scan et ne modifie pas le seuil.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.doublons.gerer",
+      "label": "Doublons - gérer , Ne lance pas de scan et ne modifie pas le seuil, ce qui relève de doublons.administrer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.evenements.consulter",
+      "label": "Événements - consulter , Lecture seule: aucune création ni modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.evenements.gerer",
+      "label": "Événements - gérer , Le déclenchement d'un sondage relève de evenements.superviser, et la gestion reste bornée au périmètre.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.evenements.superviser",
+      "label": "Événements - superviser , Ne donne aucun accès à la création, à la modification ou à la consultation des événements eux-mêmes.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.fonctions.consulter",
+      "label": "Fonctions et titres - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.fonctions.gerer",
+      "label": "Fonctions et titres - gérer , Ne couvre pas l'attribution d'une fonction à un membre, qui relève de membres.gerer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.informations.consulter",
+      "label": "Informations - consulter , La création et la diffusion relèvent de informations.gerer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.informations.gerer",
+      "label": "Informations - diffuser , La suppression n'est possible que sur un brouillon: une information diffusée s'archive.",
+      "kind": "sensible",
+      "minimum_role": "client-manager",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.inscriptions.administrer",
+      "label": "Inscriptions - administrer , Le suivi courant et la décision sur une inscription relèvent de inscriptions.gerer, et l'action reste bornée au périmètre.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.inscriptions.gerer",
+      "label": "Inscriptions - gérer , La création directe de membres et la conversion des engagements relèvent de inscriptions.administrer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.integrations.administrer",
+      "label": "Intégrations - administrer , La simple lecture de l'état des intégrations relève de integrations.superviser.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.integrations.superviser",
+      "label": "Intégrations - superviser , Lecture seule, mais la santé des envois nomme les adresses en échec, qui sont des adresses de membres : ne l'accordez qu'à qui doit les voir.",
+      "kind": "ordinaire",
+      "minimum_role": "client-direction"
+    },
+    {
+      "id": "client.matrice-pays.consulter",
+      "label": "Matrice pays - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.matrice-pays.gerer",
+      "label": "Matrice pays - gérer , Ne crée ni ne supprime d'entrée pays, et reste borné au périmètre attribué.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.membres.administrer",
+      "label": "Membres - administrer , L'attribution des groupes d'accès relève de acces.administrer, et l'action reste bornée au périmètre.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.membres.consulter",
+      "label": "Membres - consulter , Lecture partielle: la liste et la fiche complète des membres relèvent de membres.gerer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.membres.gerer",
+      "label": "Membres - gérer , La création, la suppression et le blocage des membres relèvent de membres.administrer, et la gestion reste bornée au périmètre.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.membres.self",
+      "label": "Membres - accès personnel , Strictement limité à son propre compte: aucun accès aux données d'autres membres.",
+      "kind": "ordinaire",
+      "minimum_role": "client-member"
+    },
+    {
+      "id": "client.modeles.consulter",
+      "label": "Modèles - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.modeles.gerer",
+      "label": "Modèles - gérer , Se limite au modèle d'anniversaire et ne déclenche pas les envois, qui relèvent de anniversaires.gerer.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.niveaux-engagement.consulter",
+      "label": "Niveaux-Engagement - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.niveaux-engagement.gerer",
+      "label": "Niveaux-Engagement - gérer , Action bornée au périmètre attribué.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.notifications.consulter",
+      "label": "Notifications - consulter , Lecture seule: ne déclenche ni ne configure aucun envoi.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.notifications.gerer",
+      "label": "Notifications - gérer , Action bornée au périmètre attribué.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.organisation.administrer",
+      "label": "Organisation - administrer , La simple consultation de ces entités relève de organisation.consulter.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.organisation.consulter",
+      "label": "Organisation - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.organisation.equipes",
+      "label": "Organisation - équipes spéciales , Distinct de la hiérarchie organisationnelle (commissions, intendances, tribus).",
+      "kind": "ordinaire",
+      "minimum_role": "client-admin"
+    },
+    {
+      "id": "client.organisation.supervision",
+      "label": "Tribus - supervision , Distinct du patriarche, qui doit appartenir à la tribu ; un superviseur peut lui être extérieur.",
+      "kind": "sensible",
+      "minimum_role": "client-direction",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.parametres.consulter",
+      "label": "Paramètres - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.parametres.gerer",
+      "label": "Paramètres - gérer , Se limite à ces paramètres et reste borné au périmètre attribué.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.participation.consulter",
+      "label": "Participation - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.participation.gerer",
+      "label": "Participation - gérer , Aucune action de modification des enregistrements de présence n'est exposée, et l'accès reste borné au périmètre.",
+      "kind": "ordinaire",
+      "minimum_role": "client-manager"
+    },
+    {
+      "id": "client.statistiques.consulter",
+      "label": "Statistiques - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.tags.administrer",
+      "label": "Étiquettes - administrer , Aucun endpoint de suppression d'étiquette n'est exposé.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.terminaux.administrer",
+      "label": "Terminaux - administrer , La simple consultation relève de terminaux.consulter, et aucune suppression n'est exposée.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.terminaux.consulter",
+      "label": "Terminaux - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.tribus.administrer",
+      "label": "Tribus - administrer , La consultation des tribus relève de tribus.consulter; l'édition structurelle passe par organisation.administrer.",
+      "kind": "sensible",
+      "minimum_role": "client-admin",
+      "requires_confirmation": true,
+      "audit_event": "action-sensible-client"
+    },
+    {
+      "id": "client.tribus.consulter",
+      "label": "Tribus - consulter , Lecture seule: aucune modification.",
+      "kind": "ordinaire",
+      "minimum_role": "client-controller"
+    },
+    {
+      "id": "client.portail.abonnement",
+      "label": "Consulter l'abonnement de son organisation et demander un changement d'offre",
+      "kind": "sensible",
+      "minimum_role": "client-portal-admin",
+      "requires_confirmation": true,
+      "audit_event": "portail-abonnement-modifie",
+      "reversible": true
+    },
+    {
+      "id": "client.portail.facturation",
+      "label": "Consulter les factures et échéances de son organisation",
+      "kind": "ordinaire",
+      "minimum_role": "client-finance-admin",
+      "reversible": true
+    },
+    {
+      "id": "client.portail.administrateurs",
+      "label": "Inviter et retirer les administrateurs du portail de son organisation",
+      "kind": "sensible",
+      "minimum_role": "client-owner",
+      "requires_confirmation": true,
+      "audit_event": "portail-administrateur-modifie",
+      "reversible": true
+    },
+    {
+      "id": "client.portail.personnalisation",
+      "label": "Régler le logo, les couleurs, le vocabulaire et le domaine de son organisation",
+      "kind": "ordinaire",
+      "minimum_role": "client-portal-admin",
+      "audit_event": "portail-personnalisation-modifiee",
+      "reversible": true
+    },
+    {
+      "id": "client.portail.deploiement",
+      "label": "Demander un déploiement et en suivre l'état",
+      "kind": "sensible",
+      "minimum_role": "client-portal-admin",
+      "requires_confirmation": true,
+      "audit_event": "portail-deploiement-demande",
+      "reversible": false
+    },
+    {
+      "id": "client.portail.ressources",
+      "label": "Demander une augmentation de capacité",
+      "kind": "sensible",
+      "minimum_role": "client-portal-admin",
+      "requires_reason": true,
+      "audit_event": "portail-ressources-demandees",
+      "reversible": true
+    },
+    {
+      "id": "client.portail.support",
+      "label": "Ouvrir et suivre un ticket de support pour son organisation",
+      "kind": "ordinaire",
+      "minimum_role": "client-support-contact",
+      "reversible": true
+    },
+    {
+      "id": "client.portail.assistance-autoriser",
+      "label": "Autoriser un accès d'assistance de l'éditeur, pour une durée bornée",
+      "kind": "sensible",
+      "minimum_role": "client-owner",
+      "requires_confirmation": true,
+      "requires_reason": true,
+      "audit_event": "assistance-autorisee-par-le-client",
+      "reversible": true
+    }
+  ],
+  "module_entitlements": {
+    "principle": {
+      "module_never_grants_privilege": true,
+      "statement": "Le droit effectif est l'intersection du tenant actif, de l'abonnement actif, du module actif, du rôle et de la permission. Prises dans cet ordre, ces conditions se contraignent ; prises dans l'autre, un achat deviendrait une élévation de privilège et un module actif ouvrirait des écrans à des personnes qui n'y ont pas de rôle."
+    },
+    "modules": [
+      {
+        "code": "socle",
+        "label": "Socle : membres, activités, présences, espace membre",
+        "applications": [
+          "adsum-back-office",
+          "adsum-web-membre",
+          "adsum-mobile"
+        ],
+        "capabilities": [
+          "client.membres.consulter",
+          "client.membres.gerer",
+          "client.evenements.consulter",
+          "client.participation.consulter"
+        ]
+      },
+      {
+        "code": "pilotage",
+        "label": "Pilotage par périmètre délégué",
+        "applications": [
+          "adsum-pilotage"
+        ],
+        "capabilities": [
+          "client.commissions.consulter",
+          "client.tribus.consulter"
+        ],
+        "unavailable_without": "Sans ce module, les responsables de périmètre n'ont pas d'application de pilotage : leurs droits restent sans surface."
+      },
+      {
+        "code": "direction",
+        "label": "Tableaux de bord de direction",
+        "applications": [
+          "adsum-direction"
+        ],
+        "capabilities": [
+          "client.statistiques.consulter"
+        ]
+      },
+      {
+        "code": "collaboration",
+        "label": "Espaces de travail collaboratif",
+        "applications": [
+          "adsum-collaboration"
+        ],
+        "capabilities": [
+          "client.collaboration.gerer",
+          "client.collaboration.superviser"
+        ]
+      },
+      {
+        "code": "controle",
+        "label": "Contrôle terrain, scan et pointage",
+        "applications": [
+          "adsum-controleur"
+        ],
+        "capabilities": [
+          "client.controle.controler",
+          "client.comptage.controler"
+        ]
+      }
+    ],
+    "suspension_behaviour": {
+      "grace_days": 15,
+      "then": "lecture-seule",
+      "data_retained": true,
+      "reactivation": "Le règlement de l'échéance rétablit l'écriture sans intervention manuelle ; aucune donnée n'a été retirée pendant la suspension.",
+      "always_available": [
+        "Consulter et régler ses factures depuis le portail",
+        "Exporter les données de son organisation, au titre du droit à la portabilité",
+        "Ouvrir un ticket de support",
+        "Se connecter pour constater l'état de son compte"
+      ]
+    }
+  },
+  "api_policy": {
+    "audiences": [
+      "adsum-client"
+    ],
+    "scopes": [],
+    "backend_controls": [
+      "L'audience du jeton est vérifiée avant toute chose : un jeton éditeur est refusé sur une route cliente, et réciproquement.",
+      "La permission est résolue côté serveur à chaque requête, jamais lue depuis le client ni depuis un cache du navigateur.",
+      "Le périmètre est appliqué par le serveur : une ressource hors périmètre est traitée comme inexistante.",
+      "L'organisation est résolue par la connexion, jamais par un paramètre de requête ni un en-tête modifiable.",
+      "L'état de l'abonnement est consulté avant toute écriture, de sorte qu'une suspension bloque partout et non seulement dans les écrans qui y ont pensé."
+    ],
+    "denial": {
+      "unauthenticated": 401,
+      "unauthorised": 403,
+      "unknown_resource": 404
+    },
+    "anti_enumeration": [
+      "Une ressource appartenant à une autre organisation répond 404 : un 403 confirmerait son existence.",
+      "Les identifiants exposés sont des uuid, jamais des entiers consécutifs qui se parcourent.",
+      "Les messages d'erreur d'authentification ne distinguent pas un compte inconnu d'un mot de passe faux, et une vérification factice est exécutée dans les deux cas pour égaliser le temps de réponse."
+    ],
+    "anti_escalation": [
+      "Une appartenance de groupe à portée n'accorde jamais les permissions globales de son rôle : sans ce filtre, un droit donné dans un espace de collaboration s'appliquerait à toute la base.",
+      "Une appartenance étiquetée par une application n'exerce que ce que le référentiel autorise pour cette application, et une application absente du référentiel n'accorde rien.",
+      "Aucun rôle client ne peut s'attribuer une capacité éditeur : le préfixe de capacité l'interdit, et le test de conformité le vérifie."
+    ]
+  },
+  "audit_events": [
+    {
+      "event": "action-sensible-client",
+      "actor": "client-user",
+      "target": "La ressource de l'organisation touchée par l'action",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "portail-abonnement-modifie",
+      "actor": "client-user",
+      "target": "L'abonnement de l'organisation",
+      "outcome": [
+        "succes",
+        "refus",
+        "erreur"
+      ],
+      "requires_reason": false,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "portail-administrateur-modifie",
+      "actor": "client-user",
+      "target": "Un administrateur du portail de l'organisation",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "portail-personnalisation-modifiee",
+      "actor": "client-user",
+      "target": "La personnalisation de l'organisation",
+      "outcome": [
+        "succes"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "portail-deploiement-demande",
+      "actor": "client-user",
+      "target": "La demande de déploiement de l'organisation",
+      "outcome": [
+        "succes",
+        "refus",
+        "erreur"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "portail-ressources-demandees",
+      "actor": "client-user",
+      "target": "La demande de capacité de l'organisation",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "assistance-autorisee-par-le-client",
+      "actor": "client-user",
+      "target": "L'autorisation d'assistance accordée à l'éditeur",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "connexion-client",
+      "actor": "client-user",
+      "target": "La session ouverte",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 365
+    }
+  ],
+  "prohibited_capabilities": [
+    {
+      "id": "acceder-a-la-console-editeur",
+      "statement": "Aucun rôle client n'ouvre ADSUM Console ni aucune route de la console de l'éditeur.",
+      "enforced_by": [
+        "token-audience",
+        "server-authorization",
+        "conformance-test"
+      ],
+      "rationale": "C'est la brèche constatée le 19 août 2026 : les vingt routes de console de l'API étaient gardées par la permission support.traiter, accordée par défaut aux rôles admin et super_admin d'une organisation cliente. Le trésorier d'une paroisse pouvait lister tous les clients d'ADSUM, en créer un et en suspendre un autre."
+    },
+    {
+      "id": "acceder-au-commerce-interne",
+      "statement": "Aucun rôle client n'atteint les routes internes du service commerce réservées aux opérateurs de l'éditeur.",
+      "enforced_by": [
+        "token-audience",
+        "server-authorization"
+      ],
+      "rationale": "Le portail client appelle le service commerce, mais seulement sur les routes de son propre abonnement. Les routes de gouvernance, de catalogue global et de parc exigent une inscription dans operateur_editeur, que le client n'a pas."
+    },
+    {
+      "id": "acceder-a-une-autre-organisation",
+      "statement": "Aucun rôle client n'atteint la moindre donnée d'une autre organisation.",
+      "enforced_by": [
+        "database-schema-separation",
+        "server-authorization",
+        "database-rls"
+      ],
+      "rationale": "L'isolation repose sur une base par organisation, décision prise et consignée : ajouter une colonne organisation_id aux tables existantes a été explicitement refusé. L'organisation est résolue par la connexion, que l'appelant ne choisit pas."
+    },
+    {
+      "id": "lire-les-secrets",
+      "statement": "Aucun rôle client n'accède aux secrets, jetons, clés ou chaînes de connexion de la plateforme.",
+      "enforced_by": [
+        "route-absent",
+        "server-authorization"
+      ],
+      "rationale": "Aucune route ne les expose, et les journaux les masquent. Un secret lisible par un client serait un secret partagé entre tous les clients, puisque la plateforme est mutualisée sur ses services techniques."
+    },
+    {
+      "id": "lire-les-journaux-bruts",
+      "statement": "Aucun rôle client n'accède aux journaux techniques bruts de la plateforme.",
+      "enforced_by": [
+        "route-absent",
+        "server-authorization"
+      ],
+      "rationale": "Un journal brut porte les corrélations, les adresses techniques et parfois les identifiants d'autres organisations. Le client voit son propre journal d'audit métier, qui est une autre chose."
+    },
+    {
+      "id": "utiliser-les-outils-de-support-interne",
+      "statement": "Aucun rôle client n'atteint la console de support, ses fils, ses agents ni ses affectations.",
+      "enforced_by": [
+        "token-audience",
+        "server-authorization",
+        "conformance-test"
+      ],
+      "rationale": "Le client ouvre un ticket depuis son portail et lit ses propres échanges. La console de support voit les fils de toutes les organisations."
+    },
+    {
+      "id": "toucher-a-l-infrastructure",
+      "statement": "Aucun rôle client ne choisit un fournisseur, une région, un espace de noms, une base ni une ressource brute.",
+      "enforced_by": [
+        "route-absent",
+        "human-procedure"
+      ],
+      "rationale": "Le client dépose une demande ; le domaine de provisionnement la valide et l'exécute. Relier un écran client à une interface d'infrastructure donnerait à un impayé le pouvoir de créer des ressources facturées."
+    },
+    {
+      "id": "modifier-la-configuration-globale",
+      "statement": "Aucun rôle client ne modifie le catalogue de produits, les offres ni les paramètres globaux de la plateforme.",
+      "enforced_by": [
+        "server-authorization",
+        "database-schema-separation"
+      ],
+      "rationale": "Ces objets vivent dans le schéma de l'éditeur, auquel la connexion cliente n'a pas accès. Les modifier depuis un tenant changerait l'offre de tous les autres."
+    },
+    {
+      "id": "voir-les-deploiements-des-autres",
+      "statement": "Aucun rôle client ne consulte l'état, la version ni les ressources du déploiement d'une autre organisation.",
+      "enforced_by": [
+        "server-authorization",
+        "database-schema-separation"
+      ],
+      "rationale": "La liste des déploiements est la carte du parc de l'éditeur. La donner à un client, c'est lui donner la liste de ses pairs et leur niveau de service."
+    },
+    {
+      "id": "attribuer-un-role-editeur",
+      "statement": "Aucun rôle client ne crée, modifie ni attribue un rôle éditeur, ni ne s'inscrit comme opérateur.",
+      "enforced_by": [
+        "server-authorization",
+        "database-schema-separation",
+        "conformance-test"
+      ],
+      "rationale": "L'autorité éditeur vient d'une inscription dans operateur_editeur, table du schéma de l'éditeur. Un client qui pourrait s'y inscrire se donnerait le parc entier."
+    },
+    {
+      "id": "contourner-par-le-frontal",
+      "statement": "Masquer une entrée de menu ne vaut pas contrôle : toute capacité refusée l'est par le serveur.",
+      "enforced_by": [
+        "server-authorization",
+        "conformance-test"
+      ],
+      "rationale": "Les fronts filtrent leur menu à partir d'un cache de permissions du navigateur. Ce cache est une commodité d'affichage, modifiable par qui le veut, et il a déjà causé une page réputée disparue alors qu'elle répondait encore."
+    },
+    {
+      "id": "lire-la-mecanique-interne-de-calcul",
+      "statement": "Aucune application cliente n'expose la mécanique de calcul de la plateforme, ses diagnostics de cohérence ni ses avertissements internes.",
+      "enforced_by": [
+        "route-absent",
+        "conformance-test"
+      ],
+      "rationale": "Une page du back-office affichait « Incohérence détectée » à des administrateurs d'organisation. Un diagnostic interne présenté à un client jette le doute sur des chiffres qu'il ne peut ni vérifier ni corriger : ce contrôle appartient à l'éditeur."
+    }
+  ]
+}

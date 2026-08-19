@@ -21,8 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from . import audit, db
-from .permissions_rbac import require_permission
-from .schemas import UserMe
+from .frontiere import Operateur, require_capacite
 from .support import _SELECT_FIL, PRIORITES, STATUTS, STATUTS_OUVERTS, _fil_out, _messages
 
 router = APIRouter(prefix="/api/v1/support/console", tags=["support-console"])
@@ -30,7 +29,7 @@ router = APIRouter(prefix="/api/v1/support/console", tags=["support-console"])
 
 @router.get("/fils")
 def lister(
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.support.consulter"))],
     statut: str = Query(default="ouverts", description="ouverts, tous, ou un statut précis"),
     assigne: str = Query(default="", description="Identifiant d'un agent, ou 'moi', ou 'personne'"),
     recherche: str = Query(default="", max_length=120),
@@ -84,7 +83,7 @@ def lister(
 
 
 @router.get("/synthese")
-def synthese(user: Annotated[UserMe, Depends(require_permission("support.traiter"))]) -> dict[str, object]:
+def synthese(user: Annotated[Operateur, Depends(require_capacite("editor.support.consulter"))]) -> dict[str, object]:
     """What the queue looks like right now, and what is aging in it.
 
     The oldest unanswered thread is reported on purpose: an average response time hides
@@ -128,7 +127,7 @@ def _charger(fil_id: str, role: str | None) -> dict[str, object]:
 
 
 @router.get("/fils/{fil_id}")
-def lire(fil_id: str, user: Annotated[UserMe, Depends(require_permission("support.traiter"))]) -> dict[str, object]:
+def lire(fil_id: str, user: Annotated[Operateur, Depends(require_capacite("editor.support.consulter"))]) -> dict[str, object]:
     fil = _charger(fil_id, user.role)
     return {**_fil_out(fil), "echanges": _messages(fil_id, user.role)}
 
@@ -144,7 +143,7 @@ class MajFil(BaseModel):
 def mettre_a_jour(
     fil_id: str,
     payload: MajFil,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.support.repondre"))],
 ) -> dict[str, object]:
     """Change state, priority or owner.
 
@@ -198,7 +197,7 @@ class ReponseConsole(BaseModel):
 def repondre(
     fil_id: str,
     payload: ReponseConsole,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.support.repondre"))],
 ) -> dict[str, object]:
     """Answer the requester, by e-mail, and record whether it actually left.
 
@@ -244,7 +243,7 @@ def repondre(
 
 
 @router.get("/agents")
-def agents(user: Annotated[UserMe, Depends(require_permission("support.traiter"))]) -> list[dict[str, str]]:
+def agents(user: Annotated[Operateur, Depends(require_capacite("editor.support.consulter"))]) -> list[dict[str, str]]:
     """Who a thread can be assigned to: the accounts that hold the permission.
 
     Listing every account would offer assignments that cannot act on what they receive.

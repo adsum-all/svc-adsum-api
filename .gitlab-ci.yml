@@ -23,6 +23,11 @@ include:
       - '/templates/docker.yml'
       - '/templates/deploy-gcp.yml'
       - '/templates/deploy-web.yml'
+      # Compare la table de routage reelle aux deux politiques d'acces, et
+      # verifie que la copie versee dans policies/ n'a pas derive de
+      # l'exemplaire faisant foi. Sans ces deux taches, la frontiere
+      # client / editeur reposerait sur la relecture humaine.
+      - '/templates/policies.yml'
 
 # The shared template runs the secret scan quietly: it prints "leaks found: 1" and
 # nothing else, so nobody can tell a real credential from a format example without

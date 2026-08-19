@@ -27,8 +27,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from . import db
-from .permissions_rbac import require_permission
-from .schemas import UserMe
+from .frontiere import Operateur, require_capacite
 
 router = APIRouter(prefix="/api/v1/support/console/envois", tags=["support-console"])
 
@@ -67,7 +66,7 @@ def _masquer(adresse: str) -> str:
 
 @router.get("")
 def resume(
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.observabilite.consulter"))],
     jours: int = Query(default=7, ge=1, le=90),
 ) -> dict[str, object]:
     """Delivery health over a window, and what is going wrong in it."""
@@ -158,7 +157,7 @@ def resume(
 
 @router.get("/destinataires")
 def destinataires_en_echec(
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.observabilite.consulter"))],
     jours: int = Query(default=30, ge=1, le=365),
     limite: int = Query(default=25, ge=1, le=100),
 ) -> dict[str, object]:

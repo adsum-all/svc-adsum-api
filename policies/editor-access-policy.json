@@ -1,0 +1,1505 @@
+{
+  "metadata": {
+    "side": "editor",
+    "version": "1.0.0",
+    "updated_at": "2026-08-19",
+    "security_owner": "Armand Amoussou, responsable sécurité ADSUM",
+    "technical_owner": "Armand Amoussou, responsable technique ADSUM",
+    "environment": "production",
+    "status": "en-vigueur",
+    "sensitivity": "confidentiel",
+    "source_of_truth": "sr-media-ai/adsum/deployment/ci-templates, chemin policies/editor-access-policy.json, branche main. Toute autre copie est vérifiée contre celle-ci par la tâche policy:drift.",
+    "approval_procedure": "Tout ajout de rôle, de capacité privilégiée ou d'application interne passe par une demande de fusion relue par le responsable sécurité, distincte de la demande qui porte le code. Séparer les deux évite qu'un privilège nouveau passe dans le flot d'un changement fonctionnel.",
+    "revocation_procedures": [
+      {
+        "trigger": "Départ d'une personne de l'entreprise éditrice",
+        "action": "La ligne operateur_editeur est désactivée, ce qui coupe l'autorité à la requête suivante, et les sessions éditeur ouvertes sont fermées.",
+        "maximum_delay_minutes": 60
+      },
+      {
+        "trigger": "Soupçon de compromission d'un compte interne",
+        "action": "Désactivation immédiate de l'opérateur, fermeture de toutes ses sessions, et révocation de tout accès d'assistance en cours à son nom.",
+        "maximum_delay_minutes": 5
+      },
+      {
+        "trigger": "Fin d'un accès d'assistance exceptionnel",
+        "action": "L'accès expire seul à l'échéance inscrite, sans geste humain.",
+        "maximum_delay_minutes": 0
+      },
+      {
+        "trigger": "Changement de fonction interne",
+        "action": "Le niveau de l'opérateur est ajusté ; les capacités retirées cessent d'être exercées dès la requête suivante, sans attendre l'expiration du jeton.",
+        "maximum_delay_minutes": 1440
+      }
+    ],
+    "compatibility": {
+      "breaking_change_requires": [
+        "Ajouter une capacité à un rôle éditeur est une rupture de sécurité, même quand elle paraît anodine : elle élargit ce qu'un compte compromis atteint.",
+        "Retirer l'exigence de MFA sur un rôle est interdit et non simplement rupturant."
+      ],
+      "review_required_for": [
+        "Toute modification de break_glass, qui est le seul chemin vers les données des clients.",
+        "Toute modification de scope.authority_source.",
+        "Tout passage de requires_approval à faux sur une action privilégiée."
+      ]
+    }
+  },
+  "scope": {
+    "editor_only": true,
+    "client_access_forbidden": true,
+    "least_privilege": {
+      "default": "deny",
+      "statement": "Une capacité non accordée est refusée. Le refus par défaut compte davantage ici que côté client : un compte interne compromis n'expose pas une organisation mais le parc entier, et l'étendue du dégât est exactement l'étendue des droits inutiles."
+    },
+    "demonstrated_need": "Un rôle interne s'accorde sur une nécessité opérationnelle démontrée, pas sur l'ancienneté ni sur le titre. La question posée avant chaque attribution est : quelle tâche cette personne ne peut pas accomplir aujourd'hui, et cette capacité est-elle la plus étroite qui la débloque.",
+    "sensitive_actions_logged": true,
+    "token_audience": "adsum-editeur",
+    "authority_source": {
+      "table": "operateur_editeur",
+      "schema": "editeur",
+      "statement": "Être opérateur, c'est figurer dans cette table, et rien d'autre. Un rôle porté par le jeton ne peut pas tenir cette frontière parce que le même mot existe des deux côtés : « admin » désigne l'administrateur d'une paroisse aussi bien qu'un administrateur de la plateforme. La table vit dans le schéma de l'éditeur, hors d'atteinte de toute connexion cliente."
+    }
+  },
+  "roles": [
+    {
+      "id": "editor-owner",
+      "label": "Propriétaire de l'entreprise éditrice",
+      "purpose": "Le compte de dernier recours. Il peut nommer et révoquer les opérateurs, et approuver ce qui exige une seconde personne. Il ne dispose d'aucun accès aux données des clients : le dernier recours porte sur la plateforme, pas sur son contenu.",
+      "grants": [
+        "editor.operateurs.nommer",
+        "editor.operateurs.revoquer",
+        "editor.approbation.donner",
+        "editor.parc.consulter",
+        "editor.finance.consulter"
+      ],
+      "mfa": "obligatoire-renforce",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 240,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES : le code ne connaît aujourd'hui que deux niveaux, lecture et intervention."
+    },
+    {
+      "id": "editor-super-admin",
+      "label": "Administrateur général de la plateforme",
+      "purpose": "Administre la plateforme dans tous ses domaines techniques et commerciaux. Distinct du propriétaire par ce qu'il ne peut pas faire : nommer un opérateur et s'approuver lui-même.",
+      "grants": [
+        "editor.parc.consulter",
+        "editor.tenants.creer",
+        "editor.tenants.suspendre",
+        "editor.tenants.reactiver",
+        "editor.tenants.archiver",
+        "editor.modules.gerer",
+        "editor.catalogue.gerer",
+        "editor.abonnements.gerer",
+        "editor.deploiements.declencher",
+        "editor.observabilite.consulter",
+        "editor.incidents.gerer"
+      ],
+      "mfa": "obligatoire-renforce",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 240,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-platform-admin",
+      "label": "Administrateur de plateforme",
+      "purpose": "Cycle de vie des organisations clientes et de leurs modules. N'a ni le commerce ni la sécurité : provisionner un environnement et décider d'une offre sont deux métiers.",
+      "grants": [
+        "editor.parc.consulter",
+        "editor.tenants.creer",
+        "editor.tenants.preparer",
+        "editor.tenants.activer",
+        "editor.modules.gerer",
+        "editor.deploiements.declencher",
+        "editor.deploiements.consulter",
+        "editor.observabilite.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-security-admin",
+      "label": "Responsable sécurité de l'éditeur",
+      "purpose": "Gère les accès internes, les sessions, l'authentification forte et la revue des permissions. Approuve les accès d'assistance. Ne déploie rien et ne vend rien : celui qui contrôle les accès ne doit pas être celui qui les utilise.",
+      "grants": [
+        "editor.operateurs.consulter",
+        "editor.operateurs.revoquer",
+        "editor.sessions.fermer",
+        "editor.audit.consulter",
+        "editor.permissions.revoir",
+        "editor.approbation.donner",
+        "editor.assistance.approuver",
+        "editor.assistance.revoquer"
+      ],
+      "mfa": "obligatoire-renforce",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 240,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-sre",
+      "label": "Ingénieur de fiabilité",
+      "purpose": "Tient la plateforme debout : santé, incidents, files, déploiements, retours arrière. N'a aucun droit commercial : arrêter une hémorragie technique ne demande pas de modifier un contrat.",
+      "grants": [
+        "editor.observabilite.consulter",
+        "editor.incidents.gerer",
+        "editor.incidents.declarer",
+        "editor.deploiements.consulter",
+        "editor.deploiements.declencher",
+        "editor.deploiements.revenir",
+        "editor.taches.relancer",
+        "editor.parc.consulter",
+        "editor.secrets.renouveler"
+      ],
+      "mfa": "obligatoire-renforce",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-devops",
+      "label": "Ingénieur de livraison",
+      "purpose": "Construit et livre. Déclenche les déploiements et suit les migrations, sans pouvoir suspendre un client ni toucher aux accès internes.",
+      "grants": [
+        "editor.deploiements.consulter",
+        "editor.deploiements.declencher",
+        "editor.deploiements.revenir",
+        "editor.observabilite.consulter",
+        "editor.taches.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-support-agent",
+      "label": "Agent de support",
+      "purpose": "Traite les demandes des organisations clientes. Voit le fil, son objet et son auteur déclaré, jamais le dossier de la personne. Un agent qui verrait les membres d'un client aurait un droit de regard permanent que rien ne justifie.",
+      "grants": [
+        "editor.support.consulter",
+        "editor.support.repondre",
+        "editor.support.affecter",
+        "editor.parc.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": true,
+      "code_reference": "adsum-commerce:migrations/versions/0006_operateurs_et_reservation.sql:24, niveau « lecture »"
+    },
+    {
+      "id": "editor-support-lead",
+      "label": "Responsable du support",
+      "purpose": "Encadre le support : escalade, rattachement à un incident, demande d'accès d'assistance. Demande, mais n'approuve pas : l'approbation revient à la sécurité.",
+      "grants": [
+        "editor.support.consulter",
+        "editor.support.repondre",
+        "editor.support.affecter",
+        "editor.support.escalader",
+        "editor.assistance.demander",
+        "editor.incidents.declarer",
+        "editor.parc.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-commerce-admin",
+      "label": "Administrateur commercial",
+      "purpose": "Catalogue, offres, devis, abonnements, licences, suspensions pour impayé. Ne touche ni à l'infrastructure ni aux accès internes : décider d'une offre n'est pas déployer une base.",
+      "grants": [
+        "editor.catalogue.gerer",
+        "editor.offres.gerer",
+        "editor.devis.traiter",
+        "editor.abonnements.gerer",
+        "editor.licences.gerer",
+        "editor.tenants.suspendre",
+        "editor.tenants.reactiver",
+        "editor.finance.consulter",
+        "editor.parc.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": true,
+      "code_reference": "adsum-commerce:migrations/versions/0006_operateurs_et_reservation.sql:24, niveau « intervention »"
+    },
+    {
+      "id": "editor-finance-readonly",
+      "label": "Finance, lecture seule",
+      "purpose": "Lit les factures, les encaissements et les impayés pour tenir la comptabilité. Ne modifie aucun abonnement : rapprocher des écritures ne demande pas de pouvoir changer ce qu'on rapproche.",
+      "grants": [
+        "editor.finance.consulter",
+        "editor.parc.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-product-manager",
+      "label": "Responsable produit",
+      "purpose": "Définit le catalogue de produits et de modules, et lit l'usage agrégé du parc. Aucune action sur un client en particulier.",
+      "grants": [
+        "editor.catalogue.gerer",
+        "editor.parc.consulter",
+        "editor.observabilite.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-developer",
+      "label": "Développeur",
+      "purpose": "Lit la santé, les erreurs normalisées et les versions déployées pour corriger. N'a aucune action sur un client, aucune donnée personnelle, et pas d'accès à la production au-delà de la lecture technique.",
+      "grants": [
+        "editor.observabilite.consulter",
+        "editor.deploiements.consulter",
+        "editor.taches.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-auditor-readonly",
+      "label": "Auditeur interne, lecture seule",
+      "purpose": "Lit tout ce qui est trace : journal d'audit, accès, actions privilégiées, accès d'assistance. N'écrit rien, nulle part. Un auditeur qui peut modifier n'atteste plus rien.",
+      "grants": [
+        "editor.audit.consulter",
+        "editor.operateurs.consulter",
+        "editor.parc.consulter",
+        "editor.observabilite.consulter"
+      ],
+      "mfa": "obligatoire-renforce",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 240,
+      "exists_in_code": false,
+      "implementation_ticket": "ADSUM-EDITEUR-ROLES"
+    },
+    {
+      "id": "editor-incident-manager",
+      "label": "Responsable d'incident",
+      "purpose": "Prend la main pendant un incident : déclaration, reconnaissance, fermeture, communication. Ne déploie pas lui-même : coordonner et exécuter au même moment est la façon dont on oublie de prévenir.",
+      "grants": [
+        "editor.incidents.declarer",
+        "editor.incidents.gerer",
+        "editor.observabilite.consulter",
+        "editor.support.escalader",
+        "editor.parc.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": true,
+      "code_reference": "adsum-commerce:src/commerce/incidents.py"
+    },
+    {
+      "id": "editor-operations-readonly",
+      "label": "Exploitation, lecture seule",
+      "purpose": "Regarde le parc, la santé et les passages de tâches sans rien pouvoir déclencher. C'est le niveau par défaut d'un nouvel arrivant, et celui qu'on garde quand on n'a pas de raison d'en avoir plus.",
+      "grants": [
+        "editor.parc.consulter",
+        "editor.observabilite.consulter",
+        "editor.deploiements.consulter",
+        "editor.taches.consulter"
+      ],
+      "mfa": "obligatoire",
+      "may_read_client_personal_data": false,
+      "session_maximum_minutes": 480,
+      "exists_in_code": true,
+      "code_reference": "adsum-commerce:migrations/versions/0006_operateurs_et_reservation.sql:24, niveau « lecture »"
+    }
+  ],
+  "internal_applications": [
+    {
+      "id": "adsum-console",
+      "label": "ADSUM Console, centre de contrôle interne de l'éditeur",
+      "repository": "sr-media-ai/adsum/applications/app-version-web/adsum-console",
+      "audience": "adsum-editeur",
+      "roles_allowed": [
+        "editor-owner",
+        "editor-super-admin",
+        "editor-platform-admin",
+        "editor-security-admin",
+        "editor-sre",
+        "editor-devops",
+        "editor-support-agent",
+        "editor-support-lead",
+        "editor-commerce-admin",
+        "editor-incident-manager",
+        "editor-operations-readonly",
+        "editor-auditor-readonly",
+        "editor-product-manager",
+        "editor-developer",
+        "editor-finance-readonly"
+      ],
+      "domains": [
+        "sante-incidents",
+        "taches-livraison",
+        "audit-securite-permissions",
+        "clients-contrats-abonnements",
+        "support-tickets",
+        "deploiements-versions-environnements"
+      ],
+      "status": "partiel",
+      "missing": [
+        "Santé et incidents : pas de métriques historisées, pas de traces, pas de règles d'alerte, pas de corrélation entre une erreur et un déploiement.",
+        "Tâches et livraison : les versions et les passages de tâches sont visibles, mais il n'y a ni tâches assignables, ni jalons, ni listes de contrôle de mise en production, ni suivi de migration.",
+        "Audit et permissions opérateur : la page de gouvernance liste les opérateurs et leur niveau, mais ne gère ni le MFA, ni les sessions ouvertes, ni la révocation immédiate, ni la revue périodique des droits, ni la détection d'accès anormal.",
+        "Clients et contrats : les organisations et leurs licences sont visibles, mais les contrats, les essais, les renouvellements et les résiliations n'ont pas d'écran.",
+        "Support : les fils et les envois existent, mais il n'y a ni file priorisée, ni engagement de service, ni base de connaissances, ni mesure anti-abus.",
+        "Déploiements : le parc, le provisionnement et les ressources existent, mais il n'y a ni inventaire d'environnements, ni état des sauvegardes, ni retour arrière déclenchable depuis l'écran."
+      ],
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/agents",
+          "capability": "editor.support.consulter"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/envois",
+          "capability": "editor.observabilite.consulter"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/envois/destinataires",
+          "capability": "editor.observabilite.consulter",
+          "note": "Etat de delivrabilite par destinataire, sur empreinte et non sur adresse."
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/fils",
+          "capability": "editor.support.consulter",
+          "personal_data": "contact-declare",
+          "note": "Le fil porte le nom, l'adresse et le message de la personne qui ecrit. Rien de son dossier n'est joignable depuis ici."
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/fils/{fil_id}",
+          "capability": "editor.support.consulter",
+          "personal_data": "contact-declare"
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/v1/support/console/fils/{fil_id}",
+          "capability": "editor.support.repondre"
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/support/console/fils/{fil_id}/reponses",
+          "capability": "editor.support.repondre",
+          "note": "La reponse part vers le contact autorise de l'organisation."
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/organisations",
+          "capability": "editor.parc.consulter",
+          "note": "Liste toutes les organisations clientes. C'est la route qui, gardée par une permission de tenant, ouvrait le parc entier à un administrateur de paroisse."
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/support/console/organisations",
+          "capability": "editor.tenants.creer"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/organisations/catalogue/modules",
+          "capability": "editor.catalogue.gerer"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/organisations/parc/schema",
+          "capability": "editor.parc.consulter"
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/v1/support/console/organisations/{organisation_id}/etat",
+          "capability": "editor.tenants.suspendre"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/organisations/{organisation_id}/hotes",
+          "capability": "editor.deploiements.consulter"
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/support/console/organisations/{organisation_id}/hotes",
+          "capability": "editor.deploiements.declencher"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/organisations/{organisation_id}/licences",
+          "capability": "editor.licences.gerer"
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/support/console/organisations/{organisation_id}/licences",
+          "capability": "editor.licences.gerer"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/v1/support/console/organisations/{organisation_id}/modules",
+          "capability": "editor.modules.gerer"
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/support/console/organisations/{organisation_id}/provisionnement/diagnostic",
+          "capability": "editor.deploiements.consulter"
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/support/console/organisations/{organisation_id}/provisionnement/referentiels",
+          "capability": "editor.deploiements.declencher"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/support/console/synthese",
+          "capability": "editor.support.consulter",
+          "note": "Sert aussi de sonde d'autorisation a la console : c'est la premiere route appelee apres la connexion, et son refus signifie que le compte n'est pas operateur."
+        }
+      ]
+    },
+    {
+      "id": "adsum-commerce",
+      "label": "ADSUM Commerce, catalogue, abonnements, droits et encaissement",
+      "repository": "sr-media-ai/adsum/services/adsum-commerce",
+      "audience": "adsum-editeur",
+      "roles_allowed": [
+        "editor-owner",
+        "editor-super-admin",
+        "editor-commerce-admin",
+        "editor-finance-readonly",
+        "editor-product-manager",
+        "editor-operations-readonly",
+        "editor-auditor-readonly",
+        "editor-sre",
+        "editor-incident-manager"
+      ],
+      "domains": [
+        "clients-contrats-abonnements",
+        "catalogue-produits",
+        "finance",
+        "deploiements-versions-environnements",
+        "sante-incidents",
+        "taches-livraison"
+      ],
+      "status": "partiel",
+      "missing": [
+        "Le schéma editeur n'est pas encore créé en production : le service répond sur sa route de santé et rendra 500 sur toute route métier tant que la migration n'est pas appliquée.",
+        "Aucun compte fournisseur de paiement en bac à sable n'est configuré : le service signale lui-même ses anomalies de configuration.",
+        "Les contrats et les essais n'ont pas de modèle propre : ils sont portés par l'abonnement."
+      ],
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/v1/commerce/exploitation",
+          "capability": "editor.observabilite.consulter"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/commerce/incidents",
+          "capability": "editor.incidents.gerer"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/commerce/versions",
+          "capability": "editor.deploiements.consulter"
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/commerce/passages",
+          "capability": "editor.taches.consulter"
+        },
+        {
+          "method": "GET",
+          "path": "/metrics",
+          "capability": "editor.observabilite.consulter"
+        }
+      ]
+    }
+  ],
+  "tenant_operations": [
+    {
+      "id": "editor.tenants.creer",
+      "label": "Créer une organisation cliente dans le registre",
+      "minimum_role": "editor-platform-admin",
+      "reversible": true,
+      "audit_event": "tenant-cree"
+    },
+    {
+      "id": "editor.tenants.preparer",
+      "label": "Préparer l'environnement d'une organisation, avant activation",
+      "minimum_role": "editor-platform-admin",
+      "reversible": true,
+      "audit_event": "tenant-prepare"
+    },
+    {
+      "id": "editor.tenants.activer",
+      "label": "Activer une organisation et ouvrir ses applications",
+      "minimum_role": "editor-platform-admin",
+      "reversible": true,
+      "audit_event": "tenant-active"
+    },
+    {
+      "id": "editor.tenants.suspendre",
+      "label": "Suspendre une organisation, sans destruction de données",
+      "minimum_role": "editor-commerce-admin",
+      "reversible": true,
+      "requires_workflow": true,
+      "audit_event": "tenant-suspendu"
+    },
+    {
+      "id": "editor.tenants.reactiver",
+      "label": "Réactiver une organisation suspendue",
+      "minimum_role": "editor-commerce-admin",
+      "reversible": true,
+      "audit_event": "tenant-reactive"
+    },
+    {
+      "id": "editor.tenants.archiver",
+      "label": "Archiver une organisation qui a cessé son activité",
+      "minimum_role": "editor-super-admin",
+      "reversible": true,
+      "requires_workflow": true,
+      "audit_event": "tenant-archive"
+    },
+    {
+      "id": "editor.tenants.supprimer",
+      "label": "Supprimer définitivement une organisation et ses données",
+      "minimum_role": "editor-owner",
+      "reversible": false,
+      "requires_workflow": true,
+      "touches_client_data": true,
+      "audit_event": "tenant-supprime"
+    },
+    {
+      "id": "editor.modules.gerer",
+      "label": "Activer ou désactiver un module pour une organisation",
+      "minimum_role": "editor-platform-admin",
+      "reversible": true,
+      "audit_event": "modules-modifies"
+    },
+    {
+      "id": "editor.parc.consulter",
+      "label": "Consulter le parc des organisations et leur état technique",
+      "minimum_role": "editor-operations-readonly",
+      "reversible": true,
+      "audit_event": "parc-consulte"
+    }
+  ],
+  "commerce_operations": [
+    {
+      "id": "editor.catalogue.gerer",
+      "label": "Tenir le catalogue de produits et de modules",
+      "minimum_role": "editor-product-manager",
+      "audit_event": "catalogue-modifie"
+    },
+    {
+      "id": "editor.offres.gerer",
+      "label": "Créer et modifier les offres et les plans tarifaires",
+      "minimum_role": "editor-commerce-admin",
+      "financial_impact": true,
+      "audit_event": "offre-modifiee"
+    },
+    {
+      "id": "editor.devis.traiter",
+      "label": "Traiter une demande de devis",
+      "minimum_role": "editor-commerce-admin",
+      "audit_event": "devis-traite"
+    },
+    {
+      "id": "editor.abonnements.gerer",
+      "label": "Créer, modifier, renouveler ou résilier un abonnement",
+      "minimum_role": "editor-commerce-admin",
+      "financial_impact": true,
+      "audit_event": "abonnement-modifie"
+    },
+    {
+      "id": "editor.licences.gerer",
+      "label": "Délivrer et révoquer les licences d'une organisation",
+      "minimum_role": "editor-commerce-admin",
+      "financial_impact": true,
+      "audit_event": "licence-modifiee"
+    },
+    {
+      "id": "editor.finance.consulter",
+      "label": "Consulter les factures, encaissements et impayés",
+      "minimum_role": "editor-finance-readonly",
+      "audit_event": "finance-consultee"
+    },
+    {
+      "id": "editor.quotas.ajuster",
+      "label": "Ajuster les quotas et la capacité accordée à une organisation",
+      "minimum_role": "editor-commerce-admin",
+      "financial_impact": true,
+      "audit_event": "quota-ajuste"
+    },
+    {
+      "id": "editor.approbation.donner",
+      "label": "Approuver une action exigeant une seconde personne",
+      "minimum_role": "editor-security-admin",
+      "audit_event": "approbation-donnee"
+    }
+  ],
+  "support_operations": {
+    "default_visibility": "metadonnees-seules",
+    "personal_data_rule": "Un fil de support porte le nom déclaré par la personne qui écrit, son adresse de contact et son message. Rien d'autre du dossier de cette personne n'est joignable depuis le support : ni sa fiche, ni ses présences, ni ses documents, ni sa photo. Ouvrir cette porte ferait du support un droit de regard permanent sur les membres de toutes les organisations.",
+    "operations": [
+      {
+        "id": "editor.support.consulter",
+        "label": "Lire les fils de support et leur historique",
+        "minimum_role": "editor-support-agent",
+        "reads_personal_data": false,
+        "audit_event": "support-consulte"
+      },
+      {
+        "id": "editor.support.repondre",
+        "label": "Répondre au contact autorisé d'une organisation",
+        "minimum_role": "editor-support-agent",
+        "reads_personal_data": false,
+        "audit_event": "support-repondu"
+      },
+      {
+        "id": "editor.support.affecter",
+        "label": "Affecter un fil à un agent",
+        "minimum_role": "editor-support-agent",
+        "audit_event": "support-affecte"
+      },
+      {
+        "id": "editor.support.escalader",
+        "label": "Escalader un fil et le rattacher à un incident",
+        "minimum_role": "editor-support-lead",
+        "audit_event": "support-escalade"
+      },
+      {
+        "id": "editor.assistance.demander",
+        "label": "Demander un accès d'assistance aux données d'une organisation",
+        "minimum_role": "editor-support-lead",
+        "audit_event": "assistance-demandee"
+      }
+    ]
+  },
+  "observability_operations": {
+    "operations": [
+      {
+        "id": "editor.observabilite.consulter",
+        "label": "Consulter la santé des services, les erreurs et les métriques",
+        "minimum_role": "editor-operations-readonly",
+        "aggregated_only": true
+      },
+      {
+        "id": "editor.incidents.declarer",
+        "label": "Déclarer un incident",
+        "minimum_role": "editor-support-lead",
+        "aggregated_only": true
+      },
+      {
+        "id": "editor.incidents.gerer",
+        "label": "Reconnaître, suivre et fermer un incident",
+        "minimum_role": "editor-incident-manager",
+        "aggregated_only": true
+      },
+      {
+        "id": "editor.taches.consulter",
+        "label": "Consulter les passages des tâches automatiques",
+        "minimum_role": "editor-operations-readonly",
+        "aggregated_only": true
+      },
+      {
+        "id": "editor.taches.relancer",
+        "label": "Relancer une tâche automatique en échec",
+        "minimum_role": "editor-sre",
+        "aggregated_only": true
+      },
+      {
+        "id": "editor.deploiements.consulter",
+        "label": "Consulter les versions et les déploiements du parc",
+        "minimum_role": "editor-operations-readonly",
+        "aggregated_only": true
+      },
+      {
+        "id": "editor.audit.consulter",
+        "label": "Consulter le journal d'audit interne",
+        "minimum_role": "editor-auditor-readonly",
+        "aggregated_only": false
+      },
+      {
+        "id": "editor.operateurs.consulter",
+        "label": "Consulter la liste des opérateurs et leur niveau",
+        "minimum_role": "editor-auditor-readonly",
+        "aggregated_only": false
+      },
+      {
+        "id": "editor.permissions.revoir",
+        "label": "Mener la revue périodique des droits internes",
+        "minimum_role": "editor-security-admin",
+        "aggregated_only": false
+      }
+    ],
+    "logging_rules": [
+      "Aucun secret, jeton, mot de passe ni clé privée dans un journal, sous quelque forme que ce soit.",
+      "Aucune adresse de courriel ni numéro de téléphone en clair : le registre d'envois conserve une empreinte poivrée, jamais l'adresse.",
+      "Aucun contenu de message, de document ou de pièce d'identité.",
+      "Les comptes rendus de tâches sont réduits à leurs chiffres avant d'entrer au journal d'exploitation : combien, jamais lesquels.",
+      "Une erreur remontée porte son type et sa corrélation, jamais la charge utile qui l'a provoquée."
+    ]
+  },
+  "privileged_actions": [
+    {
+      "id": "editor.tenants.suspendre",
+      "label": "Suspendre une organisation cliente",
+      "minimum_role": "editor-commerce-admin",
+      "requires_approval": false,
+      "requires_strong_confirmation": true,
+      "requires_justification": true,
+      "data_touched": "L'état de l'organisation dans le registre de l'éditeur. Aucune donnée métier n'est touchée.",
+      "functional_effect": "Après la période de grâce, les applications de l'organisation passent en lecture seule. Le règlement, l'export et le support restent joignables.",
+      "rollback": {
+        "possible": true,
+        "how": "Réactivation immédiate par editor.tenants.reactiver, sans perte."
+      },
+      "audit_event": "tenant-suspendu",
+      "notifies": [
+        "client-contact",
+        "editor-security"
+      ]
+    },
+    {
+      "id": "editor.tenants.supprimer",
+      "label": "Supprimer définitivement une organisation et ses données",
+      "minimum_role": "editor-owner",
+      "requires_approval": true,
+      "approver_role": "editor-security-admin",
+      "requires_strong_confirmation": true,
+      "requires_justification": true,
+      "data_touched": "Toutes les données de l'organisation, y compris personnelles.",
+      "functional_effect": "L'organisation cesse d'exister. Rien ne subsiste au-delà de ce que la politique de rétention légale impose de garder.",
+      "rollback": {
+        "possible": false,
+        "how": "Aucun retour arrière. La suppression n'est engagée qu'après une période de rétention pendant laquelle l'organisation est archivée et restaurable."
+      },
+      "audit_event": "tenant-supprime",
+      "notifies": [
+        "client-contact",
+        "editor-security"
+      ]
+    },
+    {
+      "id": "editor.deploiements.declencher",
+      "label": "Déclencher un déploiement sur l'environnement d'une organisation",
+      "minimum_role": "editor-devops",
+      "requires_approval": false,
+      "requires_strong_confirmation": true,
+      "requires_justification": false,
+      "data_touched": "L'infrastructure et le schéma de l'organisation visée.",
+      "functional_effect": "Les applications de l'organisation sont mises à jour, avec une interruption possible.",
+      "rollback": {
+        "possible": true,
+        "how": "Retour à la version précédente par editor.deploiements.revenir, tant que la migration de schéma est réversible."
+      },
+      "audit_event": "deploiement-declenche",
+      "notifies": [
+        "editor-oncall"
+      ]
+    },
+    {
+      "id": "editor.deploiements.revenir",
+      "label": "Revenir à la version précédente",
+      "minimum_role": "editor-sre",
+      "requires_approval": false,
+      "requires_strong_confirmation": true,
+      "requires_justification": true,
+      "data_touched": "Le code déployé, et le schéma si la migration est réversible.",
+      "functional_effect": "L'organisation retrouve la version antérieure.",
+      "rollback": {
+        "possible": true,
+        "how": "Redéploiement de la version visée."
+      },
+      "audit_event": "deploiement-annule",
+      "notifies": [
+        "editor-oncall",
+        "editor-security"
+      ]
+    },
+    {
+      "id": "editor.secrets.renouveler",
+      "label": "Renouveler un secret de la plateforme",
+      "minimum_role": "editor-sre",
+      "requires_approval": true,
+      "approver_role": "editor-security-admin",
+      "requires_strong_confirmation": true,
+      "requires_justification": true,
+      "data_touched": "Le secret visé, jamais affiché en clair.",
+      "functional_effect": "L'ancien secret cesse d'être accepté après la période de recouvrement.",
+      "rollback": {
+        "possible": true,
+        "how": "La rotation conserve l'ancien secret comme accepté pendant une fenêtre, exactement pour permettre le retour."
+      },
+      "audit_event": "secret-renouvele",
+      "notifies": [
+        "editor-security"
+      ]
+    },
+    {
+      "id": "editor.operateurs.nommer",
+      "label": "Nommer un opérateur de l'éditeur",
+      "minimum_role": "editor-owner",
+      "requires_approval": true,
+      "approver_role": "editor-security-admin",
+      "requires_strong_confirmation": true,
+      "requires_justification": true,
+      "data_touched": "La table operateur_editeur, source unique de l'autorité interne.",
+      "functional_effect": "La personne obtient l'autorité éditeur au niveau accordé, dès sa prochaine connexion.",
+      "rollback": {
+        "possible": true,
+        "how": "Révocation par editor.operateurs.revoquer, effective à la requête suivante."
+      },
+      "audit_event": "operateur-nomme",
+      "notifies": [
+        "editor-security"
+      ]
+    },
+    {
+      "id": "editor.operateurs.revoquer",
+      "label": "Révoquer un opérateur",
+      "minimum_role": "editor-security-admin",
+      "requires_approval": false,
+      "requires_strong_confirmation": true,
+      "requires_justification": true,
+      "data_touched": "La table operateur_editeur et les sessions de la personne.",
+      "functional_effect": "L'autorité cesse à la requête suivante et les sessions ouvertes sont fermées.",
+      "rollback": {
+        "possible": true,
+        "how": "Nouvelle nomination, qui repasse par l'approbation."
+      },
+      "audit_event": "operateur-revoque",
+      "notifies": [
+        "editor-security"
+      ]
+    },
+    {
+      "id": "editor.sessions.fermer",
+      "label": "Fermer les sessions d'un compte",
+      "minimum_role": "editor-security-admin",
+      "requires_approval": false,
+      "requires_strong_confirmation": false,
+      "requires_justification": true,
+      "data_touched": "Les sessions du compte visé.",
+      "functional_effect": "La personne est déconnectée partout et doit se réauthentifier.",
+      "rollback": {
+        "possible": true,
+        "how": "Aucune remise en état nécessaire : la personne se reconnecte."
+      },
+      "audit_event": "sessions-fermees",
+      "notifies": [
+        "editor-security"
+      ]
+    },
+    {
+      "id": "editor.quotas.ajuster",
+      "label": "Ajuster les quotas d'une organisation",
+      "minimum_role": "editor-commerce-admin",
+      "requires_approval": false,
+      "requires_strong_confirmation": true,
+      "requires_justification": true,
+      "data_touched": "Les quotas de l'organisation dans le schéma de l'éditeur.",
+      "functional_effect": "La capacité accordée change, avec un effet sur la facturation.",
+      "rollback": {
+        "possible": true,
+        "how": "Retour à la valeur antérieure, conservée dans l'audit commercial."
+      },
+      "audit_event": "quota-ajuste",
+      "notifies": [
+        "client-contact"
+      ]
+    },
+    {
+      "id": "editor.assistance.approuver",
+      "label": "Approuver un accès d'assistance aux données d'une organisation",
+      "minimum_role": "editor-security-admin",
+      "requires_approval": false,
+      "requires_strong_confirmation": true,
+      "requires_justification": true,
+      "data_touched": "Aucune directement : l'approbation ouvre un accès borné, elle ne lit rien.",
+      "functional_effect": "L'agent demandeur obtient, pour une durée bornée, la lecture du périmètre autorisé par le client.",
+      "rollback": {
+        "possible": true,
+        "how": "Révocation immédiate par editor.assistance.revoquer, et expiration automatique à l'échéance."
+      },
+      "audit_event": "assistance-approuvee",
+      "notifies": [
+        "client-contact",
+        "editor-security"
+      ],
+      "maximum_duration_minutes": 240
+    },
+    {
+      "id": "editor.assistance.revoquer",
+      "label": "Révoquer un accès d'assistance en cours",
+      "minimum_role": "editor-security-admin",
+      "requires_approval": false,
+      "requires_strong_confirmation": false,
+      "requires_justification": true,
+      "data_touched": "L'autorisation d'assistance en cours.",
+      "functional_effect": "L'accès cesse immédiatement.",
+      "rollback": {
+        "possible": true,
+        "how": "Nouvelle demande, qui repasse par l'autorisation du client."
+      },
+      "audit_event": "assistance-revoquee",
+      "notifies": [
+        "client-contact",
+        "editor-security"
+      ]
+    },
+    {
+      "id": "editor.taches.relancer",
+      "label": "Relancer une tâche automatique en échec",
+      "minimum_role": "editor-sre",
+      "requires_approval": false,
+      "requires_strong_confirmation": false,
+      "requires_justification": false,
+      "data_touched": "La file de la tâche visée.",
+      "functional_effect": "La tâche repart. Les traitements sont idempotents, une relance ne double donc pas un envoi ni un encaissement.",
+      "rollback": {
+        "possible": false,
+        "how": "Sans objet : la relance ne défait rien, elle rejoue un traitement conçu pour être rejoué."
+      },
+      "audit_event": "tache-relancee",
+      "notifies": [
+        "aucun"
+      ]
+    }
+  ],
+  "break_glass": {
+    "id": "editor.assistance.acceder",
+    "statement": "Le seul chemin par lequel un employé de l'éditeur approche les données d'une organisation cliente. Il n'est ouvert par aucun rôle : il se demande, le client l'autorise depuis son portail, la sécurité l'approuve, il porte sur un périmètre nommé, il expire seul et il est notifié. Sans ce chemin, un incident réel deviendrait insoluble ; sans ces conditions, il deviendrait une porte permanente.",
+    "requires_client_authorisation": true,
+    "requires_approval": true,
+    "approver_role": "editor-security-admin",
+    "maximum_duration_minutes": 240,
+    "scope_limited_to": [
+      "Le périmètre nommé dans la demande, et lui seul : une organisation, un objet, une période.",
+      "La lecture. Aucune écriture n'est ouverte par l'assistance.",
+      "La durée inscrite, au terme de laquelle l'accès tombe sans geste humain."
+    ],
+    "audit_event": "assistance-exercee",
+    "notifies": [
+      "client-contact",
+      "editor-security"
+    ],
+    "revocation": "Le client révoque depuis son portail, la sécurité révoque depuis la console, et l'échéance révoque d'elle-même. Trois chemins, parce que celui qui doit couper n'est pas toujours disponible.",
+    "forbidden_even_then": [
+      "Les mots de passe et leurs empreintes",
+      "Les jetons de session et les clés privées",
+      "Les pièces d'identité déchiffrées",
+      "Les données d'une organisation autre que celle qui a autorisé",
+      "Toute écriture dans les données du client"
+    ]
+  },
+  "audit_events": [
+    {
+      "event": "tenant-cree",
+      "actor": "editor-operator",
+      "target": "L'organisation créée",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "tenant-prepare",
+      "actor": "editor-operator",
+      "target": "L'environnement préparé",
+      "outcome": [
+        "succes",
+        "refus",
+        "erreur"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "tenant-active",
+      "actor": "editor-operator",
+      "target": "L'organisation activée",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "tenant-suspendu",
+      "actor": "editor-operator",
+      "target": "L'organisation suspendue",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "tenant-reactive",
+      "actor": "editor-operator",
+      "target": "L'organisation réactivée",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "tenant-archive",
+      "actor": "editor-operator",
+      "target": "L'organisation archivée",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "tenant-supprime",
+      "actor": "editor-operator",
+      "target": "L'organisation supprimée",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "modules-modifies",
+      "actor": "editor-operator",
+      "target": "Les modules d'une organisation",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "parc-consulte",
+      "actor": "editor-operator",
+      "target": "Le parc des organisations",
+      "outcome": [
+        "succes"
+      ],
+      "correlation": true,
+      "retention_days": 365
+    },
+    {
+      "event": "catalogue-modifie",
+      "actor": "editor-operator",
+      "target": "Le catalogue de produits",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "offre-modifiee",
+      "actor": "editor-operator",
+      "target": "Une offre tarifaire",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "devis-traite",
+      "actor": "editor-operator",
+      "target": "Une demande de devis",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "abonnement-modifie",
+      "actor": "editor-operator",
+      "target": "Un abonnement",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "licence-modifiee",
+      "actor": "editor-operator",
+      "target": "Une licence",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "finance-consultee",
+      "actor": "editor-operator",
+      "target": "Les factures et encaissements",
+      "outcome": [
+        "succes"
+      ],
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "quota-ajuste",
+      "actor": "editor-operator",
+      "target": "Les quotas d'une organisation",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "approbation-donnee",
+      "actor": "editor-operator",
+      "target": "L'action approuvée",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "support-consulte",
+      "actor": "editor-operator",
+      "target": "Un fil de support",
+      "outcome": [
+        "succes"
+      ],
+      "correlation": true,
+      "retention_days": 365
+    },
+    {
+      "event": "support-repondu",
+      "actor": "editor-operator",
+      "target": "Un fil de support",
+      "outcome": [
+        "succes",
+        "erreur"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "support-affecte",
+      "actor": "editor-operator",
+      "target": "Un fil de support",
+      "outcome": [
+        "succes"
+      ],
+      "correlation": true,
+      "retention_days": 365
+    },
+    {
+      "event": "support-escalade",
+      "actor": "editor-operator",
+      "target": "Un fil de support et son incident",
+      "outcome": [
+        "succes"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "assistance-demandee",
+      "actor": "editor-operator",
+      "target": "La demande d'accès d'assistance",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "assistance-approuvee",
+      "actor": "editor-operator",
+      "target": "L'accès d'assistance approuvé",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "assistance-exercee",
+      "actor": "editor-operator",
+      "target": "La donnée consultée sous assistance",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "assistance-revoquee",
+      "actor": "editor-operator",
+      "target": "L'accès d'assistance révoqué",
+      "outcome": [
+        "succes"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "deploiement-declenche",
+      "actor": "editor-operator",
+      "target": "L'environnement déployé",
+      "outcome": [
+        "succes",
+        "refus",
+        "erreur"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "deploiement-annule",
+      "actor": "editor-operator",
+      "target": "L'environnement ramené en arrière",
+      "outcome": [
+        "succes",
+        "erreur"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "secret-renouvele",
+      "actor": "editor-operator",
+      "target": "Le secret renouvelé, jamais sa valeur",
+      "outcome": [
+        "succes",
+        "refus",
+        "erreur"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "operateur-nomme",
+      "actor": "editor-operator",
+      "target": "L'opérateur nommé",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "operateur-revoque",
+      "actor": "editor-operator",
+      "target": "L'opérateur révoqué",
+      "outcome": [
+        "succes"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 3650
+    },
+    {
+      "event": "sessions-fermees",
+      "actor": "editor-operator",
+      "target": "Les sessions fermées",
+      "outcome": [
+        "succes"
+      ],
+      "requires_reason": true,
+      "correlation": true,
+      "retention_days": 1095
+    },
+    {
+      "event": "tache-relancee",
+      "actor": "editor-operator",
+      "target": "La tâche relancée",
+      "outcome": [
+        "succes",
+        "erreur"
+      ],
+      "correlation": true,
+      "retention_days": 365
+    },
+    {
+      "event": "connexion-editeur",
+      "actor": "editor-operator",
+      "target": "La session interne ouverte",
+      "outcome": [
+        "succes",
+        "refus"
+      ],
+      "correlation": true,
+      "retention_days": 1095
+    }
+  ],
+  "prohibited_capabilities": [
+    {
+      "id": "lire-les-donnees-personnelles-sans-assistance",
+      "statement": "Aucun rôle éditeur ne lit une donnée personnelle d'un membre d'une organisation cliente hors accès d'assistance autorisé.",
+      "enforced_by": [
+        "server-authorization",
+        "database-schema-separation",
+        "conformance-test"
+      ],
+      "rationale": "Exploiter la plateforme n'est pas lire les données de ses clients. Sans cette règle, le support deviendrait un droit de regard permanent sur les membres de toutes les organisations, ce qu'aucune obligation de conformité ne tolère."
+    },
+    {
+      "id": "entrer-chez-un-client-sans-invitation",
+      "statement": "Aucun rôle éditeur n'ouvre les applications métier d'une organisation cliente sans autorisation de celle-ci.",
+      "enforced_by": [
+        "token-audience",
+        "server-authorization"
+      ],
+      "rationale": "Un jeton d'audience adsum-editeur est refusé sur les routes clientes. L'inverse de la brèche constatée, et la même mécanique appliquée dans l'autre sens."
+    },
+    {
+      "id": "impersonation-permanente",
+      "statement": "Aucun mécanisme ne permet à un employé de l'éditeur de se faire passer durablement pour un utilisateur client.",
+      "enforced_by": [
+        "route-absent",
+        "human-procedure"
+      ],
+      "rationale": "L'assistance donne une lecture bornée sous son propre nom, jamais l'identité d'autrui. Une trace au nom du client masquerait qui a réellement agi, et ruinerait l'audit au moment précis où il sert."
+    },
+    {
+      "id": "acceder-aux-mots-de-passe",
+      "statement": "Aucun rôle éditeur n'accède à un mot de passe ni à son empreinte.",
+      "enforced_by": [
+        "route-absent",
+        "database-schema-separation"
+      ],
+      "rationale": "Les empreintes sont Argon2 et ne sont exposées par aucune route. Un opérateur qui les obtiendrait pourrait les attaquer hors ligne, à son rythme."
+    },
+    {
+      "id": "acceder-aux-jetons-et-cles",
+      "statement": "Aucun rôle éditeur ne lit un jeton de session, une clé privée ni un secret en clair.",
+      "enforced_by": [
+        "route-absent",
+        "server-authorization"
+      ],
+      "rationale": "Un secret lu est un secret à renouveler. Le renouvellement est une capacité déclarée ; la lecture n'en est pas une."
+    },
+    {
+      "id": "acceder-aux-documents-d-identite",
+      "statement": "Aucun rôle éditeur ne déchiffre une pièce d'identité de membre, même sous accès d'assistance.",
+      "enforced_by": [
+        "server-authorization",
+        "database-schema-separation",
+        "human-procedure"
+      ],
+      "rationale": "Les pièces sont chiffrées et le déchiffrement appartient à l'organisation. C'est la donnée dont la fuite ne se répare pas."
+    },
+    {
+      "id": "acceder-aux-codes-qr",
+      "statement": "Aucun rôle éditeur ne lit ni ne fabrique le code QR d'un membre.",
+      "enforced_by": [
+        "route-absent",
+        "server-authorization"
+      ],
+      "rationale": "Le code QR vaut preuve de présence. Pouvoir le fabriquer, c'est pouvoir attester qu'une personne était là."
+    },
+    {
+      "id": "traverser-vers-un-autre-tenant",
+      "statement": "Aucun accès d'assistance accordé par une organisation ne porte sur une autre.",
+      "enforced_by": [
+        "server-authorization",
+        "database-schema-separation",
+        "conformance-test"
+      ],
+      "rationale": "L'autorisation nomme une organisation. Un accès qui déborderait ferait d'une autorisation unique une clé passe-partout."
+    },
+    {
+      "id": "supprimer-sans-procedure",
+      "statement": "Aucune suppression de données client n'est possible hors du chemin contrôlé, avec rétention préalable et possibilité de restauration.",
+      "enforced_by": [
+        "human-procedure",
+        "server-authorization"
+      ],
+      "rationale": "Une suspension commerciale ne détruit jamais de données par défaut. La suppression est demandée, approuvée, différée par une période d'archivage, et seulement ensuite exécutée."
+    },
+    {
+      "id": "journaliser-un-secret-ou-une-donnee-personnelle",
+      "statement": "Aucun journal d'exploitation ne contient de secret, d'adresse en clair, de contenu de message ni d'identité nominative.",
+      "enforced_by": [
+        "server-authorization",
+        "conformance-test"
+      ],
+      "rationale": "Un journal se copie, se transmet et se conserve plus longtemps que la donnée qu'il porte. Ce qui n'y entre pas ne peut pas en sortir."
+    },
+    {
+      "id": "s-auto-approuver",
+      "statement": "Aucun opérateur n'approuve sa propre demande, quelle que soit son autorité.",
+      "enforced_by": [
+        "server-authorization"
+      ],
+      "rationale": "Une approbation par la même personne n'est pas une approbation. Le propriétaire lui-même passe par la sécurité, et réciproquement."
+    },
+    {
+      "id": "conserver-un-privilege-temporaire",
+      "statement": "Aucun privilège temporaire ne survit à son échéance, et aucun ne se renouvelle seul.",
+      "enforced_by": [
+        "server-authorization"
+      ],
+      "rationale": "Un privilège dont l'expiration dépend d'un geste humain devient permanent, parce que personne n'a pour tâche de le retirer un vendredi soir."
+    }
+  ]
+}

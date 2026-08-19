@@ -33,8 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field
 
 from . import audit, db
-from .permissions_rbac import require_permission
-from .schemas import UserMe
+from .frontiere import Operateur, require_capacite
 
 router = APIRouter(prefix="/api/v1/support/console/organisations", tags=["support-console"])
 
@@ -90,7 +89,7 @@ def _licence_en_vigueur(organisation_id: str, role: str | None) -> dict[str, obj
 
 @router.get("")
 def lister(
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.parc.consulter"))],
     etat: str = Query(default="", description="Filtre sur un état, vide pour tous"),
 ) -> dict[str, object]:
     """Every customer, with the licence currently in force.
@@ -136,7 +135,7 @@ class OrganisationIn(BaseModel):
 @router.post("", status_code=status.HTTP_201_CREATED)
 def creer(
     payload: OrganisationIn,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.tenants.creer"))],
 ) -> dict[str, object]:
     """Record a customer. It starts in evaluation, never active.
 
@@ -175,7 +174,7 @@ class EtatIn(BaseModel):
 def changer_etat(
     organisation_id: str,
     payload: EtatIn,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.tenants.suspendre"))],
 ) -> dict[str, object]:
     """Activate, suspend, or terminate.
 
@@ -223,7 +222,7 @@ class LicenceIn(BaseModel):
 def accorder_licence(
     organisation_id: str,
     payload: LicenceIn,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.licences.gerer"))],
 ) -> dict[str, object]:
     """Grant a licence, superseding the one in force.
 
@@ -266,7 +265,7 @@ def accorder_licence(
 @router.get("/{organisation_id}/licences")
 def historique_licences(
     organisation_id: str,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.licences.gerer"))],
 ) -> list[dict[str, object]]:
     """Every licence ever granted, newest first. Superseded ones are kept on purpose."""
     return [
@@ -280,9 +279,26 @@ def historique_licences(
 
 # --- Provisioning -------------------------------------------------------------
 
-class CibleIn(BaseModel):
-    #: Connection string of the organisation's own database.
-    dsn: str = Field(min_length=10, max_length=500)
+def _dsn_enregistre(organisation_id: str, role: str | None) -> str:
+    """La chaîne de connexion de l'organisation, lue au registre.
+
+    Elle était fournie par l'appelant dans le corps de la requête. Un opérateur
+    pouvait donc faire ouvrir par le serveur une connexion vers n'importe quelle base
+    joignable depuis lui, y compris celle d'une autre organisation ou une base hors
+    de la plateforme. Le corps disparaît : la seule chaîne acceptable est celle que
+    le registre associe à cette organisation, et la coller à la main n'est plus une
+    façon de se tromper de client.
+    """
+    ligne = db.fetch_one(
+        "SELECT dsn FROM organisation_hote WHERE organisation_id = %s "
+        "  AND dsn IS NOT NULL AND dsn <> '' ORDER BY hote LIMIT 1",
+        (organisation_id,), role=role)
+    if not ligne:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Aucune base n'est enregistrée pour cette organisation. "
+                   "Rattachez d'abord un hôte.")
+    return str(ligne["dsn"]).strip()
 
 
 def _organisation_ou_404(organisation_id: str, role: str | None) -> None:
@@ -293,8 +309,7 @@ def _organisation_ou_404(organisation_id: str, role: str | None) -> None:
 @router.post("/{organisation_id}/provisionnement/diagnostic")
 def diagnostic_provisionnement(
     organisation_id: str,
-    payload: CibleIn,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.deploiements.consulter"))],
 ) -> dict[str, object]:
     """Where a target database stands, step by step. Changes nothing.
 
@@ -304,25 +319,26 @@ def diagnostic_provisionnement(
     from . import provisionnement
 
     _organisation_ou_404(organisation_id, user.role)
-    return provisionnement.diagnostiquer(payload.dsn.strip())
+    return provisionnement.diagnostiquer(_dsn_enregistre(organisation_id, user.role))
 
 
 @router.post("/{organisation_id}/provisionnement/referentiels")
 def semer_referentiels(
     organisation_id: str,
-    payload: CibleIn,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.deploiements.declencher"))],
 ) -> dict[str, object]:
     """Seed the reference tables into a target that has the schema and no members.
 
-    Refuses a database that already holds members: a connection string pasted with a
-    typo can easily point at a live organisation, and seeding into it would mix two
-    clients in the one place the architecture exists to keep apart.
+    Refuses a database that already holds members: the architecture exists to keep
+    two clients apart, and seeding into a live one would mix them in that very place.
+    That refusal stays even though the target is no longer pasted by hand, because a
+    registry entry can be wrong too.
     """
     from . import provisionnement
 
     _organisation_ou_404(organisation_id, user.role)
-    resultat = provisionnement.semer_referentiels(payload.dsn.strip(), user.role)
+    resultat = provisionnement.semer_referentiels(
+        _dsn_enregistre(organisation_id, user.role), user.role)
     if not resultat.get("fait"):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(resultat.get("motif")))
     audit.log(
@@ -342,7 +358,7 @@ class HoteIn(BaseModel):
 def rattacher_hote(
     organisation_id: str,
     payload: HoteIn,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.deploiements.declencher"))],
 ) -> dict[str, object]:
     """Make a domain resolve to this organisation.
 
@@ -386,7 +402,7 @@ def rattacher_hote(
 @router.get("/{organisation_id}/hotes")
 def lister_hotes(
     organisation_id: str,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.deploiements.consulter"))],
 ) -> list[dict[str, object]]:
     """Domains serving this organisation. The connection string is never returned."""
     return [
@@ -406,7 +422,7 @@ class ModulesIn(BaseModel):
 def definir_modules(
     organisation_id: str,
     payload: ModulesIn,
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.modules.gerer"))],
 ) -> dict[str, object]:
     """Set exactly which modules the licence in force covers.
 
@@ -431,7 +447,7 @@ def definir_modules(
 
 @router.get("/catalogue/modules")
 def catalogue_modules(
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.catalogue.gerer"))],
 ) -> list[dict[str, object]]:
     """Every module the platform can sell, with whether it is currently subscribed."""
     from . import modules_souscrits
@@ -441,7 +457,7 @@ def catalogue_modules(
 
 @router.get("/parc/schema")
 def etat_du_parc(
-    user: Annotated[UserMe, Depends(require_permission("support.traiter"))],
+    user: Annotated[Operateur, Depends(require_capacite("editor.parc.consulter"))],
 ) -> dict[str, object]:
     """Where every organisation stands against the expected schema version.
 
