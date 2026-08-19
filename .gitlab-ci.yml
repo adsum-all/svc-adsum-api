@@ -23,11 +23,17 @@ include:
       - '/templates/docker.yml'
       - '/templates/deploy-gcp.yml'
       - '/templates/deploy-web.yml'
-      # Compare la table de routage reelle aux deux politiques d'acces, et
-      # verifie que la copie versee dans policies/ n'a pas derive de
-      # l'exemplaire faisant foi. Sans ces deux taches, la frontiere
-      # client / editeur reposerait sur la relecture humaine.
-      - '/templates/policies.yml'
+
+# À ajouter dès que la demande de fusion ci-templates !6 est sur `main` :
+#
+#       - '/templates/policies.yml'
+#
+# Ces deux tâches comparent la table de routage réelle aux deux politiques d'accès et
+# vérifient que la copie versée dans policies/ n'a pas dérivé de l'exemplaire faisant
+# foi. L'inclure avant la fusion ferait échouer le chargement de la configuration, et
+# le pipeline tomberait sans créer la moindre tâche, pour une raison qui n'a rien à
+# voir avec ce dépôt. En attendant, les deux tests tournent avec le reste de la suite,
+# `tests/test_conformite_politiques.py` n'ayant besoin d'aucune tâche particulière.
 
 # The shared template runs the secret scan quietly: it prints "leaks found: 1" and
 # nothing else, so nobody can tell a real credential from a format example without
