@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     # on the WABA, in which case WhatsApp is simply skipped for those messages.
     whatsapp_template_collab: str = ""
     whatsapp_template_lang: str = "fr"
+    # Passerelle interne. Quand ces deux valeurs sont posees, les canaux qui la
+    # servent passent par elle et heritent du repli, du registre d envoi et de la
+    # verification de signature. Vides, le comportement direct actuel demeure.
+    passerelle_url: str = ""
+    passerelle_secret: str = ""
     # SMS: provider selector (empty = off). 'brevo' reuses the Brevo account key
     # (email_api_key) through the transactional SMS API; sms_sender is the
     # alphanumeric originator shown to the recipient (max 11 chars).

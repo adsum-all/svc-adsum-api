@@ -17,7 +17,9 @@ Channel availability, as of this build:
 # ruff: noqa: E501
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -102,6 +104,56 @@ def telegram_instruction_dedie() -> bool:
 
 def telegram_configured() -> bool:
     return bool(telegram_token())
+
+
+def passerelle_configuree() -> bool:
+    """The internal gateway is reachable and we are allowed to call it."""
+    return bool(integration_value("passerelle_url") and integration_value("passerelle_secret"))
+
+
+def _cle_idempotence(canal: str, adresse: str, contenu: str) -> str:
+    """A key that is stable across a retry and distinct across two real sends.
+
+    It folds the current minute into the hash. A network error retried within the
+    same minute is deduplicated by the gateway instead of sending twice; two sends
+    a minute apart, which is what a deliberate second message looks like, both go
+    through. Without the minute, a legitimate resend would be silently swallowed.
+    """
+    graine = f"{canal}|{adresse}|{contenu}|{int(time.time() // 60)}"
+    return hashlib.sha256(graine.encode("utf-8")).hexdigest()[:48]
+
+
+def envoyer_par_passerelle(
+    canal: str,
+    adresse: str,
+    corps: str,
+    objet: str = "",
+    metadonnees: dict[str, str] | None = None,
+    categorie: str = "transactionnel",
+) -> bool:
+    """Hand a message to the internal gateway.
+
+    The gateway owns the provider credentials, the ranked fallback, the send ledger
+    and the signature checks on delivery receipts. Calling a provider directly from
+    here bypasses all four, which is why this path is preferred whenever the gateway
+    is configured.
+    """
+    racine = integration_value("passerelle_url").rstrip("/")
+    charge: dict[str, object] = {
+        "canal": canal,
+        "adresse": adresse,
+        "corps": corps,
+        "objet": objet,
+        "cle_idempotence": _cle_idempotence(canal, adresse, corps),
+        "categorie": categorie,
+        "metadonnees": metadonnees or {},
+    }
+    ok, _ = _post_json(
+        f"{racine}/api/v1/envois",
+        charge,
+        {"Authorization": f"Bearer {integration_value('passerelle_secret')}"},
+    )
+    return ok
 
 
 def whatsapp_configured() -> bool:
@@ -228,7 +280,26 @@ def send_whatsapp(numero: str, template_params: list[str], template_name: str | 
     a no-op so a message type with no approved template never blocks the fan-out.
     """
     template = template_name or settings.whatsapp_template_anniversaire
-    if not whatsapp_configured() or not numero or not template:
+    if not numero or not template:
+        return False
+    # The gateway first: it holds the Meta credentials, retries on a second
+    # provider when one exists and records the send. The direct call below stays
+    # as the path for installations where the gateway is not deployed yet.
+    if passerelle_configuree():
+        return envoyer_par_passerelle(
+            canal="whatsapp",
+            adresse=numero,
+            corps=" ".join(template_params) or template,
+            metadonnees={
+                "gabarit": template,
+                "gabarit_langue": settings.whatsapp_template_lang,
+                **{
+                    f"gabarit_parametre_{rang}": valeur
+                    for rang, valeur in enumerate(template_params, start=1)
+                },
+            },
+        )
+    if not whatsapp_configured():
         return False
     url = f"https://graph.facebook.com/{settings.whatsapp_graph_version}/{settings.whatsapp_phone_number_id}/messages"
     payload = {
