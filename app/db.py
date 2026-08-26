@@ -78,8 +78,22 @@ def connection(
             # statement_timeout, the role, or any server setting through here.
             # Checked before connecting, so a programming error costs no handshake.
             raise ValueError(f"local setting outside the adsum namespace: {nom}")
+    dsn = dsn_actuel()
+    if not dsn:
+        # An empty connection string is not "no configuration" to libpq: it means
+        # the local defaults, a socket or localhost, where nothing listens. The
+        # attempt then hangs instead of failing, and connect_timeout cannot help
+        # because there is no string to append it to. On a serverless runtime that
+        # burns the whole invocation and answers a 504 that names nothing; locally
+        # it hangs the test suite. Refusing here names the missing variable, which
+        # is the one thing the caller needs to know.
+        raise RuntimeError(
+            "ADSUM_DATABASE_URL is not set: no connection string to open. "
+            "An empty string would fall back to the local defaults and hang "
+            "rather than fail."
+        )
     extra = {"connect_timeout": connect_timeout_s} if connect_timeout_s else {}
-    conn = psycopg.connect(dsn_actuel(), row_factory=dict_row, **extra)
+    conn = psycopg.connect(dsn, row_factory=dict_row, **extra)
     try:
         with conn.cursor() as cur:
             if role:
