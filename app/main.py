@@ -9,6 +9,7 @@ from .activites_membre import router as activites_membre_router
 from .admin import router as admin_router
 from .ai_config import router as ai_config_router
 from .ai_tts import router as ai_tts_router
+from .aide import router as aide_router
 from .analytics import router as analytics_router
 from .anniversaires import router as anniversaires_router
 from .anniversaires_annuaire import router as anniversaires_annuaire_router
@@ -255,6 +256,7 @@ app.include_router(niveaux_router)
 app.include_router(gestion_router)
 app.include_router(email_fournisseurs_router)
 app.include_router(formulaire_pointage_router)
+app.include_router(aide_router)
 app.include_router(support_router)
 app.include_router(support_entrant_router)
 app.include_router(frontiere_router)
