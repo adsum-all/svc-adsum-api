@@ -58,6 +58,13 @@ LIMITE_RECHERCHE = 25
 
 LANGUES = ("fr", "en")
 
+#: Articles belonging to no single application: signing in, two factor
+#: authentication, personal data rights. They are always added to whichever
+#: application is asked for, because the reader looking for how to sign in is in
+#: front of one application and has no reason to guess that the answer was filed
+#: under another.
+TRANSVERSE = "transverse"
+
 #: A governance article is visible to an administrator only. This is a base role
 #: and not a delegated permission on purpose: delegation is what let a tagged
 #: membership widen its own reach in the past.
@@ -215,8 +222,8 @@ def rubriques(
     )
     valeurs: list[Any] = [_langue(langue), *params]
     if application:
-        sql += " AND r.application_code = %s"
-        valeurs.append(application)
+        sql += " AND r.application_code IN (%s, %s)"
+        valeurs.extend([application, TRANSVERSE])
     sql += " GROUP BY r.code, r.titre, r.titre_en, r.description, r.application_code, r.ordre"
     sql += " HAVING count(a.id) > 0 ORDER BY r.ordre, r.titre"
 
@@ -260,8 +267,8 @@ def articles(
     )
     valeurs: list[Any] = [_langue(langue), *params]
     if application:
-        sql += " AND a.application_code = %s"
-        valeurs.append(application)
+        sql += " AND a.application_code IN (%s, %s)"
+        valeurs.extend([application, TRANSVERSE])
     if rubrique:
         sql += " AND r.code = %s"
         valeurs.append(rubrique)
@@ -330,8 +337,8 @@ def recherche(
     plie = plier(terme)
     valeurs: list[Any] = [plie, _langue(langue), plie, *params]
     if application:
-        sql += " AND a.application_code = %s"
-        valeurs.append(application)
+        sql += " AND a.application_code IN (%s, %s)"
+        valeurs.extend([application, TRANSVERSE])
     sql += " ORDER BY rang DESC, a.titre LIMIT %s"
     valeurs.append(LIMITE_RECHERCHE)
 

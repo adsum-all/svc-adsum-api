@@ -248,3 +248,35 @@ def test_une_recherche_sans_resultat_est_enregistree(base):
     assert "INSERT INTO aide_usage" in sql
     assert "rembourser" in parametres
     assert 0 in parametres
+
+
+# ---------------------------------------------------------------- transverse
+
+
+def test_une_application_recoit_aussi_les_articles_transverses(base):
+    """« Me connecter » n appartient a aucune application et manque a toutes."""
+    aide.articles(Requete(), application="controleur")
+    sql, parametres = base.requetes[0]
+    assert "a.application_code IN (%s, %s)" in sql
+    assert "controleur" in parametres
+    assert aide.TRANSVERSE in parametres
+
+
+def test_la_recherche_dans_une_application_trouve_le_transverse(base):
+    aide.recherche(Requete(), q="connexion", application="portail")
+    parametres = base.requetes[0][1]
+    assert "portail" in parametres and aide.TRANSVERSE in parametres
+
+
+def test_les_rubriques_d_une_application_incluent_le_transverse(base):
+    aide.rubriques(Requete(), application="direction")
+    sql, parametres = base.requetes[0]
+    assert "r.application_code IN (%s, %s)" in sql
+    assert "direction" in parametres and aide.TRANSVERSE in parametres
+
+
+def test_le_guichet_central_ne_filtre_sur_aucune_application(base):
+    """Sans application nommee, la portee est le corpus entier lisible."""
+    aide.articles(Requete())
+    sql = base.requetes[0][0]
+    assert "a.application_code IN" not in sql
